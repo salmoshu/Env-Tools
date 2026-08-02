@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Machine-Setup 总入口 (Linux / Unix shell)
+# Env-Tools 总入口 (Linux / Unix shell)
 # 自动检测操作系统并完成部署；Windows 实现 kdesk + nodejs + ai-tools，Linux 实现 nodejs + ai-tools。
 # 用法: ./setup.sh [组件...] [--工具参数...]
 #   ./setup.sh                  # 部署全部组件

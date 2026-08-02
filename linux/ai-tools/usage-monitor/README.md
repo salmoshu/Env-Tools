@@ -1,4 +1,4 @@
-# Machine-Setup：Kimi / Codex / CodeBuddy 终端额度监控
+# Env-Tools：Kimi / Codex / CodeBuddy 终端额度监控
 
 完全独立于 Sub2API、PostgreSQL、Docker 和 Web 服务的本地终端应用，仅使用
 Python 3 标准库。

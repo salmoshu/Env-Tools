@@ -1,6 +1,6 @@
 # AI CLI 工具维护与接口经验笔记
 
-本文记录 `Machine-Setup` 中 AI CLI 安装、升级及额度监控所依赖接口的维护经验。
+本文记录 `Env-Tools` 中 AI CLI 安装、升级及额度监控所依赖接口的维护经验。
 
 ## CodeBuddy
 
@@ -102,7 +102,7 @@
 - 无 TTY 验证折叠 UI：`script -qec "bash xxx.sh" /dev/null` 分配 pty；桩测试用
   "替换 `main \"$@\"` 为桩函数定义 + main 调用"的方式注入假 worker。
 
-## Machine-Setup 项目结构约定
+## Env-Tools 项目结构约定
 
 - 根目录 `setup.sh` / `setup.ps1` 负责部署，`tools.sh` 负责已部署应用的日常操作。
 - AI CLI 安装脚本及额度监控实现统一放在 `linux/ai-tools/`；额度入口为

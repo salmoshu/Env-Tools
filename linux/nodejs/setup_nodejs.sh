@@ -88,8 +88,10 @@ mv "$DIR/node-$VER-linux-x64" "$RUNTIME_DIR"
 rm -f "$DIR/$TARBALL"
 
 # 写入 ~/.bashrc（新开的终端生效）
-MARKER='# machine-setup nodejs'
-if ! grep -qF "$MARKER" "$HOME/.bashrc" 2>/dev/null; then
+MARKER='# env-tools nodejs'
+LEGACY_MARKER='# machine-setup nodejs'
+if ! grep -qF "$MARKER" "$HOME/.bashrc" 2>/dev/null \
+    && ! grep -qF "$LEGACY_MARKER" "$HOME/.bashrc" 2>/dev/null; then
     {
         echo "$MARKER"
         echo "export PATH=\"$RUNTIME_DIR/bin:\$PATH\""

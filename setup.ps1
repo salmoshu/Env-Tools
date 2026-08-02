@@ -1,4 +1,4 @@
-﻿# Machine-Setup 总入口 (Windows)
+﻿# Env-Tools 总入口 (Windows)
 # 自动检测操作系统并完成部署；当前实现 Windows 下的 kdesk、nodejs 与 ai-tools 部署。
 # Linux 请使用 setup.sh。
 #
