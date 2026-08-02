@@ -62,3 +62,62 @@
 2026-08-02 11:37:10  kwallpaper UI ready (waited 3s)
 2026-08-02 11:37:20  running optimizer...
 2026-08-02 11:37:21  optimizer pid=10708
+2026-08-02 16:03:45  === setup start ===
+2026-08-02 16:03:46  kdesk dir: D:\software\kdesk
+2026-08-02 16:03:52  snapshot restore robocopy exit=11 (0-7 = success)
+2026-08-02 16:03:52  ERROR: unable to copy the snapshot into the target dir
+2026-08-02 16:03:52  === setup aborted ===
+2026-08-02 16:04:19  === setup start ===
+2026-08-02 16:04:19  kdesk dir: D:\software\kdesk
+2026-08-02 16:04:25  snapshot restore robocopy exit=8 (0-7 = success)
+2026-08-02 16:04:25  ERROR: unable to copy the snapshot into the target dir
+2026-08-02 16:04:25  === setup aborted ===
+2026-08-02 16:10:27  === setup start ===
+2026-08-02 16:10:27  kdesk dir: D:\software\kdesk
+2026-08-02 16:10:34  snapshot restore robocopy exit=8 (0-7 = success)
+2026-08-02 16:10:34  ERROR: unable to copy the snapshot into the target dir
+2026-08-02 16:10:34  === setup aborted ===
+2026-08-02 16:17:13  === manual repair start ===
+2026-08-02 16:17:15  service stopped
+2026-08-02 16:17:20  restore failed (exit=8); restarting explorer to release shell-extension locks, then retrying
+2026-08-02 16:17:24  manual repair snapshot restore robocopy exit=1 (0-7 = success)
+2026-08-02 16:17:24  === manual repair done ===
+2026-08-02 16:21:01  === setup start ===
+2026-08-02 16:21:01  kdesk dir: D:\software\kdesk
+2026-08-02 16:21:03  snapshot restore robocopy exit=0 (0-7 = success)
+2026-08-02 16:21:03  backup robocopy exit=0 (0-7 = success)
+2026-08-02 16:21:04  schtasks exit=0
+2026-08-02 16:21:04  wallpaper cache dir: D:\projects\01-开发平台\一键装机\Env-Tools\windows\kdesk\wallpaper_cache
+2026-08-02 16:21:08  kwallpaper UI ready (waited 4s)
+2026-08-02 16:21:19  optimizer not found: D:\projects\01-开发平台\一键装机\Env-Tools\windows\kdesk\杞欢鎬ц兘浼樺寲.exe
+2026-08-02 16:21:19  === setup done ===
+2026-08-02 16:21:42  === setup start ===
+2026-08-02 16:21:42  kdesk dir: D:\software\kdesk
+2026-08-02 16:21:44  snapshot restore robocopy exit=3 (0-7 = success)
+2026-08-02 16:21:44  backup robocopy exit=0 (0-7 = success)
+2026-08-02 16:21:44  schtasks exit=0
+2026-08-02 16:21:45  wallpaper cache dir: D:\projects\01-开发平台\一键装机\Env-Tools\windows\kdesk\wallpaper_cache
+2026-08-02 16:21:47  kwallpaper UI ready (waited 2s)
+2026-08-02 16:21:57  optimizer not found: D:\projects\01-开发平台\一键装机\Env-Tools\windows\kdesk\杞欢鎬ц兘浼樺寲.exe
+2026-08-02 16:21:57  === setup done ===
+2026-08-02 16:23:14  === manual optimizer run ===
+2026-08-02 16:23:14  optimizer not found: D:\projects\01-开发平台\一键装机\Env-Tools\windows\kdesk\杞欢鎬ц兘浼樺寲.exe
+2026-08-02 16:25:37  === manual optimizer run ===
+2026-08-02 16:25:37  running optimizer...
+2026-08-02 16:25:39  optimizer pid=15112
+2026-08-02 16:25:54  optimizer running in background
+2026-08-02 16:26:45  === setup start ===
+2026-08-02 16:26:46  kdesk dir: D:\software\kdesk
+2026-08-02 16:26:48  snapshot restore robocopy exit=3 (0-7 = success)
+2026-08-02 16:26:48  backup robocopy exit=0 (0-7 = success)
+2026-08-02 16:26:48  schtasks exit=0
+2026-08-02 16:26:48  wallpaper cache dir: D:\projects\01-开发平台\一键装机\Env-Tools\windows\kdesk\wallpaper_cache
+2026-08-02 16:26:51  kwallpaper UI ready (waited 3s)
+2026-08-02 16:27:01  running optimizer...
+2026-08-02 16:27:01  optimizer pid=30872
+2026-08-02 16:27:16  optimizer running in background
+2026-08-02 16:27:16  === setup done ===
+2026-08-02 16:27:32  === manual optimizer run (3s delay test) ===
+2026-08-02 16:27:35  running optimizer...
+2026-08-02 16:27:36  optimizer pid=10260
+2026-08-02 16:27:36  optimizer exited, code=0

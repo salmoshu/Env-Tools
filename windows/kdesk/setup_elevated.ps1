@@ -60,9 +60,9 @@ try { Stop-KdeskService } catch { Log "service stop: $($_.Exception.Message)" }
 # Restore the 33_1 snapshot into the target. For a portable deployment this also
 # performs the initial copy of the backup into the portable directory.
 New-Item -ItemType Directory -Path $target -Force | Out-Null
-robocopy $backup $target /MIR /R:2 /W:2 /NFL /NDL /NJH /NJS /NP | Out-Null
-Log "snapshot restore robocopy exit=$LASTEXITCODE (0-7 = success)"
-if ($LASTEXITCODE -gt 7) {
+$restoreCode = Invoke-KdeskSnapshotRestore -Backup $backup -Target $target -LogFile $log
+Log "snapshot restore robocopy exit=$restoreCode (0-7 = success)"
+if ($restoreCode -gt 7) {
     Log 'ERROR: unable to copy the snapshot into the target dir'
     Log '=== setup aborted ==='
     exit 1
@@ -110,5 +110,5 @@ if ($waited -ge 0) {
 }
 Start-Sleep -Seconds 10   # let the app finish initializing
 
-Invoke-KdeskOptimizer -Optimizer (Join-Path $dir '软件性能优化.exe') -LogFile $log
+Invoke-KdeskOptimizer -Optimizer (Get-KdeskOptimizer -Dir $dir) -LogFile $log
 Log '=== setup done ==='

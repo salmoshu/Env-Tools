@@ -204,6 +204,40 @@ function Install-KdeskIntegration {
     Set-KdeskShortcuts -Target $Target
 }
 
+function Invoke-KdeskSnapshotRestore {
+    # Mirrors the 33_1 snapshot into the install dir. The most common failure is
+    # explorer.exe holding kdeskmenu64.dll open (it is a shell context-menu
+    # extension, loaded lazily on the first right-click and never released), which
+    # makes robocopy fail with error 32 on the target file. On failure, restart
+    # the shell to release the lock and retry once.
+    param(
+        [Parameter(Mandatory = $true)][string]$Backup,
+        [Parameter(Mandatory = $true)][string]$Target,
+        [string]$LogFile
+    )
+
+    $robocopyArgs = @('/MIR','/R:2','/W:2','/NFL','/NDL','/NJH','/NJS','/NP')
+    robocopy $Backup $Target @robocopyArgs | Out-Null
+    $code = $LASTEXITCODE
+    if ($code -le 7) { return $code }
+
+    if ($LogFile) {
+        Write-KdeskLog -LogFile $LogFile -Message "restore failed (exit=$code); restarting explorer to release shell-extension locks, then retrying"
+    }
+    Get-Process -Name 'explorer' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 2
+
+    robocopy $Backup $Target @robocopyArgs | Out-Null
+    $code = $LASTEXITCODE
+
+    # explorer usually auto-restarts; bring it back only if it did not
+    Start-Sleep -Seconds 2
+    if (-not (Get-Process -Name 'explorer' -ErrorAction SilentlyContinue)) {
+        Start-Process 'explorer.exe'
+    }
+    return $code
+}
+
 function Write-KdeskLog {
     param(
         [Parameter(Mandatory = $true)][string]$LogFile,
@@ -231,13 +265,24 @@ function Wait-KdeskWallpaperReady {
     return -1
 }
 
+function Get-KdeskOptimizer {
+    # The optimizer exe sits in the kdesk project dir. Its filename is Chinese,
+    # which turns into mojibake when a script is saved without a UTF-8 BOM
+    # (Windows PowerShell then reads the file as ANSI), so resolve it by
+    # scanning instead of hard-coding the name.
+    param([Parameter(Mandatory = $true)][string]$Dir)
+
+    Get-ChildItem -LiteralPath $Dir -File -Filter '*.exe' -ErrorAction SilentlyContinue |
+        Select-Object -First 1 -ExpandProperty FullName
+}
+
 function Invoke-KdeskOptimizer {
     param(
-        [Parameter(Mandatory = $true)][string]$Optimizer,
+        [string]$Optimizer,
         [Parameter(Mandatory = $true)][string]$LogFile
     )
 
-    if (-not (Test-Path -LiteralPath $Optimizer -PathType Leaf)) {
+    if ([string]::IsNullOrWhiteSpace($Optimizer) -or -not (Test-Path -LiteralPath $Optimizer -PathType Leaf)) {
         Write-KdeskLog -LogFile $LogFile -Message "optimizer not found: $Optimizer"
         return
     }
@@ -245,6 +290,20 @@ function Invoke-KdeskOptimizer {
     # kill a hung optimizer left over from a previous run before starting a fresh one
     Get-Process -Name ([IO.Path]::GetFileNameWithoutExtension($Optimizer)) -ErrorAction SilentlyContinue |
         Stop-Process -Force -ErrorAction SilentlyContinue
+
+    # the optimizer only takes effect when kwallpaper is already running:
+    # wait for it to show up, then give it 3 more seconds to settle before patching
+    $waited = 0
+    while (-not (Get-Process -Name 'kwallpaper' -ErrorAction SilentlyContinue) -and $waited -lt 60) {
+        Start-Sleep -Seconds 1
+        $waited++
+    }
+    if ($waited -ge 60) {
+        Write-KdeskLog -LogFile $LogFile -Message 'WARNING: kwallpaper not running after 60s, running optimizer anyway'
+    } elseif ($waited -gt 0) {
+        Write-KdeskLog -LogFile $LogFile -Message "kwallpaper detected (waited ${waited}s)"
+    }
+    Start-Sleep -Seconds 3
 
     try {
         Write-KdeskLog -LogFile $LogFile -Message 'running optimizer...'

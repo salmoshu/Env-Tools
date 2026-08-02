@@ -8,7 +8,6 @@
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $dir       = Split-Path -Parent $scriptDir
 $backup    = Join-Path $dir 'kdesk_33_1_backup'
-$optimizer = Join-Path $dir '软件性能优化.exe'
 $logDir    = Join-Path $dir 'log'
 $stateDir  = Join-Path $scriptDir 'data'
 $log       = Join-Path $logDir 'deploy.log'
@@ -18,6 +17,8 @@ New-Item -ItemType Directory -Path $logDir,$stateDir -Force | Out-Null
 
 . (Join-Path $scriptDir 'kdesk_locator.ps1')
 . (Join-Path $scriptDir 'kdesk_integration.ps1')
+
+$optimizer = Get-KdeskOptimizer -Dir $dir
 
 function Log($msg) {
     "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')  $msg" | Out-File $log -Append -Encoding utf8
@@ -56,8 +57,8 @@ Get-Process -Name 'kdesk*','kwallpaper*','cmlive','kvipgui','infocenter','keyema
 Start-Sleep -Seconds 2
 try { Stop-KdeskService } catch { Log "service stop: $($_.Exception.Message)" }
 
-robocopy $backup $target /MIR /R:2 /W:2 /NFL /NDL /NJH /NJS /NP | Out-Null
-Log "restore robocopy exit=$LASTEXITCODE (0-7 = success)"
+$restoreCode = Invoke-KdeskSnapshotRestore -Backup $backup -Target $target -LogFile $log
+Log "restore robocopy exit=$restoreCode (0-7 = success)"
 
 Start-Service -Name 'kdeskcore' -ErrorAction SilentlyContinue
 
