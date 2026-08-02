@@ -1,5 +1,9 @@
 # 日志
-*/log/
+**/log/
+
+# Python 缓存/编译产物
+__pycache__/
+*.py[cod]
 
 # 壁纸缓存（本机数据，首次部署时自动迁移/重建）
 windows/kdesk/wallpaper_cache/
