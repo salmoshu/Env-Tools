@@ -1,0 +1,11 @@
+# 日志
+*/log/
+
+# 壁纸缓存（本机数据，首次部署时自动迁移/重建）
+windows/kdesk/wallpaper_cache/
+
+# kdesk 本机状态（安装路径缓存等）
+windows/kdesk/scripts/data/
+
+# nodejs 便携版运行时（部署时自动下载）
+*/nodejs/runtime/

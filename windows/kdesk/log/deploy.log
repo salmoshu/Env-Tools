@@ -1,0 +1,53 @@
+﻿2026-07-21 10:20:59  === deploy start ===
+2026-07-21 10:20:59  installing kdesk (silent /S)...
+2026-07-21 10:20:59  installer exited, code=
+2026-07-21 10:20:59  running optimizer...
+2026-07-21 10:20:59  optimizer exited, code=
+2026-07-21 10:20:59  === deploy finished, autostart removed ===
+2026-07-21 10:21:24  === deploy start ===
+2026-07-21 10:21:24  installing kdesk (silent /S)...
+2026-07-21 10:21:24  installer exited, code=
+2026-07-21 10:21:24  running optimizer...
+2026-07-21 10:21:24  optimizer exited, code=
+2026-07-21 10:21:24  === deploy finished, autostart removed ===
+2026-07-21 10:24:03  === deploy start ===
+2026-07-21 10:24:05  installing kdesk (silent /S)...
+2026-07-21 10:47:34  === deploy start ===
+2026-07-21 10:47:36  restore robocopy exit=1 (0-7 = success)
+2026-07-21 10:47:36  running optimizer...
+2026-07-21 10:47:47  optimizer exited, code=0
+2026-07-21 10:47:47  kdesk restarted
+2026-07-21 10:47:47  === deploy finished ===
+2026-07-21 10:53:49  === deploy start ===
+2026-07-21 10:53:54  restore robocopy exit=1 (0-7 = success)
+2026-07-21 10:53:54  running optimizer...
+2026-07-21 10:55:58  optimizer exited, code=0
+2026-07-21 10:55:58  kdesk restarted
+2026-07-21 10:55:58  === deploy finished ===
+2026-07-21 10:59:08  === deploy start ===
+2026-07-21 10:59:12  restore robocopy exit=3 (0-7 = success)
+2026-07-21 10:59:12  running optimizer...
+2026-07-21 11:00:07  optimizer exited, code=0
+2026-07-21 11:00:07  kdesk restarted
+2026-07-21 11:00:07  === deploy finished ===
+2026-07-21 11:03:05  === deploy start ===
+2026-07-21 11:03:07  restore robocopy exit=1 (0-7 = success)
+2026-07-21 11:03:12  kwallpaper started (waited 0s)
+2026-07-21 11:03:12  running optimizer...
+2026-07-21 11:12:03  === deploy start ===
+2026-07-21 11:12:08  restore robocopy exit=1 (0-7 = success)
+2026-07-21 11:12:14  kwallpaper started (waited 0s)
+2026-07-21 11:12:14  running optimizer...
+2026-08-01 23:17:01  === deploy start ===
+2026-08-01 23:17:01  kdesk dir: D:\software_private\kdesk
+2026-08-01 23:17:01  ERROR: kdesk not found, abort
+2026-08-01 23:17:01  === deploy finished ===
+2026-08-01 23:17:17  === deploy start ===
+2026-08-01 23:17:17  kdesk dir: D:\software_private\kdesk
+2026-08-01 23:17:17  ERROR: kdesk not found, abort
+2026-08-01 23:17:17  === deploy finished ===
+2026-08-02 10:10:36  === deploy start ===
+2026-08-02 10:10:36  kdesk dir: D:\software\kdesk
+2026-08-02 10:10:38  restore robocopy exit=1 (0-7 = success)
+2026-08-02 10:10:43  kwallpaper started (waited 0s)
+2026-08-02 10:10:43  running optimizer...

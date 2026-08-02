@@ -1,0 +1,64 @@
+﻿2026-07-21 10:46:27  === setup start ===
+2026-07-21 10:46:30  backup robocopy exit=1 (0-7 = success)
+2026-07-21 10:46:30  schtasks exit=0
+2026-07-21 10:46:30  === setup done ===
+2026-08-01 23:16:48  === setup start ===
+2026-08-01 23:16:48  kdesk dir: D:\software_private\kdesk
+2026-08-01 23:16:48  ERROR: kdesk not installed - run the installer first, then re-run this script
+2026-08-01 23:16:48  === setup aborted ===
+2026-08-02 10:08:20  === setup start ===
+2026-08-02 10:08:22  kdesk dir: D:\software_private\kdesk
+2026-08-02 10:08:22  ERROR: kdesk not installed - run the installer first, then re-run this script
+2026-08-02 10:08:22  === setup aborted ===
+2026-08-02 10:09:33  === setup start ===
+2026-08-02 10:09:34  kdesk dir: D:\software\kdesk
+2026-08-02 10:09:39  snapshot restore robocopy exit=1 (0-7 = success)
+2026-08-02 10:09:39  backup robocopy exit=0 (0-7 = success)
+2026-08-02 10:09:39  schtasks exit=0
+2026-08-02 10:09:39  === setup done ===
+2026-08-02 10:10:13  === setup start ===
+2026-08-02 10:10:13  kdesk dir: D:\software\kdesk
+2026-08-02 10:10:15  snapshot restore robocopy exit=1 (0-7 = success)
+2026-08-02 10:10:15  backup robocopy exit=0 (0-7 = success)
+2026-08-02 10:10:15  schtasks exit=0
+2026-08-02 10:10:15  === setup done ===
+2026-08-02 10:33:12  === setup start ===
+2026-08-02 10:33:12  kdesk dir: D:\software\kdesk
+2026-08-02 10:33:14  snapshot restore robocopy exit=3 (0-7 = success)
+2026-08-02 10:33:14  backup robocopy exit=0 (0-7 = success)
+2026-08-02 10:33:14  schtasks exit=0
+2026-08-02 10:33:14  === setup done ===
+2026-08-02 11:06:14  === setup start ===
+2026-08-02 11:06:14  kdesk dir: D:\software\kdesk
+2026-08-02 11:06:16  snapshot restore robocopy exit=3 (0-7 = success)
+2026-08-02 11:06:16  backup robocopy exit=0 (0-7 = success)
+2026-08-02 11:06:17  schtasks exit=0
+2026-08-02 11:06:17  wallpaper cache dir: C:\Users\winch\Desktop\元气桌面VIP\wallpaper_cache
+2026-08-02 11:06:17  === setup done ===
+2026-08-02 11:11:13  === setup start ===
+2026-08-02 11:11:13  kdesk dir: D:\software\kdesk
+2026-08-02 11:11:16  snapshot restore robocopy exit=1 (0-7 = success)
+2026-08-02 11:11:16  backup robocopy exit=0 (0-7 = success)
+2026-08-02 11:11:16  schtasks exit=0
+2026-08-02 11:11:16  wallpaper cache dir: C:\Users\winch\Desktop\元气桌面VIP\wallpaper_cache
+2026-08-02 11:11:20  kwallpaper UI ready (waited 3s)
+2026-08-02 11:11:30  optimizer not found: C:\Users\winch\Desktop\元气桌面VIP\杞欢鎬ц兘浼樺寲.exe
+2026-08-02 11:11:30  === setup done ===
+2026-08-02 11:12:40  === setup start ===
+2026-08-02 11:12:40  kdesk dir: D:\software\kdesk
+2026-08-02 11:12:42  snapshot restore robocopy exit=1 (0-7 = success)
+2026-08-02 11:12:42  backup robocopy exit=0 (0-7 = success)
+2026-08-02 11:12:42  schtasks exit=0
+2026-08-02 11:12:43  wallpaper cache dir: C:\Users\winch\Desktop\元气桌面VIP\wallpaper_cache
+2026-08-02 11:12:45  kwallpaper UI ready (waited 2s)
+2026-08-02 11:12:55  running optimizer...
+2026-08-02 11:12:56  optimizer pid=34532
+2026-08-02 11:37:03  === setup start ===
+2026-08-02 11:37:04  kdesk dir: D:\software\kdesk
+2026-08-02 11:37:06  snapshot restore robocopy exit=3 (0-7 = success)
+2026-08-02 11:37:06  backup robocopy exit=0 (0-7 = success)
+2026-08-02 11:37:06  schtasks exit=0
+2026-08-02 11:37:06  wallpaper cache dir: D:\projects\01-开发平台\一键装机\Machine-Setup\windows\kdesk\wallpaper_cache
+2026-08-02 11:37:10  kwallpaper UI ready (waited 3s)
+2026-08-02 11:37:20  running optimizer...
+2026-08-02 11:37:21  optimizer pid=10708
