@@ -7,5 +7,8 @@ windows/kdesk/wallpaper_cache/
 # kdesk 本机状态（安装路径缓存等）
 windows/kdesk/scripts/data/
 
+# 官方安装包（部署直接使用 kdesk_33_1_backup 快照，无需安装包）
+windows/kdesk/①官方安装版kdesk_33_1.exe
+
 # nodejs 便携版运行时（部署时自动下载）
 */nodejs/runtime/
