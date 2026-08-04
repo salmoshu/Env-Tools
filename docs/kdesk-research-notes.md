@@ -1,7 +1,7 @@
 # 元气桌面免安装部署 —— 研究经验与运维笔记
 
 > 本文记录 2026-08-02 排查与部署过程中确认的事实、踩过的坑和最终方案。
-> 脚本实现见项目根目录 `setup_elevated.ps1` 与 `scripts/`。
+> 脚本实现见 `windows/kdesk/setup_elevated.ps1` 与 `windows/kdesk/scripts/`。
 
 ## 系统组成
 
@@ -69,7 +69,7 @@
 
 ```bash
 # 查看部署日志
-tail -20 log/setup.log log/deploy.log
+tail -20 windows/kdesk/log/setup.log windows/kdesk/log/deploy.log
 
 # 检查 kdeskcore 服务
 sc.exe query kdeskcore
@@ -78,5 +78,5 @@ sc.exe query kdeskcore
 powershell -Command "Get-ScheduledTask -TaskName 'KdeskAutoDeploy' | Select-Object State"
 
 # 检查脚本 BOM（必须 ef bb bf）
-head -c 3 setup_elevated.ps1 | od -An -tx1
+head -c 3 windows/kdesk/setup_elevated.ps1 | od -An -tx1
 ```

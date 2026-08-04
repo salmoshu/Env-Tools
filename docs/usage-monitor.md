@@ -36,6 +36,9 @@ TLS EOF；Codex 请求仍遵循系统代理设置。如果所在网络必须通�
 
 ## 使用
 
+Linux 用 `./tools.sh`，Windows 用 `powershell -File tools.ps1`（参数完全一致，
+monitor 本身跨平台）：
+
 ```bash
 # 显示一次
 ./tools.sh ai-tools --usage --no-color
