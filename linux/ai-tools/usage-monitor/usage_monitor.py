@@ -498,7 +498,12 @@ def fetch_codebuddy(path: Path) -> dict[str, Any]:
     }
 
 
-def percent(used: Any = None, remaining: Any = None, limit: Any = None) -> float:
+def percent(
+    used: Any = None,
+    remaining: Any = None,
+    limit: Any = None,
+    used_amount: Any = None,
+) -> float:
     if used is not None:
         try:
             return max(0.0, min(100.0, float(used)))
@@ -506,8 +511,16 @@ def percent(used: Any = None, remaining: Any = None, limit: Any = None) -> float
             pass
     try:
         limit_value = float(limit)
-        remaining_value = float(remaining)
         if limit_value > 0:
+            if used_amount is not None:
+                try:
+                    return max(
+                        0.0,
+                        min(100.0, float(used_amount) * 100 / limit_value),
+                    )
+                except (TypeError, ValueError):
+                    pass
+            remaining_value = float(remaining)
             return max(0.0, min(100.0, (limit_value - remaining_value) * 100 / limit_value))
     except (TypeError, ValueError):
         pass
@@ -548,6 +561,7 @@ def normalize_window(
             data.get("used_percent"),
             data.get("remaining"),
             data.get("limit"),
+            data.get("used"),
         ),
         "reset_after_seconds": reset_after,
         "window_seconds": window_seconds,

@@ -32,6 +32,28 @@ class NormalizeTests(unittest.TestCase):
         self.assertEqual(result["windows"][0]["used_percent"], 20)
         self.assertEqual(result["windows"][1]["used_percent"], 75)
 
+    def test_kimi_5h_without_remaining(self):
+        # Kimi /coding/v1/usages 的 limits[].detail 只有 limit/used，没有 remaining
+        result = usage_monitor.normalize_kimi(
+            {
+                "user": {"membership": {"level": "LEVEL_INTERMEDIATE"}},
+                "usage": {"limit": "100", "used": "99", "remaining": "1"},
+                "limits": [
+                    {
+                        "window": {"duration": 300, "timeUnit": "TIME_UNIT_MINUTE"},
+                        "detail": {
+                            "limit": "100",
+                            "used": "100",
+                            "resetTime": "2026-08-04T09:14:42.960866Z",
+                        },
+                    }
+                ],
+            }
+        )
+        self.assertEqual(result["windows"][0]["label"], "5h Window")
+        self.assertEqual(result["windows"][0]["used_percent"], 100)
+        self.assertEqual(result["windows"][1]["used_percent"], 99)
+
     def test_codex(self):
         result = usage_monitor.normalize_codex(
             {
