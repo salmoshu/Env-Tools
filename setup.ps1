@@ -1,5 +1,5 @@
 ﻿# Env-Tools 总入口 (Windows)
-# 自动检测操作系统并完成部署；当前实现 Windows 下的 kdesk、nodejs 与 ai-tools 部署。
+# 自动检测操作系统并完成部署；当前实现 Windows 下的 kdesk、nodejs、ai-tools 与 openssh 部署。
 # Linux 请使用 setup.sh。
 #
 # 用法:
@@ -8,15 +8,18 @@
 #   setup.ps1 nodejs             # 仅部署 nodejs
 #   setup.ps1 ai-tools           # 安装/更新全部 AI CLI 工具
 #   setup.ps1 ai-tools --codex   # 仅安装/更新 codex（--all/--kimi/--codebuddy 同理）
+#   setup.ps1 openssh            # 部署 OpenSSH Server（默认端口 2222）
+#   setup.ps1 openssh -Port 2223 # 指定 SSH 端口（-FirewallProfile Any 同理）
 #   setup.ps1 kdesk nodejs       # 部署指定多个组件
 #   右键「使用 PowerShell 运行」时会先询问要部署的组件（直接回车 = all）
+#   注：带工具参数时请只指定一个组件（参数会透传给该组件的脚本）
 
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('all', 'kdesk', 'nodejs', 'ai-tools')]
+    [ValidateSet('all', 'kdesk', 'nodejs', 'ai-tools', 'openssh')]
     [string[]]$Component = @('all'),
-    # 透传给 ai-tools 脚本的参数（--all / --codex / --kimi / --codebuddy）
+    # 透传给组件脚本的参数（ai-tools: --all/--codex/--kimi/--codebuddy；openssh: -Port/-FirewallProfile）
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$ToolArgs,
     # 内部使用：标记交互式运行（提权后结束时暂停等按键）
@@ -37,11 +40,11 @@ if (-not $isWindows) {
 # --- 未指定组件时交互询问（如右键运行的场景）----------------------------------
 if (-not $PSBoundParameters.ContainsKey('Component')) {
     $Interactive = $true
-    Write-Host '可部署组件: all(全部) / kdesk / nodejs / ai-tools' -ForegroundColor Cyan
+    Write-Host '可部署组件: all(全部) / kdesk / nodejs / ai-tools / openssh' -ForegroundColor Cyan
     $answer = Read-Host '请输入要部署的组件（多个用空格分隔，直接回车 = all）'
     if (-not [string]::IsNullOrWhiteSpace($answer)) {
         $Component = $answer -split '\s+' | Where-Object { $_ }
-        $bad = $Component | Where-Object { $_ -notin @('all','kdesk','nodejs','ai-tools') }
+        $bad = $Component | Where-Object { $_ -notin @('all','kdesk','nodejs','ai-tools','openssh') }
         if ($bad) {
             Write-Host "无效组件: $($bad -join ', ')" -ForegroundColor Red
             Read-Host '按回车退出'
@@ -53,7 +56,7 @@ if (-not $PSBoundParameters.ContainsKey('Component')) {
 # --- ValueFromRemainingArguments 会把第二个及以后的位置参数收进 $ToolArgs， ------
 # --- 将其中合法的组件名并回 $Component（如 setup.ps1 kdesk nodejs）-------------
 if ($ToolArgs) {
-    $validNames = @('all','kdesk','nodejs','ai-tools')
+    $validNames = @('all','kdesk','nodejs','ai-tools','openssh')
     $left = @()
     foreach ($a in $ToolArgs) {
         if ($a -in $validNames) { $Component += $a } else { $left += $a }
@@ -73,11 +76,12 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltinRole]::Administra
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-$targets = if ($Component -contains 'all') { @('kdesk','nodejs','ai-tools') } else { $Component }
+$targets = if ($Component -contains 'all') { @('kdesk','nodejs','ai-tools','openssh') } else { $Component }
 $scripts = [ordered]@{
     kdesk      = 'windows\kdesk\setup_elevated.ps1'
     nodejs     = 'windows\nodejs\setup_nodejs.ps1'
     'ai-tools' = 'windows\ai-tools\setup_ai_tools.ps1'
+    openssh    = 'windows\openssh\setup_openssh.ps1'
 }
 
 # 每个组件用独立 powershell 子进程运行：隔离子脚本里的 exit，并拿到真实退出码
@@ -87,7 +91,7 @@ foreach ($name in $targets) {
     Write-Host ''
     Write-Host "=== [$i/$($targets.Count)] 部署 $name ===" -ForegroundColor Cyan
     $childArgs = @('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $root $scripts[$name]))
-    if ($name -eq 'ai-tools' -and $ToolArgs) { $childArgs += $ToolArgs }
+    if ($name -in @('ai-tools','openssh') -and $ToolArgs) { $childArgs += $ToolArgs }
     & powershell @childArgs
     if ($LASTEXITCODE -ne 0) {
         Write-Host "$name 部署失败 (exit=$LASTEXITCODE)，日志见 $($scripts[$name] -replace '[^\\]+\.ps1$','log\setup.log')" -ForegroundColor Red
