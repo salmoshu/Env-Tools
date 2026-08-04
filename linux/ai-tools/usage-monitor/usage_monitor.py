@@ -8,12 +8,9 @@ import base64
 from contextlib import contextmanager, nullcontext
 import json
 import os
-import select
 import subprocess
 import sys
-import termios
 import time
-import tty
 import unicodedata
 import urllib.error
 import urllib.parse
@@ -21,6 +18,13 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import select
+    import termios
+    import tty
 
 
 KIMI_CLIENT_ID = "17e5f671-d194-4dfb-9706-5516cb48c098"
@@ -248,7 +252,7 @@ def _jwt_expires_at(token: str) -> float:
 def refresh_kimi_web_credentials(path: Path, credentials: dict[str, Any]) -> dict[str, Any]:
     refresh_token = credentials.get("refresh_token")
     if not refresh_token:
-        raise MonitorError("refresh_token missing in Kimi web credentials; copy it again from the browser (see README)")
+        raise MonitorError("refresh_token missing in Kimi web credentials; copy it again from the browser (see docs/usage-monitor.md)")
     result = request_json(
         KIMI_WEB_REFRESH_URL,
         headers={"Content-Type": "application/json", "Accept": "application/json"},
@@ -258,7 +262,7 @@ def refresh_kimi_web_credentials(path: Path, credentials: dict[str, Any]) -> dic
     )
     access_token = result.get("access_token") or result.get("accessToken")
     if not access_token:
-        raise MonitorError("Failed to refresh Kimi web credentials; copy refresh_token again from the browser (see README)")
+        raise MonitorError("Failed to refresh Kimi web credentials; copy refresh_token again from the browser (see docs/usage-monitor.md)")
     credentials.update(
         {
             "access_token": access_token,
@@ -294,7 +298,7 @@ def fetch_kimi_web(path: Path) -> dict[str, Any]:
         credentials = refresh_kimi_web_credentials(path, credentials)
         access_token = str(credentials.get("access_token") or "")
     if not access_token:
-        raise MonitorError("access_token missing in Kimi web credentials; configure kimi-web.json (see README)")
+        raise MonitorError("access_token missing in Kimi web credentials; configure kimi-web.json (see docs/usage-monitor.md)")
     try:
         return _fetch_kimi_web_stats(access_token)
     except MonitorError as exc:
@@ -899,7 +903,10 @@ def keyboard_refresh_mode(stream):
     fd = None
     original_settings = None
     try:
-        if stream.isatty():
+        if os.name == "nt":
+            # msvcrt 按键读取不需要切换终端模式
+            enabled = stream.isatty()
+        elif stream.isatty():
             fd = stream.fileno()
             original_settings = termios.tcgetattr(fd)
             tty.setcbreak(fd, termios.TCSANOW)
@@ -926,6 +933,15 @@ def wait_for_next_refresh(
 
     stream = stream or sys.stdin
     deadline = time.monotonic() + interval
+    if os.name == "nt":
+        # Windows 上 select 不支持控制台句柄，改用 msvcrt 轮询
+        while True:
+            remaining = max(0.0, deadline - time.monotonic())
+            if remaining <= 0:
+                return False
+            if msvcrt.kbhit() and msvcrt.getwch() == "\x12":
+                return True
+            time.sleep(min(0.05, remaining))
     while True:
         remaining = max(0.0, deadline - time.monotonic())
         readable, _, _ = select.select([stream], [], [], remaining)
@@ -933,6 +949,22 @@ def wait_for_next_refresh(
             return False
         if stream.read(1) == "\x12":
             return True
+
+
+def enable_windows_ansi() -> None:
+    """打开 Windows 控制台的 ANSI 转义支持（Windows 10+；失败则静默忽略）。"""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+        mode = ctypes.c_ulong()
+        if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            kernel32.SetConsoleMode(handle, mode.value | 0x0004)  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
+    except Exception:
+        pass
 
 
 def main() -> int:
@@ -960,6 +992,7 @@ def main() -> int:
     if args.json and args.watch:
         parser.error("--json cannot be used together with --watch")
 
+    enable_windows_ansi()
     keyboard_context = keyboard_refresh_mode(sys.stdin) if args.watch else nullcontext(False)
     try:
         with keyboard_context as keyboard_enabled:

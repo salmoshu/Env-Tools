@@ -104,6 +104,6 @@
 
 ## Env-Tools 项目结构约定
 
-- 根目录 `setup.sh` / `setup.ps1` 负责部署，`tools.sh` 负责已部署应用的日常操作。
+- 根目录 `setup.sh` / `setup.ps1` 负责部署，`tools.sh` / `tools.ps1` 负责已部署应用的日常操作。
 - AI CLI 安装脚本及额度监控实现统一放在 `linux/ai-tools/`；额度入口为
-  `./tools.sh ai-tools --usage`。
+  `./tools.sh ai-tools --usage`（Windows 为 `tools.ps1 ai-tools --usage`，monitor 跨平台）。
