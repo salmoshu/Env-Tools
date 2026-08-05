@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import base64
 from contextlib import contextmanager, nullcontext
+import calendar
 import json
 import os
 import subprocess
@@ -546,6 +547,33 @@ def seconds_until(value: Any) -> int | None:
         return None
 
 
+def parse_timestamp(value: Any) -> datetime | None:
+    """解析时间戳（秒/毫秒 epoch 或 ISO 字符串）为 datetime，失败返回 None。"""
+    if value in (None, ""):
+        return None
+    try:
+        if isinstance(value, (int, float)):
+            numeric = float(value)
+            if numeric > 10_000_000_000:
+                numeric /= 1000
+            return datetime.fromtimestamp(numeric, tz=timezone.utc)
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError, OSError, OverflowError):
+        return None
+
+
+def one_month_before(moment: datetime) -> datetime:
+    """同一时刻往前推一个自然月（处理月末溢出，如 3/31 → 2/28）。"""
+    year, month = (moment.year - 1, 12) if moment.month == 1 else (moment.year, moment.month - 1)
+    day = min(moment.day, calendar.monthrange(year, month)[1])
+    return moment.replace(year=year, month=month, day=day)
+
+
+def monthly_window_seconds(reset_at: datetime) -> int:
+    """按月周期的窗口总长：重置时间与前一个月同一时刻之差（28~31 天自适应）。"""
+    return int((reset_at - one_month_before(reset_at)).total_seconds())
+
+
 def normalize_window(
     label: str,
     data: dict[str, Any],
@@ -624,12 +652,15 @@ def normalize_kimi_monthly(stats: dict[str, Any]) -> dict[str, Any] | None:
     )
     if used_percent is None:
         return None
+    expire_at = parse_timestamp(balance.get("expire_time") or balance.get("expireTime"))
     window = {
         "label": "Monthly Total",
         "used_percent": used_percent,
         "reset_after_seconds": seconds_until(
             balance.get("expire_time") or balance.get("expireTime")
         ),
+        # 月度重置：窗口起点按重置时间往前推一个自然月估算
+        "window_seconds": monthly_window_seconds(expire_at) if expire_at else None,
     }
     extra_lines = []
     code_percent = _ratio_percent(
@@ -709,6 +740,11 @@ def normalize_codebuddy(data: dict[str, Any]) -> dict[str, Any]:
                 "label": label,
                 "used_percent": percent(used=used * 100 / size),
                 "reset_after_seconds": reset_after,
+                # 订阅按月续期：窗口起点按周期结束时间往前推一个自然月估算；
+                # 赠送包是一次性额度、周期未知，不推算
+                "window_seconds": (
+                    monthly_window_seconds(min(ends)) if not expire and ends else None
+                ),
                 "expire": expire,
             }
 
@@ -785,14 +821,28 @@ def duration_text(seconds: int | None, expire: bool = False) -> str:
     return f"{verb} in {minutes}m"
 
 
-def bar(value: float, width: int = 28, color: bool = True) -> str:
+def bar(value: float, width: int = 28, color: bool = True, time_fraction: float | None = None) -> str:
     value = max(0.0, min(100.0, value))
     filled = int(width * value / 100)
-    content = "█" * filled + "░" * (width - filled)
+    chars = ["█"] * filled + ["░"] * (width - filled)
+    if time_fraction is not None:
+        # 用 | 标出当前时间在窗口内的位置，便于对比用量进度与时间进度
+        marker = min(width - 1, max(0, int(width * time_fraction)))
+        chars[marker] = "|"
+    content = "".join(chars)
     tone = GREEN if value < 50 else (YELLOW if value < 80 else RED)
     if color:
         return f"{tone}[{content}] {value:5.1f}%{RESET}"
     return f"[{content}] {value:5.1f}%"
+
+
+def window_time_fraction(window: dict[str, Any]) -> float | None:
+    """当前时间在配额窗口内走过的比例（0~1），由窗口总长与剩余时间推算。"""
+    window_seconds = window.get("window_seconds")
+    reset_after = window.get("reset_after_seconds")
+    if not window_seconds or window_seconds <= 0 or reset_after is None:
+        return None
+    return min(1.0, max(0.0, (window_seconds - reset_after) / window_seconds))
 
 
 def display_width(text: str) -> int:
@@ -826,8 +876,10 @@ def render(results: list[dict[str, Any]], errors: list[dict[str, str]], color: b
         if not windows and not extra_lines:
             lines.append("  No recognizable quota windows")
         for window in windows:
+            time_fraction = window_time_fraction(window)
             line = (
-                f"  {display_ljust(window['label'], 16)} {bar(window['used_percent'], color=color)}  "
+                f"  {display_ljust(window['label'], 16)} "
+                f"{bar(window['used_percent'], color=color, time_fraction=time_fraction)}  "
                 f"{duration_text(window['reset_after_seconds'], expire=bool(window.get('expire')))}"
             )
             if window.get("detail"):

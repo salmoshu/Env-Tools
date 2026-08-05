@@ -124,9 +124,13 @@ class NormalizeTests(unittest.TestCase):
         self.assertEqual(subscription["label"], "Subscription")
         self.assertAlmostEqual(subscription["used_percent"], 100.0)
         self.assertFalse(subscription["expire"])
+        # 订阅按月续期：7/31 的周期往前推一个自然月为 6/30，共 31 天
+        self.assertEqual(subscription["window_seconds"], 31 * 86400)
         self.assertEqual(gifted["label"], "Gifted")
         self.assertAlmostEqual(gifted["used_percent"], 100.0 * 500 / 1500)
         self.assertTrue(gifted["expire"])
+        # 赠送包是一次性额度、周期未知，不推算窗口总长
+        self.assertIsNone(gifted["window_seconds"])
         self.assertTrue(all("detail" not in w for w in result["windows"]))
         self.assertIn(
             "Total: 1000.0/2000.0 credits (sub 500.0/500.0, gift 500.0/1500.0)",
@@ -175,6 +179,73 @@ class NormalizeTests(unittest.TestCase):
             for line in usage_lines
         ]
         self.assertEqual(bar_columns, [19, 19])
+
+    def test_render_shows_current_time_marker(self):
+        results = [
+            {
+                "provider": "Test",
+                "plan": "test",
+                "windows": [
+                    {
+                        "label": "5h Window",
+                        "used_percent": 0,
+                        "reset_after_seconds": 9000,
+                        "window_seconds": 18000,
+                    },
+                ],
+                "fetched_at": "2026-07-31T11:21:29+08:00",
+            }
+        ]
+
+        output = usage_monitor.render(results, [], color=False)
+        bar_line = next(line for line in output.splitlines() if "[" in line)
+        # 时间走过一半 → | 位于宽度 28 的第 14 格
+        self.assertEqual(bar_line.index("|") - bar_line.index("[") - 1, 14)
+
+    def test_one_month_before_handles_month_end(self):
+        from datetime import datetime
+
+        moment = datetime(2026, 3, 31, 12, 0, 0)
+        self.assertEqual(
+            usage_monitor.one_month_before(moment),
+            datetime(2026, 2, 28, 12, 0, 0),
+        )
+        moment = datetime(2026, 1, 15, 12, 0, 0)
+        self.assertEqual(
+            usage_monitor.one_month_before(moment),
+            datetime(2025, 12, 15, 12, 0, 0),
+        )
+
+    def test_kimi_monthly_estimates_window_seconds(self):
+        result = usage_monitor.normalize_kimi_monthly(
+            {
+                "subscriptionBalance": {
+                    "amountUsedRatio": 0.5,
+                    "expireTime": "2026-08-15T00:00:00+00:00",
+                }
+            }
+        )
+        # 7/15 → 8/15 共 31 天
+        self.assertEqual(result["window"]["window_seconds"], 31 * 86400)
+
+    def test_render_omits_marker_without_window_seconds(self):
+        results = [
+            {
+                "provider": "Test",
+                "plan": "test",
+                "windows": [
+                    {
+                        "label": "Monthly Total",
+                        "used_percent": 50,
+                        "reset_after_seconds": 60,
+                    },
+                ],
+                "fetched_at": "2026-07-31T11:21:29+08:00",
+            }
+        ]
+
+        output = usage_monitor.render(results, [], color=False)
+        self.assertNotIn("|", output)
 
     def test_ctrl_r_requests_immediate_refresh(self):
         stream = mock.Mock()
