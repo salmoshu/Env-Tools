@@ -37,6 +37,22 @@ version_of() {
     command -v "$1" >/dev/null 2>&1 && "$1" --version 2>/dev/null | head -1
 }
 
+# 从 --version 输出中提取 x.y.z（各 CLI 输出格式不一，如 "codex-cli 0.25.0"）
+extract_semver() {
+    grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1
+}
+
+# npm registry 上该包的最新版本；查询失败（离线等）输出空，调用方按"需要安装"兜底
+latest_npm_version() {
+    npm view "$1" version --loglevel=error 2>/dev/null | tail -1
+}
+
+# 本地版本与官方最新一致时跳过安装。返回 0=已是最新，1=需要安装
+is_up_to_date() {
+    local local_ver="$1" latest="$2"
+    [ -n "$local_ver" ] && [ -n "$latest" ] && [ "$local_ver" = "$latest" ]
+}
+
 # --- 解析参数 -------------------------------------------------------------------
 targets=()
 for arg in "$@"; do
@@ -86,22 +102,33 @@ write_result() {
 }
 
 npm_worker() {
-    local names=("$@") pkgs=() name before after
+    local names=("$@") pkgs=() install_names=() name before after latest local_ver
     local -A before_map=()
     for name in "${names[@]}"; do
-        pkgs+=("$(pkg_of "$name")@latest")
         before_map[$name]="$(version_of "$name")"
+        local_ver="$(printf '%s' "${before_map[$name]}" | extract_semver)"
+        latest="$(latest_npm_version "$(pkg_of "$name")")"
+        if is_up_to_date "$local_ver" "$latest"; then
+            printf '%s 已是最新 (%s)，跳过安装\n' "$name" "$local_ver"
+            write_result "$name" OK "${before_map[$name]:-未安装}" "${before_map[$name]:-未安装}"
+        else
+            install_names+=("$name")
+            pkgs+=("$(pkg_of "$name")@latest")
+        fi
     done
+    if ((${#pkgs[@]} == 0)); then
+        return 0
+    fi
     printf 'npm install -g %s\n' "${pkgs[*]}"
     if npm install -g --loglevel=error --progress=false "${pkgs[@]}"; then
         hash -r 2>/dev/null || true
-        for name in "${names[@]}"; do
+        for name in "${install_names[@]}"; do
             after="$(version_of "$name")"
             printf '%s 完成: %s -> %s\n' "$name" "${before_map[$name]:-未安装}" "${after:-未知}"
             write_result "$name" OK "${before_map[$name]:-未安装}" "${after:-未知}"
         done
     else
-        for name in "${names[@]}"; do
+        for name in "${install_names[@]}"; do
             printf 'ERROR: %s 安装/更新失败\n' "$name" >&2
             write_result "$name" FAIL "${before_map[$name]:-未安装}"
         done
@@ -110,8 +137,16 @@ npm_worker() {
 }
 
 kimi_worker() {
-    local before after
+    local before after latest local_ver
     before="$(version_of kimi)"
+    # 官方脚本安装的二进制没有 npm 元数据，用 registry 最新版与 --version 输出对比
+    latest="$(latest_npm_version "$KIMI_NPM_PKG")"
+    local_ver="$(printf '%s' "$before" | extract_semver)"
+    if is_up_to_date "$local_ver" "$latest"; then
+        printf 'kimi 已是最新 (%s)，跳过安装\n' "$local_ver"
+        write_result kimi OK "${before:-未安装}" "${before:-未安装}"
+        return 0
+    fi
     if ! command -v curl >/dev/null 2>&1; then
         printf 'ERROR: 更新 kimi 需要 curl\n' >&2
         write_result kimi FAIL "${before:-未安装}"

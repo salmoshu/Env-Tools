@@ -45,6 +45,21 @@ function Get-ToolVersion($cmd) {
     }
 }
 
+# 从 --version 输出中提取 x.y.z（各 CLI 输出格式不一，如 "codex-cli 0.25.0"）
+function Get-Semver($text) {
+    if ($text -match '(\d+\.\d+\.\d+)') { return $Matches[1] }
+    return $null
+}
+
+# npm registry 上该包的最新版本；查询失败（离线等）返回空，按"需要安装"兜底
+function Get-LatestNpmVersion($package) {
+    try {
+        return ((& npm view $package version --loglevel=error 2>$null | Select-Object -Last 1) -replace '\s', '')
+    } catch {
+        return $null
+    }
+}
+
 $tools = [ordered]@{
     codex     = @{ Package = '@openai/codex';            Command = 'codex' }
     kimi      = @{ Package = '@moonshot-ai/kimi-code';   Command = 'kimi' }
@@ -80,6 +95,12 @@ foreach ($name in $targets) {
     $t = $tools[$name]
     $before = Get-ToolVersion $t.Command
     $beforeText = if ($before) { $before } else { '未安装' }
+    $localVer = Get-Semver $before
+    $latest = Get-LatestNpmVersion $t.Package
+    if ($localVer -and $latest -and ($localVer -eq $latest)) {
+        Log "$name 已是最新 ($localVer)，跳过安装"
+        continue
+    }
     Log "安装/更新 $name ($($t.Package))，当前版本: $beforeText"
     & npm install -g "$($t.Package)@latest" --loglevel=error
     if ($LASTEXITCODE -ne 0) {
