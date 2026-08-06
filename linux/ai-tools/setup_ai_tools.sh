@@ -44,7 +44,7 @@ extract_semver() {
 
 # npm registry 上该包的最新版本；查询失败（离线等）输出空，调用方按"需要安装"兜底
 latest_npm_version() {
-    npm view "$1" version --loglevel=error 2>/dev/null | tail -1
+    npm view "$1" version --loglevel=error --cache "$NPM_CACHE" 2>/dev/null | tail -1
 }
 
 # 本地版本与官方最新一致时跳过安装。返回 0=已是最新，1=需要安装
@@ -97,6 +97,10 @@ log "npm 就绪: $(version_of node) (node)"
 RESULT_DIR="$(mktemp -d)"
 trap 'rm -rf "$RESULT_DIR"' EXIT
 
+# 脚本的 npm 下载（view 元数据 + install 包）全部放进独立临时缓存，随脚本
+# 结束删除，不污染用户的全局 npm 缓存（~/.npm/_cacache）
+NPM_CACHE="$RESULT_DIR/npm-cache"
+
 write_result() {
     printf '%s\t%s\t%s\t%s\n' "$2" "$1" "${3:-?}" "${4:-?}" >"$RESULT_DIR/$1.result"
 }
@@ -120,7 +124,7 @@ npm_worker() {
         return 0
     fi
     printf 'npm install -g %s\n' "${pkgs[*]}"
-    if npm install -g --loglevel=error --progress=false "${pkgs[@]}"; then
+    if npm install -g --loglevel=error --progress=false --cache "$NPM_CACHE" "${pkgs[@]}"; then
         hash -r 2>/dev/null || true
         for name in "${install_names[@]}"; do
             after="$(version_of "$name")"

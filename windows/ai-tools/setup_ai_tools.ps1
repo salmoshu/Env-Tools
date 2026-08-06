@@ -52,9 +52,9 @@ function Get-Semver($text) {
 }
 
 # npm registry 上该包的最新版本；查询失败（离线等）返回空，按"需要安装"兜底
-function Get-LatestNpmVersion($package) {
+function Get-LatestNpmVersion($package, $cache) {
     try {
-        return ((& npm view $package version --loglevel=error 2>$null | Select-Object -Last 1) -replace '\s', '')
+        return ((& npm view $package version --loglevel=error --cache $cache 2>$null | Select-Object -Last 1) -replace '\s', '')
     } catch {
         return $null
     }
@@ -90,32 +90,39 @@ if (-not (Test-Npm)) {
 Log "npm 就绪: $(Get-ToolVersion 'node') (node)"
 
 # --- 安装/更新 ------------------------------------------------------------------
-$failed = @()
-foreach ($name in $targets) {
-    $t = $tools[$name]
-    $before = Get-ToolVersion $t.Command
-    $beforeText = if ($before) { $before } else { '未安装' }
-    $localVer = Get-Semver $before
-    $latest = Get-LatestNpmVersion $t.Package
-    if ($localVer -and $latest -and ($localVer -eq $latest)) {
-        Log "$name 已是最新 ($localVer)，跳过安装"
-        continue
+# 脚本的 npm 下载（view 元数据 + install 包）全部放进独立临时缓存，结束后删除，
+# 不污染用户的全局 npm 缓存（%LocalAppData%\npm-cache）
+$npmCache = Join-Path $env:TEMP ("ai-tools-npm-cache-" + [guid]::NewGuid().ToString('N'))
+try {
+    $failed = @()
+    foreach ($name in $targets) {
+        $t = $tools[$name]
+        $before = Get-ToolVersion $t.Command
+        $beforeText = if ($before) { $before } else { '未安装' }
+        $localVer = Get-Semver $before
+        $latest = Get-LatestNpmVersion $t.Package $npmCache
+        if ($localVer -and $latest -and ($localVer -eq $latest)) {
+            Log "$name 已是最新 ($localVer)，跳过安装"
+            continue
+        }
+        Log "安装/更新 $name ($($t.Package))，当前版本: $beforeText"
+        & npm install -g "$($t.Package)@latest" --loglevel=error --cache $npmCache
+        if ($LASTEXITCODE -ne 0) {
+            Log "ERROR: $name 安装失败 (npm exit=$LASTEXITCODE)"
+            $failed += $name
+            continue
+        }
+        Update-SessionPath
+        $after = Get-ToolVersion $t.Command
+        $afterText = if ($after) { $after } else { '未知' }
+        Log "$name 完成: $beforeText -> $afterText"
     }
-    Log "安装/更新 $name ($($t.Package))，当前版本: $beforeText"
-    & npm install -g "$($t.Package)@latest" --loglevel=error
-    if ($LASTEXITCODE -ne 0) {
-        Log "ERROR: $name 安装失败 (npm exit=$LASTEXITCODE)"
-        $failed += $name
-        continue
-    }
-    Update-SessionPath
-    $after = Get-ToolVersion $t.Command
-    $afterText = if ($after) { $after } else { '未知' }
-    Log "$name 完成: $beforeText -> $afterText"
-}
 
-if ($failed.Count -gt 0) {
-    Log "=== ai-tools setup done，失败: $($failed -join ', ') ==="
-    exit 1
+    if ($failed.Count -gt 0) {
+        Log "=== ai-tools setup done，失败: $($failed -join ', ') ==="
+        exit 1
+    }
+    Log '=== ai-tools setup done ==='
+} finally {
+    Remove-Item $npmCache -Recurse -Force -ErrorAction SilentlyContinue
 }
-Log '=== ai-tools setup done ==='
