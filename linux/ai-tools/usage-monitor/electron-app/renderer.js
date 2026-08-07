@@ -1,15 +1,21 @@
 const content = document.getElementById("content");
 const btnPin = document.getElementById("btn-pin");
+const btnRefresh = document.getElementById("btn-refresh");
 const filterBtn = document.getElementById("provider-filter");
 const filterMenu = document.getElementById("filter-menu");
 const filterLabel = filterBtn.querySelector(".filter-label");
 let lastPayload = null;
 let currentFilter = "__all__";
+const ERROR_DISMISS_MS = 8000;
 
 document.getElementById("btn-min").addEventListener("click", () => api.minimize());
 document.getElementById("btn-close").addEventListener("click", () => api.close());
 document.getElementById("btn-refresh").addEventListener("click", () => {
-  content.innerHTML = '<div class="status">刷新中…</div>';
+  // 已有内容时保留旧数据,不闪烁成"刷新中";仅首次无内容时显示占位
+  if (!content.querySelector(".provider")) {
+    content.innerHTML = '<div class="status">刷新中…</div>';
+  }
+  btnRefresh.classList.add("spin");
   api.refresh();
 });
 btnPin.addEventListener("click", async () => {
@@ -101,12 +107,17 @@ function esc(s) {
 function render(payload) {
   if (payload.error) {
     content.innerHTML = `<div class="error-card">${esc(payload.error)}</div>`;
+    scheduleErrorDismiss();
     return;
   }
   const { accounts: allAccounts = [], errors = [], versions = {} } = payload.data || {};
   const accounts = currentFilter === "__all__"
     ? allAccounts
     : allAccounts.filter((a) => a.provider === currentFilter);
+  // 报错也按当前筛选显示:选单个模型时隐藏其它模型的报错
+  const visibleErrors = currentFilter === "__all__"
+    ? errors
+    : errors.filter((e) => e.provider === currentFilter);
   let html = "";
 
   for (const account of accounts) {
@@ -137,11 +148,27 @@ function render(payload) {
     html += "</div>";
   }
 
-  for (const err of errors) {
+  for (const err of visibleErrors) {
     html += `<div class="error-card">${esc(err.provider)}: ${esc(err.error)}</div>`;
   }
 
   content.innerHTML = html || '<div class="status">暂无数据</div>';
+  scheduleErrorDismiss();
+}
+
+// 报错卡片出现后自动淡出消失,避免长期占据看板
+function scheduleErrorDismiss() {
+  const cards = content.querySelectorAll(".error-card");
+  cards.forEach((el, i) => {
+    setTimeout(() => {
+      el.classList.add("hide");
+      setTimeout(() => {
+        el.remove();
+        updateCompact();
+        fitWindow();
+      }, 400);
+    }, ERROR_DISMISS_MS + i * 400);
+  });
 }
 
 function fitWindow() {
@@ -162,6 +189,7 @@ window.addEventListener("resize", updateCompact);
 
 api.onUsageUpdate((payload) => {
   lastPayload = payload;
+  btnRefresh.classList.remove("spin");
   if (payload.data) buildFilterMenu(payload.data.accounts || []);
   render(payload);
   updateCompact();

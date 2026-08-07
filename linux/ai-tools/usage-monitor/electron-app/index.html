@@ -83,6 +83,8 @@
     .titlebar .btn.active { color: var(--accent); }
     .titlebar .btn.active:hover { background: rgba(110, 168, 254, 0.14); }
     .titlebar .btn.close:hover { background: #e11d48; color: #fff; }
+    #btn-refresh.spin { animation: spin 0.8s linear infinite; color: var(--accent); }
+    @keyframes spin { to { transform: rotate(360deg); } }
 
     /* provider 筛选下拉框(自定义菜单,规避无边框窗口原生 select 弹层问题) */
     .filter-wrap {
@@ -272,7 +274,9 @@
       padding: 8px 10px;
       margin-bottom: 10px;
       word-break: break-all;
+      transition: opacity 0.4s ease;
     }
+    .error-card.hide { opacity: 0; }
     .status {
       text-align: center;
       color: var(--faint);

@@ -10,6 +10,7 @@ import calendar
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -1097,11 +1098,16 @@ def keyboard_refresh_mode(stream):
             termios.tcsetattr(fd, termios.TCSADRAIN, original_settings)
 
 
+# 最近一次拉起的 Electron 主进程,用于退出时一并关闭
+launched_window_proc = None
+
+
 def launch_usage_window() -> None:
     """启动 Electron 悬浮用量看板窗口(detached,不阻塞终端监控)。
 
     窗口进程独立于终端运行;关闭窗口后可再次按 Ctrl+E 重新打开。
     """
+    global launched_window_proc
     app_dir = Path(__file__).resolve().parent / "electron-app"
     electron_bin = app_dir / "node_modules" / ".bin" / (
         "electron.cmd" if os.name == "nt" else "electron"
@@ -1126,10 +1132,31 @@ def launch_usage_window() -> None:
             )
         else:
             kwargs["start_new_session"] = True
-        subprocess.Popen([str(electron_bin), "."], **kwargs)
+        launched_window_proc = subprocess.Popen([str(electron_bin), "."], **kwargs)
     except OSError as exc:
         print(f"\n无法启动 usage window: {exc}", flush=True)
         time.sleep(3)
+
+
+def kill_usage_window() -> None:
+    """退出(含 Ctrl+C)时关闭已拉起的 Electron 窗口。
+
+    单实例锁保证同时只有一个主进程;该进程以 start_new_session 启动,其 pid 即进程组
+    leader,直接终止整个进程组即可连带关闭其 gpu/zygote 等子进程。
+    """
+    global launched_window_proc
+    pids = set()
+    if launched_window_proc is not None and launched_window_proc.poll() is None:
+        pids.add(launched_window_proc.pid)
+    launched_window_proc = None
+    for pid in pids:
+        try:
+            if os.name == "nt":
+                os.kill(pid, signal.SIGTERM)
+            else:
+                os.killpg(os.getpgid(pid), signal.SIGTERM)
+        except OSError:
+            pass
 
 
 def wait_for_next_refresh(
@@ -1224,6 +1251,8 @@ def main() -> int:
     keyboard_context = keyboard_refresh_mode(sys.stdin) if args.watch else nullcontext(False)
     try:
         with keyboard_context as keyboard_enabled:
+            if args.watch:
+                launch_usage_window()  # 运行 usage 即自动打开悬浮窗口
             while True:
                 results, errors = collect(args)
                 versions = collect_versions({result["provider"] for result in results})
@@ -1263,6 +1292,9 @@ def main() -> int:
     except KeyboardInterrupt:
         print("\nExited usage monitor.")
         return 0
+    finally:
+        if args.watch:
+            kill_usage_window()
 
 
 if __name__ == "__main__":
