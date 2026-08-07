@@ -1074,7 +1074,7 @@ def collect(args: argparse.Namespace) -> tuple[list[dict[str, Any]], list[dict[s
 
 @contextmanager
 def keyboard_refresh_mode(stream):
-    """Temporarily make Ctrl+R available without requiring Enter."""
+    """Temporarily make Ctrl+R / Ctrl+E available without requiring Enter."""
     enabled = False
     fd = None
     original_settings = None
@@ -1097,12 +1097,50 @@ def keyboard_refresh_mode(stream):
             termios.tcsetattr(fd, termios.TCSADRAIN, original_settings)
 
 
+def launch_usage_window() -> None:
+    """启动 Electron 悬浮用量看板窗口(detached,不阻塞终端监控)。
+
+    窗口进程独立于终端运行;关闭窗口后可再次按 Ctrl+E 重新打开。
+    """
+    app_dir = Path(__file__).resolve().parent / "electron-app"
+    electron_bin = app_dir / "node_modules" / ".bin" / (
+        "electron.cmd" if os.name == "nt" else "electron"
+    )
+    if not electron_bin.exists():
+        print(
+            f"\nUsage window 依赖未安装,请先运行: cd {app_dir} && npm install",
+            flush=True,
+        )
+        time.sleep(3)
+        return
+    try:
+        kwargs: dict[str, Any] = {
+            "cwd": app_dir,
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+        }
+        if os.name == "nt":
+            kwargs["creationflags"] = (
+                subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+            )
+        else:
+            kwargs["start_new_session"] = True
+        subprocess.Popen([str(electron_bin), "."], **kwargs)
+    except OSError as exc:
+        print(f"\n无法启动 usage window: {exc}", flush=True)
+        time.sleep(3)
+
+
 def wait_for_next_refresh(
     interval: int,
     keyboard_enabled: bool,
     stream=None,
 ) -> bool:
-    """Wait for the interval or Ctrl+R; return True for a manual refresh."""
+    """Wait for the interval or Ctrl+R; return True for a manual refresh.
+
+    Ctrl+E 在等待期间随时拉起/唤出 Electron 悬浮看板窗口,不中断等待。
+    """
     if not keyboard_enabled:
         time.sleep(interval)
         return False
@@ -1115,16 +1153,23 @@ def wait_for_next_refresh(
             remaining = max(0.0, deadline - time.monotonic())
             if remaining <= 0:
                 return False
-            if msvcrt.kbhit() and msvcrt.getwch() == "\x12":
-                return True
+            if msvcrt.kbhit():
+                ch = msvcrt.getwch()
+                if ch == "\x12":  # Ctrl+R
+                    return True
+                if ch == "\x05":  # Ctrl+E
+                    launch_usage_window()
             time.sleep(min(0.05, remaining))
     while True:
         remaining = max(0.0, deadline - time.monotonic())
         readable, _, _ = select.select([stream], [], [], remaining)
         if not readable:
             return False
-        if stream.read(1) == "\x12":
+        ch = stream.read(1)
+        if ch == "\x12":  # Ctrl+R
             return True
+        if ch == "\x05":  # Ctrl+E
+            launch_usage_window()
 
 
 def enable_windows_ansi() -> None:
@@ -1181,17 +1226,17 @@ def main() -> int:
         with keyboard_context as keyboard_enabled:
             while True:
                 results, errors = collect(args)
+                versions = collect_versions({result["provider"] for result in results})
                 if args.json:
-                    print(json.dumps({"accounts": results, "errors": errors}, ensure_ascii=False, indent=2))
+                    print(json.dumps({"accounts": results, "errors": errors, "versions": versions}, ensure_ascii=False, indent=2))
                 else:
                     color = sys.stdout.isatty() and not args.no_color
-                    versions = collect_versions({result["provider"] for result in results})
                     if args.watch and sys.stdout.isatty():
                         print("\033[2J\033[H", end="")
                     print(render(results, errors, color, versions))
                     if args.watch:
                         shortcuts = (
-                            "Ctrl+R to refresh, Ctrl+C to exit"
+                            "Ctrl+R to refresh, Ctrl+E for window, Ctrl+C to exit"
                             if keyboard_enabled
                             else "Ctrl+C to exit"
                         )

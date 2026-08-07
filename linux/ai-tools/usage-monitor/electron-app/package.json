@@ -1,0 +1,16 @@
+{
+  "name": "ai-usage-monitor-window",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Floating Electron window for the AI usage monitor dashboard",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^37.2.0"
+  },
+  "allowScripts": {
+    "electron@37.10.3": true
+  }
+}
