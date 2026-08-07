@@ -9,6 +9,7 @@ from contextlib import contextmanager, nullcontext
 import calendar
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -41,6 +42,18 @@ CODEBUDDY_DOSAGE_NOTIFY_PATH = "/v2/billing/meter/get-dosage-notify"
 CODEBUDDY_RESOURCE_PATH = "/billing/meter/get-user-resource"
 CODEBUDDY_REFRESH_PATH = "/v2/auth/token/refresh"
 TOKEN_REFRESH_THRESHOLD = 300
+
+# 看板标题右侧的 CLI 版本标注：当前版本来自本机 `cmd --version`，最新版本按
+# VERSION_CHECK_INTERVAL 周期探测并缓存；有更新时追加黄色的 "→ 新版本号"
+KIMI_LATEST_VERSION_URL = "https://code.kimi.com/kimi-code/latest"
+NPM_LATEST_VERSION_URL = "https://registry.npmjs.org/{package}/latest"
+VERSION_CHECK_INTERVAL = 3600
+VERSION_CACHE_PATH = Path.home() / ".cache" / "ai-usage-monitor" / "versions.json"
+VERSION_TOOLS = {
+    "Kimi Code": {"command": "kimi", "source": "kimi"},
+    "OpenAI Codex": {"command": "codex", "source": "npm", "package": "@openai/codex"},
+    "CodeBuddy": {"command": "codebuddy", "source": "npm", "package": "@tencent-ai/codebuddy-code"},
+}
 
 GREEN = "\033[32m"
 YELLOW = "\033[33m"
@@ -866,10 +879,121 @@ def display_timestamp(value: Any) -> str:
     return parsed.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def render(results: list[dict[str, Any]], errors: list[dict[str, str]], color: bool) -> str:
+def _semver_match(text: Any) -> str | None:
+    match = re.search(r"\d+\.\d+\.\d+", str(text or ""))
+    return match.group(0) if match else None
+
+
+def _semver_key(text: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in text.split("."))
+
+
+def detect_cli_version(command: str) -> str | None:
+    """本机已安装 CLI 的版本（取 --version 输出中的首个 x.y.z）；未安装返回 None。"""
+    try:
+        completed = subprocess.run(
+            f"{command} --version",
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return _semver_match(completed.stdout) or _semver_match(completed.stderr)
+
+
+def _request_text(url: str, use_proxy: bool = True, timeout: int = 10) -> str | None:
+    try:
+        request = urllib.request.Request(url)
+        if use_proxy:
+            response_context = urllib.request.urlopen(request, timeout=timeout)
+        else:
+            # 与额度接口同一约定：部分本地代理对 kimi 域名会 TLS EOF，默认直连
+            direct_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            response_context = direct_opener.open(request, timeout=timeout)
+        with response_context as response:
+            return response.read().decode("utf-8").strip()
+    except (OSError, ValueError):
+        return None
+
+
+def fetch_latest_version(tool: dict[str, str]) -> str | None:
+    if tool["source"] == "kimi":
+        return _semver_match(_request_text(KIMI_LATEST_VERSION_URL, use_proxy=env_enabled("KIMI_USE_PROXY")))
+    text = _request_text(NPM_LATEST_VERSION_URL.format(package=tool["package"]))
+    if not text:
+        return None
+    try:
+        return _semver_match(json.loads(text).get("version"))
+    except ValueError:
+        return None
+
+
+def _load_version_cache() -> dict[str, Any]:
+    try:
+        return json.loads(VERSION_CACHE_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_version_cache(cache: dict[str, Any]) -> None:
+    try:
+        VERSION_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        VERSION_CACHE_PATH.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def collect_versions(providers: set[str]) -> dict[str, dict[str, str | None]]:
+    """各 CLI 的当前/最新版本；当前版本每次实时检测，仅最新版本按小时缓存。"""
+    cache = _load_version_cache()
+    now = time.time()
+    versions: dict[str, dict[str, str | None]] = {}
+    dirty = False
+    for provider in providers:
+        tool = VERSION_TOOLS.get(provider)
+        if not tool:
+            continue
+        entry = cache.get(provider) or {}
+        # 本地 `cmd --version` 开销极小，每次实时检测，升级 CLI 后标注立即刷新
+        current = detect_cli_version(tool["command"]) or entry.get("current")
+        if now - float(entry.get("checked_at") or 0) < VERSION_CHECK_INTERVAL:
+            latest = entry.get("latest")
+            checked_at = entry.get("checked_at")
+        else:
+            # 远程探测失败（离线等）时沿用旧值，仅刷新探测时间戳做小时级退避
+            latest = fetch_latest_version(tool) or entry.get("latest")
+            checked_at = now
+        if current != entry.get("current") or checked_at != entry.get("checked_at"):
+            dirty = True
+        cache[provider] = {"current": current, "latest": latest, "checked_at": checked_at}
+        versions[provider] = {"current": current, "latest": latest}
+    if dirty:
+        _save_version_cache(cache)
+    return versions
+
+
+def version_badge(provider: str, versions: dict[str, Any] | None, color: bool) -> str:
+    """标题右侧的版本标注，如 `Kimi Code (0.30.0 → 0.33.0)`；有更新时新版本号黄色。"""
+    info = (versions or {}).get(provider) or {}
+    current = info.get("current")
+    if not current:
+        return ""
+    latest = info.get("latest")
+    outdated = bool(latest) and _semver_key(latest) > _semver_key(current)
+    if not outdated:
+        return f" ({current})"
+    if color:
+        # 外层标题整体是 CYAN，新版本号标黄后需切回 CYAN
+        return f" ({current} {YELLOW}→ {latest}{CYAN})"
+    return f" ({current} → {latest})"
+
+
+def render(results: list[dict[str, Any]], errors: list[dict[str, str]], color: bool, versions: dict[str, Any] | None = None) -> str:
     lines = ["AI Usage Monitor", "═" * 62]
     for result in results:
-        heading = f"{result['provider']}  ·  {result['plan']}"
+        heading = f"{result['provider']}{version_badge(result['provider'], versions, color)}  ·  {result['plan']}"
         lines.append(f"{CYAN}{heading}{RESET}" if color else heading)
         windows = result.get("windows") or []
         extra_lines = result.get("extra_lines") or []
@@ -1017,6 +1141,13 @@ def enable_windows_ansi() -> None:
             kernel32.SetConsoleMode(handle, mode.value | 0x0004)  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
     except Exception:
         pass
+    # 中文 Windows 控制台默认 GBK 编码，无法输出 ░/█/═ 等字符；
+    # 无法编码的字符降级为 "?"，而不是 UnicodeEncodeError 直接崩溃
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except Exception:
+            pass
 
 
 def main() -> int:
@@ -1054,9 +1185,10 @@ def main() -> int:
                     print(json.dumps({"accounts": results, "errors": errors}, ensure_ascii=False, indent=2))
                 else:
                     color = sys.stdout.isatty() and not args.no_color
+                    versions = collect_versions({result["provider"] for result in results})
                     if args.watch and sys.stdout.isatty():
                         print("\033[2J\033[H", end="")
-                    print(render(results, errors, color))
+                    print(render(results, errors, color, versions))
                     if args.watch:
                         shortcuts = (
                             "Ctrl+R to refresh, Ctrl+C to exit"
@@ -1075,7 +1207,7 @@ def main() -> int:
                             # 避免在下一次定时刷新前长期占据监控界面。
                             time.sleep(2)
                             print("\033[2J\033[H", end="")
-                            print(render(results, persistent_watch_errors(errors), color))
+                            print(render(results, persistent_watch_errors(errors), color, versions))
                             print(
                                 f"\n{DIM if color else ''}Refreshing every {args.interval}s, "
                                 f"{shortcuts}{RESET if color else ''}"

@@ -37,7 +37,8 @@ TLS EOF；Codex 请求仍遵循系统代理设置。如果所在网络必须通�
 ## 使用
 
 Linux 用 `./tools.sh`，Windows 用 `powershell -File tools.ps1`（参数完全一致，
-monitor 本身跨平台）：
+monitor 本身跨平台）。中文 Windows 的 GBK 控制台无法编码 `░`/`█`/`═` 等字符，
+这些字符会降级显示为 `?`（不会崩溃）。用法：
 
 ```bash
 # 显示一次
@@ -69,6 +70,13 @@ monitor 本身跨平台）：
 Kimi/Codex 的 5h、7d 窗口直接带窗口总长；Kimi 月总量与 CodeBuddy 订阅额度
 按月周期重置，窗口起点按重置时间往前推一个自然月估算（28~31 天自适应）。
 CodeBuddy 赠送包等一次性额度周期未知，不显示标记。
+
+各 agent 标题右侧会显示本机已安装的 CLI 版本，如 `Kimi Code (0.33.0)`；
+探测到更新版本时追加黄色的目标版本号 `Kimi Code (0.30.0 → 0.33.0)`，提示应升级 CLI。
+当前版本取自本机 `<cli> --version`，每次启动实时检测；最新版本 Kimi 查
+`code.kimi.com/kimi-code/latest`，Codex/CodeBuddy 查 npm registry。仅最新版本的
+远程探测结果缓存于 `~/.cache/ai-usage-monitor/versions.json`，每小时
+（`VERSION_CHECK_INTERVAL`）最多探测一次；探测失败沿用旧值并做小时级退避。
 
 Codex 的登录令牌由 Codex CLI 管理；如果终端提示登录失效，请执行
 `codex login`。可以用 `CODEX_USAGE_URL` 覆盖额度接口地址，以适配后续官方

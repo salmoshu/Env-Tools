@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import json
 import os
+import tempfile
+import time
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import usage_monitor
@@ -308,6 +312,62 @@ class NormalizeTests(unittest.TestCase):
             usage_monitor.persistent_watch_errors(errors),
             [{"provider": "CodeBuddy", "error": "HTTP 500"}],
         )
+
+    def test_version_badge_marks_outdated_cli(self):
+        versions = {"Kimi Code": {"current": "0.30.0", "latest": "0.33.0"}}
+
+        badge = usage_monitor.version_badge("Kimi Code", versions, color=False)
+        self.assertEqual(badge, " (0.30.0 → 0.33.0)")
+
+    def test_version_badge_quiet_when_up_to_date_or_unknown(self):
+        up_to_date = {"Kimi Code": {"current": "0.33.0", "latest": "0.33.0"}}
+        unknown = {"Kimi Code": {"current": "0.33.0", "latest": None}}
+
+        self.assertEqual(usage_monitor.version_badge("Kimi Code", up_to_date, color=False), " (0.33.0)")
+        self.assertEqual(usage_monitor.version_badge("Kimi Code", unknown, color=False), " (0.33.0)")
+        self.assertEqual(usage_monitor.version_badge("Kimi Code", {}, color=False), "")
+        self.assertEqual(usage_monitor.version_badge("Kimi Code", None, color=False), "")
+
+    def test_collect_versions_redetects_current_within_cache_window(self):
+        # 缓存仍在一小时有效期内，但本机 CLI 刚升级过：current 应实时刷新，
+        # 且不触发远程最新版本探测
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_path = Path(tmp) / "versions.json"
+            cache_path.write_text(
+                json.dumps(
+                    {"Kimi Code": {"current": "0.33.0", "latest": "0.34.0", "checked_at": time.time()}}
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch.object(usage_monitor, "VERSION_CACHE_PATH", cache_path), \
+                mock.patch.object(usage_monitor, "detect_cli_version", return_value="0.34.0"), \
+                mock.patch.object(usage_monitor, "fetch_latest_version") as fetch:
+                versions = usage_monitor.collect_versions({"Kimi Code"})
+
+            fetch.assert_not_called()
+            self.assertEqual(versions["Kimi Code"], {"current": "0.34.0", "latest": "0.34.0"})
+            # 缓存里的 current 也同步刷新，供检测失败时回退
+            saved = json.loads(cache_path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["Kimi Code"]["current"], "0.34.0")
+
+    def test_render_appends_version_badge_to_provider_heading(self):
+        results = [
+            {
+                "provider": "Kimi Code",
+                "plan": "test",
+                "windows": [],
+                "fetched_at": "2026-08-06T21:50:52+08:00",
+            }
+        ]
+        versions = {"Kimi Code": {"current": "0.30.0", "latest": "0.33.0"}}
+
+        output = usage_monitor.render(results, [], color=False, versions=versions)
+        heading = next(line for line in output.splitlines() if line.startswith("Kimi Code"))
+        self.assertTrue(heading.startswith("Kimi Code (0.30.0 → 0.33.0)  ·  "))
+
+        # 未传 versions 时标题保持原样（向后兼容）
+        output = usage_monitor.render(results, [], color=False)
+        self.assertIn("Kimi Code  ·  ", output)
 
 
 if __name__ == "__main__":

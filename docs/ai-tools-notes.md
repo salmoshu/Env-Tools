@@ -39,6 +39,21 @@
 - 升级：脚本安装的二进制（`~/.kimi-code/bin/kimi`）重跑官方安装脚本
   `curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash`；npm 安装则
   `npm install -g @moonshot-ai/kimi-code@latest`。交互式 `kimi upgrade` 不适合脚本。
+- Windows（2026-08 实测）：官方安装器是 PowerShell 版
+  `irm https://code.kimi.com/kimi-code/install.ps1 | iex`，原生二进制装到
+  `%USERPROFILE%\.kimi-code\bin\kimi.exe`（旧版备份为 `kimi.exe.bak`），并把该目录
+  **prepend** 到用户 PATH。`windows/ai-tools/setup_ai_tools.ps1` 据此让 kimi 走官方
+  安装器、codex/codebuddy 走 npm；装完自动卸载 npm 残留的 `@moonshot-ai/kimi-code`
+  （残留判定直接看 `prefix\node_modules\@moonshot-ai\kimi-code` 目录），并对每个工具做
+  PATH 遮蔽校验（`Get-Command` 解析路径 vs 预期目录，不一致打 WARN）。
+  codex/codebuddy 的"当前版本"直接调 npm prefix 下的 shim（`<cmd>.cmd --version`）判定，
+  shim 不存在即视为未安装：既免疫 PATH 遮蔽（IDE 自带 node 工作区抢解析时会误判），
+  又避开 `npm ls -g` 的 node 冷启动开销（Windows 上串行多次 npm 调用是卡顿主因）。
+  与 linux 版行为对齐：多个 npm 工具合并为一次 `npm install -g`，npm 工具与 kimi
+  原生安装分两个 Job 并行，输出带 `[npm]`/`[kimi]` 前缀实时合流进日志。
+  三个坑：① PS 5.1 需手动开 TLS 1.2 才能连 code.kimi.com；② 系统代理（Clash/v2ray）
+  对它 TLS EOF，脚本内需 `[System.Net.WebRequest]::DefaultWebProxy = $null` 直连；
+  ③ 含中文注释的 ps1 必须存成 **UTF-8 with BOM**，否则 PS 5.1 按 GBK 解析会误吞引号/括号。
 
 ### Kimi 月度总量（网页接口，逆向自官网订阅页，2026-07 已实测）
 
