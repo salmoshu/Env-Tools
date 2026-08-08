@@ -153,6 +153,63 @@ class NormalizeTests(unittest.TestCase):
         self.assertEqual(result["windows"], [])
         self.assertTrue(any("Quota API unavailable" in line for line in result["extra_lines"]))
 
+    def test_deepseek(self):
+        result = usage_monitor.normalize_deepseek(
+            {
+                "is_available": True,
+                "balance_infos": [
+                    {
+                        "currency": "CNY",
+                        "total_balance": "110.00",
+                        "granted_balance": "10.00",
+                        "topped_up_balance": "100.00",
+                    }
+                ],
+            }
+        )
+        self.assertEqual(result["provider"], "DeepSeek")
+        self.assertEqual(result["plan"], "API")
+        self.assertEqual(len(result["windows"]), 1)
+        window = result["windows"][0]
+        self.assertEqual(window["label"], "Monthly Balance")
+        # 余额 110 超过 50 上限 → 截断为 50 → 100%
+        self.assertAlmostEqual(window["used_percent"], 100.0)
+        self.assertIn("Balance: ¥110.00 / ¥50.00  (capped ¥50.00)", result["extra_lines"])
+        self.assertIn("Granted: ¥10.00   Topped-up: ¥100.00", result["extra_lines"])
+
+    def test_deepseek_below_limit(self):
+        result = usage_monitor.normalize_deepseek(
+            {
+                "is_available": True,
+                "balance_infos": [
+                    {
+                        "currency": "CNY",
+                        "total_balance": "20.00",
+                        "granted_balance": "5.00",
+                        "topped_up_balance": "15.00",
+                    }
+                ],
+            }
+        )
+        window = result["windows"][0]
+        # 余额 20 / 上限 50 = 40%
+        self.assertAlmostEqual(window["used_percent"], 40.0)
+        self.assertIn("Balance: ¥20.00 / ¥50.00", result["extra_lines"])
+        self.assertIn("Granted: ¥5.00   Topped-up: ¥15.00", result["extra_lines"])
+        # 未超过上限时不应出现 capped 标注
+        self.assertNotIn("capped", result["extra_lines"][0])
+
+    def test_deepseek_unavailable(self):
+        result = usage_monitor.normalize_deepseek(
+            {
+                "is_available": False,
+                "balance_infos": [
+                    {"currency": "CNY", "total_balance": "0.00", "granted_balance": "0.00", "topped_up_balance": "0.00"}
+                ],
+            }
+        )
+        self.assertTrue(any("Account unavailable" in line for line in result["extra_lines"]))
+
     def test_render_aligns_progress_bars_by_terminal_width(self):
         results = [
             {

@@ -44,6 +44,12 @@ CODEBUDDY_RESOURCE_PATH = "/billing/meter/get-user-resource"
 CODEBUDDY_REFRESH_PATH = "/v2/auth/token/refresh"
 TOKEN_REFRESH_THRESHOLD = 300
 
+# DeepSeek 余额查询：用 API Key（platform.deepseek.com 的 API keys 页面生成），
+# 与 /usage 网页看到的余额是同一套账户数据。
+DEEPSEEK_BALANCE_URL = "https://api.deepseek.com/user/balance"
+# 假定每月额度上限为 50 元；余额超过时按 50 元截断后再算百分比。
+DEEPSEEK_MONTHLY_LIMIT = 50.0
+
 # 看板标题右侧的 CLI 版本标注：当前版本来自本机 `cmd --version`，最新版本按
 # VERSION_CHECK_INTERVAL 周期探测并缓存；有更新时追加黄色的 "→ 新版本号"
 KIMI_LATEST_VERSION_URL = "https://code.kimi.com/kimi-code/latest"
@@ -514,6 +520,85 @@ def fetch_codebuddy(path: Path) -> dict[str, Any]:
         "domain": auth.get("domain") or "www.codebuddy.ai",
         "resource": resource,
         "resource_error": resource_error,
+    }
+
+
+def deepseek_credentials_path(explicit: str | None = None) -> Path:
+    if explicit:
+        return Path(explicit).expanduser()
+    env = os.environ.get("DEEPSEEK_CREDENTIALS_PATH")
+    if env:
+        return Path(env).expanduser()
+    return Path.home() / ".deepseek" / "credentials.json"
+
+
+def deepseek_api_key(explicit: str | None = None, credentials_path: str | None = None) -> str:
+    if explicit:
+        return explicit
+    key = os.environ.get("DEEPSEEK_API_KEY")
+    if key:
+        return key
+    path = Path(credentials_path).expanduser() if credentials_path else deepseek_credentials_path()
+    if path.is_file():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise MonitorError(f"无法读取 DeepSeek 凭证文件 {path}: {exc}")
+        key = data.get("api_key") or data.get("DEEPSEEK_API_KEY")
+        if not key:
+            raise MonitorError(f"DeepSeek 凭证文件 {path} 缺少 api_key 字段")
+        return key
+    raise MonitorError(
+        "DEEPSEEK_API_KEY not set; export it, 写入 ~/.deepseek/credentials.json, 或传 --deepseek-key"
+    )
+
+
+def fetch_deepseek(key: str | None = None, credentials_path: str | None = None) -> dict[str, Any]:
+    api_key = deepseek_api_key(key, credentials_path)
+    return request_json(
+        os.environ.get("DEEPSEEK_BALANCE_URL", DEEPSEEK_BALANCE_URL),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/json",
+        },
+        use_proxy=env_enabled("DEEPSEEK_USE_PROXY", default=True),
+        timeout=int(os.environ.get("DEEPSEEK_TIMEOUT", "30")),
+    )
+
+
+def normalize_deepseek(data: dict[str, Any]) -> dict[str, Any]:
+    infos = data.get("balance_infos") or []
+    balance = next(
+        (b for b in infos if str(b.get("currency") or "").upper() == "CNY"),
+        None,
+    )
+    if balance is None:
+        balance = infos[0] if infos else {}
+    total = _num(balance.get("total_balance"))
+    granted = _num(balance.get("granted_balance"))
+    topped_up = _num(balance.get("topped_up_balance"))
+    capped = min(total, DEEPSEEK_MONTHLY_LIMIT)
+    fill_percent = percent(used=capped * 100 / DEEPSEEK_MONTHLY_LIMIT)
+    extra_lines = [
+        f"Balance: ¥{total:.2f} / ¥{DEEPSEEK_MONTHLY_LIMIT:.2f}"
+        + (f"  (capped ¥{capped:.2f})" if total > DEEPSEEK_MONTHLY_LIMIT else ""),
+        f"Granted: ¥{granted:.2f}   Topped-up: ¥{topped_up:.2f}",
+    ]
+    if not data.get("is_available", True):
+        extra_lines.append("Account unavailable")
+    return {
+        "provider": "DeepSeek",
+        "plan": "API",
+        "windows": [
+            {
+                "label": "Monthly Balance",
+                "used_percent": fill_percent,
+                "reset_after_seconds": None,
+                "window_seconds": None,
+            }
+        ],
+        "extra_lines": extra_lines,
+        "fetched_at": datetime.now().astimezone().isoformat(timespec="seconds"),
     }
 
 
@@ -1070,6 +1155,15 @@ def collect(args: argparse.Namespace) -> tuple[list[dict[str, Any]], list[dict[s
             )
         except Exception as exc:
             errors.append({"provider": "CodeBuddy", "error": str(exc)})
+    if args.provider in ("all", "deepseek"):
+        try:
+            results.append(
+                normalize_deepseek(
+                    fetch_deepseek(args.deepseek_key, args.deepseek_credentials)
+                )
+            )
+        except Exception as exc:
+            errors.append({"provider": "DeepSeek", "error": str(exc)})
     return results, errors
 
 
@@ -1226,7 +1320,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Standalone Kimi Code / Codex usage monitor for the terminal")
     parser.add_argument("--watch", "-w", action="store_true", help="Keep refreshing")
     parser.add_argument("--interval", "-i", type=int, default=180, help="Refresh interval in seconds (default: 180)")
-    parser.add_argument("--provider", choices=("all", "kimi", "codex", "codebuddy"), default="all")
+    parser.add_argument("--provider", choices=("all", "kimi", "codex", "codebuddy", "deepseek"), default="all")
     parser.add_argument("--kimi-credentials", help="Path to Kimi credentials file")
     parser.add_argument(
         "--kimi-web-credentials",
@@ -1234,6 +1328,8 @@ def main() -> int:
     )
     parser.add_argument("--codex-credentials", help="Path to Codex auth.json")
     parser.add_argument("--codebuddy-credentials", help="Path to CodeBuddy credentials file")
+    parser.add_argument("--deepseek-key", help="DeepSeek API key (or set DEEPSEEK_API_KEY)")
+    parser.add_argument("--deepseek-credentials", help="Path to DeepSeek credentials JSON file")
     parser.add_argument("--json", action="store_true", help="Output JSON")
     parser.add_argument("--no-color", action="store_true", help="Disable ANSI colors")
     parser.add_argument(

@@ -50,7 +50,32 @@ function Update-SessionPath {
 
 function Test-Npm {
     Update-SessionPath
-    return [bool](Get-Command npm -ErrorAction SilentlyContinue)
+    return [bool](Get-Command node -ErrorAction SilentlyContinue)
+}
+
+# 解析真实的 npm 可执行文件：优先取与 node.exe 同目录的 npm（绕过 PATH 中可能被其他
+# 工具遮蔽/篡改的 npm 别名、函数或 .cmd shim——这类遮蔽会让 `npm prefix -g` 返回
+# "Unknown command"、让 `npm install` 报 "Unknown command: pm"）。找不到时回退到 Get-Command。
+function Get-NpmExe {
+    $nodeCmd = Get-Command node -ErrorAction SilentlyContinue
+    if ($nodeCmd -and $nodeCmd.Source) {
+        $nodeDir = Split-Path $nodeCmd.Source
+        foreach ($cand in @('npm.cmd', 'npm.ps1', 'npm')) {
+            $p = Join-Path $nodeDir $cand
+            if (Test-Path $p) { return $p }
+        }
+    }
+    $npmCmd = Get-Command npm -ErrorAction SilentlyContinue
+    if ($npmCmd -and $npmCmd.Source) { return $npmCmd.Source }
+    return $null
+}
+
+# prefix 是否像一个合法路径（避免出现 "Unknown command" 之类的噪声字符串被当成路径）
+function Test-ValidPrefix($prefix) {
+    if (-not $prefix) { return $false }
+    $p = $prefix.Trim()
+    if ($p -match 'unknown command') { return $false }
+    return (Test-Path -IsValid $p)
 }
 
 function Get-ToolVersion($cmd) {
@@ -77,12 +102,12 @@ function Test-CommandShadow($cmd, $expectedDir) {
 
 # 卸载 npm 全局残留的 kimi 副本（kimi 以官方原生安装为唯一有效来源）。
 # 残留判定直接看 prefix\node_modules 下的包目录，不调 npm ls（npm CLI 每次调用都是一次 node 冷启动）
-function Remove-NpmKimi($cache, $prefix) {
-    if (-not $prefix) { return }
+function Remove-NpmKimi($npmExe, $cache, $prefix) {
+    if (-not (Test-ValidPrefix $prefix)) { return }
     $pkg = '@moonshot-ai/kimi-code'
     if (-not (Test-Path (Join-Path $prefix 'node_modules\@moonshot-ai\kimi-code'))) { return }
     Log "检测到 npm 全局残留的 $pkg，卸载以避免与官方原生安装并存 ..."
-    & npm uninstall -g $pkg --loglevel=error --cache $cache
+    & $npmExe uninstall -g $pkg --loglevel=error --cache $cache
     if ($LASTEXITCODE -ne 0) {
         Log "WARN: npm 版 kimi 卸载失败 (exit=$LASTEXITCODE)，可手动执行: npm uninstall -g $pkg"
     } else {
@@ -96,7 +121,7 @@ $kimiBin = Join-Path $kimiInstallDir 'bin\kimi.exe'
 
 # --- npm 工具线程：版本查询 + 合并安装（Job 内无法访问主线程函数， helpers 内置）------
 $npmWorker = {
-    param([string[]]$names, [string]$npmCache, [string]$npmPrefix)
+    param([string[]]$names, [string]$npmCache, [string]$npmPrefix, [string]$npmExe)
     $ErrorActionPreference = 'Continue'
     $pkgOf = @{ codex = '@openai/codex'; codebuddy = '@tencent-ai/codebuddy-code' }
 
@@ -125,7 +150,7 @@ $npmWorker = {
         $beforeMap[$name] = if ($before) { $before } else { '未安装' }
         $localVer = Get-Semver $before
         "查询 $name 最新版本 ($pkg) ..."
-        $latest = ((& npm view $pkg version --loglevel=error --cache $npmCache 2>$null | Select-Object -Last 1) -replace '\s', '')
+        $latest = ((& $npmExe view $pkg version --loglevel=error --cache $npmCache 2>$null | Select-Object -Last 1) -replace '\s', '')
         if ($localVer -and $latest -and ($localVer -eq $latest)) {
             "$name 已是最新 ($localVer)，跳过安装"
             "RESULT|$name|OK"
@@ -138,7 +163,7 @@ $npmWorker = {
 
     # npm 全局目录不能安全地由多个 npm 进程同时写入，多个包合并为一次 install
     "安装/更新 $($installNames -join '、'): npm install -g $($install -join ' ')"
-    & npm install -g --loglevel=error --cache $npmCache $install
+    & $npmExe install -g --loglevel=error --cache $npmCache $install
     if ($LASTEXITCODE -ne 0) {
         foreach ($name in $installNames) {
             "ERROR: $name 安装失败 (npm exit=$LASTEXITCODE)"
@@ -260,12 +285,24 @@ if (-not (Test-Npm)) {
 }
 Log "npm 就绪: $(Get-ToolVersion 'node') (node)"
 
+# 解析真实 npm（绕过 PATH 中可能被遮蔽/篡改的 npm 别名或 shim）
+$npmExe = Get-NpmExe
+if (-not $npmExe) {
+    Log 'ERROR: 找不到可用的 npm（node 已就绪但 npm 不在预期位置）'
+    exit 1
+}
+Log "npm 路径: $npmExe ($(& $npmExe --version 2>$null | Select-Object -First 1))"
+
 # --- 并行安装/更新 ------------------------------------------------------------------
 # 脚本的 npm 下载（view 元数据 + install 包）全部放进独立临时缓存，结束后删除，
 # 不污染用户的全局 npm 缓存（%LocalAppData%\npm-cache）
 $npmCache = Join-Path $env:TEMP ("ai-tools-npm-cache-" + [guid]::NewGuid().ToString('N'))
-$npmPrefix = (& npm prefix -g 2>$null | Select-Object -First 1)
+$npmPrefix = (& $npmExe prefix -g 2>$null | Select-Object -First 1)
 if ($npmPrefix) { $npmPrefix = $npmPrefix.Trim() }
+if (-not (Test-ValidPrefix $npmPrefix)) {
+    Log "ERROR: 无法获取有效的 npm prefix（npm prefix -g 返回: '$npmPrefix'）。请确认 npm 本身可正常运行：`npx prefix -g`"
+    exit 1
+}
 
 $npmNames = @($targets | Where-Object { $tools[$_].Method -eq 'npm' })
 $kimiTarget = @($targets | Where-Object { $_ -eq 'kimi' }).Count -gt 0
@@ -273,7 +310,7 @@ $kimiTarget = @($targets | Where-Object { $_ -eq 'kimi' }).Count -gt 0
 $workers = @()
 try {
     if ($npmNames.Count -gt 0) {
-        $workers += @{ Tag = 'npm'; Tools = $npmNames; Results = @{}; Job = (Start-Job $npmWorker -ArgumentList (,$npmNames), $npmCache, $npmPrefix) }
+        $workers += @{ Tag = 'npm'; Tools = $npmNames; Results = @{}; Job = (Start-Job $npmWorker -ArgumentList (,$npmNames), $npmCache, $npmPrefix, $npmExe) }
     }
     if ($kimiTarget) {
         $workers += @{ Tag = 'kimi'; Tools = @('kimi'); Results = @{}; Job = (Start-Job $kimiWorker -ArgumentList $kimiBin) }
@@ -295,7 +332,7 @@ try {
     }
 
     # 原生安装就绪后，清理 npm 全局残留的旧 kimi 副本，避免双份并存
-    if ($kimiTarget -and (Test-Path $kimiBin)) { Remove-NpmKimi $npmCache $npmPrefix }
+    if ($kimiTarget -and (Test-Path $kimiBin)) { Remove-NpmKimi $npmExe $npmCache $npmPrefix }
 
     Update-SessionPath
     foreach ($name in $targets) {

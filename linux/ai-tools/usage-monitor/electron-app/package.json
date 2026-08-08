@@ -8,9 +8,9 @@
     "start": "electron ."
   },
   "devDependencies": {
-    "electron": "^37.2.0"
+    "electron": "^43.3.0"
   },
   "allowScripts": {
-    "electron@37.10.3": true
+    "electron@43.3.0": true
   }
 }

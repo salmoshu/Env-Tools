@@ -1,4 +1,4 @@
-# Env-Tools：Kimi / Codex / CodeBuddy 终端额度监控
+# Env-Tools：Kimi / Codex / CodeBuddy / DeepSeek 终端额度监控
 
 完全独立于 Sub2API、PostgreSQL、Docker 和 Web 服务的本地终端应用，仅使用
 Python 3 标准库。
@@ -25,6 +25,16 @@ Python 3 标准库。
   凭证即将过期时自动刷新。首次使用前在 CodeBuddy CLI 中执行 `/login`。
   额度数据来自 plans-usage 网页同源接口 `POST /billing/meter/get-user-resource`
   （CLI Bearer token 直接可用），分别显示订阅额度和赠送额度，并汇总总额度。
+- DeepSeek：使用 API Key（platform.deepseek.com 的 API keys 页面生成，与
+  `/usage` 网页看到的余额是同一套账户数据）。三种配置方式（按优先级）：
+  1. `--deepseek-key` 命令行参数；
+  2. 环境变量 `DEEPSEEK_API_KEY`；
+  3. 凭证文件 `~/.deepseek/credentials.json`（`{"api_key": "..."}`，权限 0600），
+     可用 `DEEPSEEK_CREDENTIALS_PATH` 或 `--deepseek-credentials` 指定其他路径。
+  监控会查询 `GET /user/balance` 显示余额，并以 **50 元为每月上限**计算占比
+  （`余额/50`，余额超过 50 时按 50 截断）。
+  可用 `DEEPSEEK_USE_PROXY`（默认走系统代理）与 `DEEPSEEK_TIMEOUT`（默认 30 秒）
+  调整请求行为，用 `DEEPSEEK_BALANCE_URL` 覆盖接口地址。
 
 程序不会复制或输出访问令牌。也可以通过
 `KIMI_CREDENTIALS_PATH`、`CODEX_AUTH_PATH`、`CODEBUDDY_AUTH_PATH`
@@ -54,6 +64,9 @@ monitor 本身跨平台）。中文 Windows 的 GBK 控制台无法编码 `░`/
 
 # 只监控 Kimi
 ./tools.sh ai-tools --usage --provider kimi
+
+# 只监控 DeepSeek（需 DEEPSEEK_API_KEY）
+./tools.sh ai-tools --usage --provider deepseek
 
 # 供其他本地脚本读取
 ./tools.sh ai-tools --usage --json
