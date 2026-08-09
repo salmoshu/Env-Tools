@@ -543,13 +543,13 @@ def deepseek_api_key(explicit: str | None = None, credentials_path: str | None =
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except Exception as exc:
-            raise MonitorError(f"无法读取 DeepSeek 凭证文件 {path}: {exc}")
+            raise MonitorError(f"Cannot read DeepSeek credentials file {path}: {exc}")
         key = data.get("api_key") or data.get("DEEPSEEK_API_KEY")
         if not key:
-            raise MonitorError(f"DeepSeek 凭证文件 {path} 缺少 api_key 字段")
+            raise MonitorError(f"DeepSeek credentials file {path} is missing api_key")
         return key
     raise MonitorError(
-        "DEEPSEEK_API_KEY not set; export it, 写入 ~/.deepseek/credentials.json, 或传 --deepseek-key"
+        "DEEPSEEK_API_KEY not set; export it, write it to ~/.deepseek/credentials.json, or pass --deepseek-key"
     )
 
 
@@ -577,11 +577,13 @@ def normalize_deepseek(data: dict[str, Any]) -> dict[str, Any]:
     total = _num(balance.get("total_balance"))
     granted = _num(balance.get("granted_balance"))
     topped_up = _num(balance.get("topped_up_balance"))
-    capped = min(total, DEEPSEEK_MONTHLY_LIMIT)
+    # 进度条口径与其它模型保持一致:余额转为使用量(50 - 余额),低于 0 时截断为 0
+    usage = max(0.0, DEEPSEEK_MONTHLY_LIMIT - total)
+    capped = min(usage, DEEPSEEK_MONTHLY_LIMIT)
     fill_percent = percent(used=capped * 100 / DEEPSEEK_MONTHLY_LIMIT)
     extra_lines = [
-        f"Balance: ¥{total:.2f} / ¥{DEEPSEEK_MONTHLY_LIMIT:.2f}"
-        + (f"  (capped ¥{capped:.2f})" if total > DEEPSEEK_MONTHLY_LIMIT else ""),
+        f"Balance: ¥{total:.2f} / ¥{DEEPSEEK_MONTHLY_LIMIT:.2f}",
+        f"Usage: ¥{usage:.2f} / ¥{DEEPSEEK_MONTHLY_LIMIT:.2f}",
         f"Granted: ¥{granted:.2f}   Topped-up: ¥{topped_up:.2f}",
     ]
     if not data.get("is_available", True):
@@ -591,10 +593,12 @@ def normalize_deepseek(data: dict[str, Any]) -> dict[str, Any]:
         "plan": "API",
         "windows": [
             {
-                "label": "Monthly Balance",
+                "label": "Monthly Usage",
                 "used_percent": fill_percent,
                 "reset_after_seconds": None,
                 "window_seconds": None,
+                "usage": f"¥{capped:.2f}",
+                "until_used_up": True,
             }
         ],
         "extra_lines": extra_lines,
@@ -904,7 +908,9 @@ def window_label(seconds: int, fallback: str) -> str:
     return fallback
 
 
-def duration_text(seconds: int | None, expire: bool = False) -> str:
+def duration_text(seconds: int | None, expire: bool = False, until_used_up: bool = False) -> str:
+    if until_used_up:
+        return "until used up"
     verb = "expires" if expire else "resets"
     if seconds is None:
         return f"{verb} at unknown time"
@@ -1090,7 +1096,7 @@ def render(results: list[dict[str, Any]], errors: list[dict[str, str]], color: b
             line = (
                 f"  {display_ljust(window['label'], 16)} "
                 f"{bar(window['used_percent'], color=color, time_fraction=time_fraction)}  "
-                f"{duration_text(window['reset_after_seconds'], expire=bool(window.get('expire')))}"
+                f"{duration_text(window['reset_after_seconds'], expire=bool(window.get('expire')), until_used_up=bool(window.get('until_used_up')))}"
             )
             if window.get("detail"):
                 line += f"  {DIM if color else ''}{window['detail']}{RESET if color else ''}"
@@ -1208,7 +1214,7 @@ def launch_usage_window() -> None:
     )
     if not electron_bin.exists():
         print(
-            f"\nUsage window 依赖未安装,请先运行: cd {app_dir} && npm install",
+            f"\nUsage window dependencies not installed; run: cd {app_dir} && npm install",
             flush=True,
         )
         time.sleep(3)
@@ -1228,7 +1234,7 @@ def launch_usage_window() -> None:
             kwargs["start_new_session"] = True
         launched_window_proc = subprocess.Popen([str(electron_bin), "."], **kwargs)
     except OSError as exc:
-        print(f"\n无法启动 usage window: {exc}", flush=True)
+        print(f"\nFailed to launch usage window: {exc}", flush=True)
         time.sleep(3)
 
 

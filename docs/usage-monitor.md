@@ -31,8 +31,8 @@ Python 3 标准库。
   2. 环境变量 `DEEPSEEK_API_KEY`；
   3. 凭证文件 `~/.deepseek/credentials.json`（`{"api_key": "..."}`，权限 0600），
      可用 `DEEPSEEK_CREDENTIALS_PATH` 或 `--deepseek-credentials` 指定其他路径。
-  监控会查询 `GET /user/balance` 显示余额，并以 **50 元为每月上限**计算占比
-  （`余额/50`，余额超过 50 时按 50 截断）。
+  监控会查询 `GET /user/balance` 显示余额，并以 **50 元为每月上限**按使用量计算占比
+  （`使用量 = 50 − 余额`，小于 0 时按 0 截断），与其它模型的进度条口径保持一致。
   可用 `DEEPSEEK_USE_PROXY`（默认走系统代理）与 `DEEPSEEK_TIMEOUT`（默认 30 秒）
   调整请求行为，用 `DEEPSEEK_BALANCE_URL` 覆盖接口地址。
 

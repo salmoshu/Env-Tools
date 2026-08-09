@@ -13,7 +13,7 @@ document.getElementById("btn-close").addEventListener("click", () => api.close()
 document.getElementById("btn-refresh").addEventListener("click", () => {
   // 已有内容时保留旧数据,不闪烁成"刷新中";仅首次无内容时显示占位
   if (!content.querySelector(".provider")) {
-    content.innerHTML = '<div class="status">刷新中…</div>';
+    content.innerHTML = '<div class="status">Refreshing…</div>';
   }
   btnRefresh.classList.add("spin");
   api.refresh();
@@ -26,12 +26,51 @@ api.getPinState().then(updatePinState);
 // provider 筛选:All 或单个模型(自定义下拉菜单)
 filterBtn.addEventListener("click", (e) => {
   e.stopPropagation();
-  filterMenu.classList.toggle("open");
+  const opening = !filterMenu.classList.contains("open");
+  if (opening) {
+    // 窗口高度按内容自适应贴合,选中单个矮卡片时窗口可能比菜单还矮。
+    // 打开菜单时先按自然高度完整展开,并让窗口临时长高到能放下整个列表,
+    // 避免菜单被窗口底部裁掉、导致列表首尾的选项(All/DeepSeek)看不见。
+    filterMenu.classList.add("open");
+    filterMenu.style.maxHeight = "";
+    const natural = filterMenu.offsetHeight;
+    const required = Math.max(
+      document.body.offsetHeight,
+      Math.ceil(filterBtn.getBoundingClientRect().bottom + natural + 8),
+    );
+    api.fitHeight(required);
+    // 兜底:窗口被手动拖小或长高被拒绝时,按当前可用空间限高并滚动
+    const spaceBelow = window.innerHeight - filterBtn.getBoundingClientRect().bottom - 8;
+    filterMenu.style.maxHeight = required > window.innerHeight
+      ? `${Math.max(80, Math.floor(spaceBelow))}px`
+      : "";
+  } else {
+    filterMenu.classList.remove("open");
+  }
 });
-document.addEventListener("click", () => filterMenu.classList.remove("open"));
+document.addEventListener("click", () => {
+  if (filterMenu.classList.contains("open")) {
+    filterMenu.classList.remove("open");
+    // 菜单关闭后让窗口缩回内容高度
+    if (lastPayload) {
+      updateCompact();
+      fitWindow();
+    }
+  }
+});
 
-function buildFilterMenu(accounts) {
+function buildFilterMenu(accounts, errors = []) {
+  // 拉取失败的模型也保留在下拉框里(错误卡片单独展示),
+  // 避免临时失败时选项消失、筛选被静默重置
   const names = accounts.map((a) => a.provider);
+  const seen = new Set(names);
+  for (const e of errors || []) {
+    const p = e && e.provider;
+    if (p && p !== "Kimi Monthly Total" && !seen.has(p)) {
+      seen.add(p);
+      names.push(p);
+    }
+  }
   if (!names.includes(currentFilter)) currentFilter = "__all__";
   filterMenu.innerHTML =
     '<div class="item" data-val="__all__">All</div>' +
@@ -41,6 +80,9 @@ function buildFilterMenu(accounts) {
     item.addEventListener("click", (e) => {
       e.stopPropagation();
       currentFilter = item.dataset.val;
+      // 立即刷新高亮,避免选中后菜单里仍停留在上一次的高亮项
+      filterMenu.querySelectorAll(".item").forEach((i) => i.classList.remove("active"));
+      item.classList.add("active");
       filterLabel.textContent = currentFilter === "__all__" ? "All" : currentFilter;
       filterMenu.classList.remove("open");
       if (lastPayload) {
@@ -137,10 +179,16 @@ function render(payload) {
       const marker = frac == null
         ? ""
         : `<div class="marker" style="left:${(frac * 100).toFixed(1)}%"></div>`;
+      // 百分比右侧附加信息:剩余时间/余额等,无内容时不要残留 "·"
+      const pctTail = [];
+      const resetText = fmtReset(w.reset_after_seconds);
+      if (resetText) pctTail.push(`<span class="reset">${esc(resetText)}</span>`);
+      if (w.usage) pctTail.push(`<span class="usage">Usage ${esc(w.usage)}</span>`);
+      const tailHtml = pctTail.length ? ` · ${pctTail.join(" · ")}` : "";
       html += `<div class="quota">
         <div class="quota-row">
           <span>${esc(w.label)}</span>
-          <span class="pct">${pct.toFixed(1)}% <span class="reset">· ${esc(fmtReset(w.reset_after_seconds))}</span></span>
+          <span class="pct">${pct.toFixed(1)}%${tailHtml}</span>
         </div>
         <div class="bar"><div class="fill ${levelClass(pct)}" style="width:${pct}%"></div>${marker}</div>
       </div>`;
@@ -152,7 +200,7 @@ function render(payload) {
     html += `<div class="error-card">${esc(err.provider)}: ${esc(err.error)}</div>`;
   }
 
-  content.innerHTML = html || '<div class="status">暂无数据</div>';
+  content.innerHTML = html || '<div class="status">No data</div>';
   scheduleErrorDismiss();
 }
 
@@ -185,12 +233,22 @@ function updateCompact() {
   const natural = document.body.offsetHeight;
   document.body.classList.toggle("compact", window.innerHeight < natural - 4);
 }
-window.addEventListener("resize", updateCompact);
+window.addEventListener("resize", () => {
+  updateCompact();
+  // 窗口尺寸变化(含菜单打开时的临时长高)后,按新尺寸校正菜单限高
+  if (filterMenu.classList.contains("open")) {
+    const spaceBelow = window.innerHeight - filterBtn.getBoundingClientRect().bottom - 8;
+    const natural = filterMenu.scrollHeight;
+    filterMenu.style.maxHeight = natural > spaceBelow
+      ? `${Math.max(80, Math.floor(spaceBelow))}px`
+      : "";
+  }
+});
 
 api.onUsageUpdate((payload) => {
   lastPayload = payload;
   btnRefresh.classList.remove("spin");
-  if (payload.data) buildFilterMenu(payload.data.accounts || []);
+  if (payload.data) buildFilterMenu(payload.data.accounts || [], payload.data.errors || []);
   render(payload);
   updateCompact();
   fitWindow();

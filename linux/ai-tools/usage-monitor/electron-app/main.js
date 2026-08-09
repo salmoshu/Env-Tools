@@ -28,9 +28,15 @@ function applyWindowsTopmost(topmost, attemptsLeft = 5) {
   let out = "";
   child.stdout.on("data", (d) => (out += d));
   child.on("close", () => {
-    // 窗口刚创建时 Windows 侧可能尚未出现,匹配不到则重试
-    if (topmost && attemptsLeft > 0 && out.includes("matched: 0")) {
-      setTimeout(() => applyWindowsTopmost(topmost, attemptsLeft - 1), 1500);
+    const matched = /matched:\s*(\d+)/.exec(out);
+    const applied = /topmost:\s*(\d+)/.exec(out);
+    const ok = Boolean(
+      matched && Number(matched[1]) > 0 &&
+      applied && Number(applied[1]) === (topmost ? 1 : 0),
+    );
+    // 窗口刚创建时 Windows 侧可能尚未出现;置顶/取消未生效时稍后重试
+    if (!ok && attemptsLeft > 0) {
+      setTimeout(() => applyWindowsTopmost(topmost, attemptsLeft - 1), 800);
     }
   });
 }
@@ -58,12 +64,12 @@ function fetchUsage() {
     let stderr = "";
     child.stdout.on("data", (d) => (stdout += d));
     child.stderr.on("data", (d) => (stderr += d));
-    child.on("error", (err) => resolve({ error: `无法运行 python3: ${err.message}` }));
+    child.on("error", (err) => resolve({ error: `Cannot run python3: ${err.message}` }));
     child.on("close", (code) => {
       try {
         resolve({ data: JSON.parse(stdout) });
       } catch {
-        resolve({ error: `数据获取失败 (exit ${code}): ${stderr.trim() || stdout.trim()}` });
+        resolve({ error: `Data fetch failed (exit ${code}): ${stderr.trim() || stdout.trim()}` });
       }
     });
   });
@@ -83,7 +89,7 @@ function createWindow() {
     minHeight: MIN_CONTENT_HEIGHT,
     useContentSize: true,
     frame: false,
-    alwaysOnTop: true,
+    alwaysOnTop: false,
     resizable: true,
     skipTaskbar: false,
     backgroundColor: "#16181d",
@@ -100,8 +106,6 @@ function createWindow() {
     win = null;
     if (refreshTimer) clearInterval(refreshTimer);
   });
-  // 默认悬浮:页面加载完成后在 Windows 侧置顶(WSLg 下才实际生效)
-  win.webContents.on("did-finish-load", () => applyWindowsTopmost(true));
   // 用户手动调整高度后,暂停数据刷新带来的自动贴合;
   // WSLg 不一定遵守 minHeight,程序强制最小高度(防止拉成一条线)
   win.on("resize", () => {
@@ -136,7 +140,7 @@ ipcMain.handle("toggle-pin", () => {
   applyWindowsTopmost(next);
   return next;
 });
-ipcMain.handle("get-pin-state", () => (win ? win.isAlwaysOnTop() : true));
+ipcMain.handle("get-pin-state", () => (win ? win.isAlwaysOnTop() : false));
 // 渲染层根据内容高度请求自适应窗口(保持小巧,不出现大片空白);
 // 用户手动拖过高度则暂停自动贴合,拖回接近自然高度时恢复
 ipcMain.on("fit-height", (_event, height) => {

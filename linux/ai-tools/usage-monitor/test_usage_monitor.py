@@ -171,11 +171,14 @@ class NormalizeTests(unittest.TestCase):
         self.assertEqual(result["plan"], "API")
         self.assertEqual(len(result["windows"]), 1)
         window = result["windows"][0]
-        self.assertEqual(window["label"], "Monthly Balance")
-        # 余额 110 超过 50 上限 → 截断为 50 → 100%
-        self.assertAlmostEqual(window["used_percent"], 100.0)
-        self.assertIn("Balance: ¥110.00 / ¥50.00  (capped ¥50.00)", result["extra_lines"])
+        self.assertEqual(window["label"], "Monthly Usage")
+        # 余额 110 已超过 50 上限 → 使用量 = 50 - 110 = 0 → 0%
+        self.assertAlmostEqual(window["used_percent"], 0.0)
+        self.assertIn("Balance: ¥110.00 / ¥50.00", result["extra_lines"])
+        self.assertIn("Usage: ¥0.00 / ¥50.00", result["extra_lines"])
         self.assertIn("Granted: ¥10.00   Topped-up: ¥100.00", result["extra_lines"])
+        # 使用量按 0 截断,不会出现 capped 标注
+        self.assertNotIn("capped", result["extra_lines"][0])
 
     def test_deepseek_below_limit(self):
         result = usage_monitor.normalize_deepseek(
@@ -192,11 +195,11 @@ class NormalizeTests(unittest.TestCase):
             }
         )
         window = result["windows"][0]
-        # 余额 20 / 上限 50 = 40%
-        self.assertAlmostEqual(window["used_percent"], 40.0)
+        # 余额 20 → 使用量 30 / 上限 50 = 60%
+        self.assertAlmostEqual(window["used_percent"], 60.0)
         self.assertIn("Balance: ¥20.00 / ¥50.00", result["extra_lines"])
+        self.assertIn("Usage: ¥30.00 / ¥50.00", result["extra_lines"])
         self.assertIn("Granted: ¥5.00   Topped-up: ¥15.00", result["extra_lines"])
-        # 未超过上限时不应出现 capped 标注
         self.assertNotIn("capped", result["extra_lines"][0])
 
     def test_deepseek_unavailable(self):
@@ -208,6 +211,8 @@ class NormalizeTests(unittest.TestCase):
                 ],
             }
         )
+        # 余额 0 → 使用量 50 / 50 = 100%
+        self.assertAlmostEqual(result["windows"][0]["used_percent"], 100.0)
         self.assertTrue(any("Account unavailable" in line for line in result["extra_lines"]))
 
     def test_render_aligns_progress_bars_by_terminal_width(self):
@@ -425,6 +430,14 @@ class NormalizeTests(unittest.TestCase):
         # 未传 versions 时标题保持原样（向后兼容）
         output = usage_monitor.render(results, [], color=False)
         self.assertIn("Kimi Code  ·  ", output)
+
+    def test_duration_text(self):
+        # DeepSeek 余额类额度:没有重置时间,显示"用完为止"
+        self.assertEqual(usage_monitor.duration_text(None, until_used_up=True), "until used up")
+        # 其它模型未知重置时间保持原描述
+        self.assertEqual(usage_monitor.duration_text(None), "resets at unknown time")
+        self.assertEqual(usage_monitor.duration_text(None, expire=True), "expires at unknown time")
+        self.assertEqual(usage_monitor.duration_text(3600), "resets in 1h 0m")
 
 
 if __name__ == "__main__":

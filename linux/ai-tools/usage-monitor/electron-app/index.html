@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta http-equiv="Content-Security-Policy"
@@ -123,6 +123,8 @@
       top: calc(100% + 4px);
       left: 0;
       min-width: 100%;
+      overflow-x: hidden;
+      overflow-y: auto;
       background: #1a1f2c;
       border: 1px solid var(--border);
       border-radius: 8px;
@@ -228,6 +230,7 @@
       font-variant-numeric: tabular-nums;
     }
     .quota-row .reset { color: var(--faint); font-weight: 400; }
+    .quota-row .usage { color: var(--accent); font-weight: 600; }
 
     /* 纯色分级进度条:<50% 绿,<80% 黄,否则红 */
     .bar {
@@ -291,23 +294,23 @@
     <span class="dot"></span>
     <span class="title">AI Usage Monitor</span>
     <span class="filter-wrap">
-      <button class="filter-btn" id="provider-filter" title="选择要显示的模型">
+      <button class="filter-btn" id="provider-filter" title="Select model to display">
         <span class="filter-label">All</span>
         <span class="filter-arrow">&#x25be;</span>
       </button>
       <div class="filter-menu" id="filter-menu"></div>
     </span>
-    <button class="btn" id="btn-refresh" title="刷新">&#x21bb;</button>
-    <button class="btn" id="btn-pin" title="悬浮置顶">
+    <button class="btn" id="btn-refresh" title="Refresh">&#x21bb;</button>
+    <button class="btn" id="btn-pin" title="Pin on top">
       <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
         <path d="M16,9V4h1c0.55,0,1-0.45,1-1s-0.45-1-1-1H7C6.45,2,6,2.45,6,3s0.45,1,1,1h1v5c0,1.66-1.34,3-3,3S4,12.45,4,13s0.45,1,1,1h6v6c0,0.55,0.45,1,1,1s1-0.45,1-1v-6h6c0.55,0,1-0.45,1-1s-0.45-1-1-1C17.34,12,16,10.66,16,9z"/>
       </svg>
     </button>
-    <button class="btn" id="btn-min" title="最小化">&#x2013;</button>
-    <button class="btn close" id="btn-close" title="关闭">&#x2715;</button>
+    <button class="btn" id="btn-min" title="Minimize">&#x2013;</button>
+    <button class="btn close" id="btn-close" title="Close">&#x2715;</button>
   </div>
   <div class="content" id="content">
-    <div class="status">加载中…</div>
+    <div class="status">Loading…</div>
   </div>
 
   <script src="renderer.js"></script>
