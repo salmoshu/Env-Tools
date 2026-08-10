@@ -814,6 +814,11 @@ def _is_gift_pack(account: dict[str, Any]) -> bool:
     return "bonus" in str(account.get("SubProductCode") or "").lower()
 
 
+def _is_used_up(account: dict[str, Any]) -> bool:
+    """赠送包用完后 CycleCapacityRemainPrecise ≤ 0，不再计入可用能量。"""
+    return _num(account.get("CycleCapacityRemainPrecise")) <= 0
+
+
 def normalize_codebuddy(data: dict[str, Any]) -> dict[str, Any]:
     account = data.get("account") or {}
     notify = data.get("notify") or {}
@@ -826,9 +831,10 @@ def normalize_codebuddy(data: dict[str, Any]) -> dict[str, Any]:
     total_line = None
     if accounts:
         # 周期额度：订阅计划与赠送包分开汇总（赠送包 SubProductCode 含 bonus）；
+        # 赠送包为一次性额度，已用完（剩余 ≤ 0）的包不再计入能量统计；
         # 到期/重置时间取各自组内仍有余量的最早周期结束点
         subscription = [a for a in accounts if not _is_gift_pack(a)]
-        gifted = [a for a in accounts if _is_gift_pack(a)]
+        gifted = [a for a in accounts if _is_gift_pack(a) and not _is_used_up(a)]
 
         def _cycle_window(label, group, expire):
             size = sum(_num(a.get("CycleCapacitySizePrecise")) for a in group)
@@ -871,7 +877,7 @@ def normalize_codebuddy(data: dict[str, Any]) -> dict[str, Any]:
             used, size = _cycle_sum(group)
             if size > 0:
                 parts.append(f"{name} {used:.1f}/{size:.1f}")
-        total_used, total_size = _cycle_sum(accounts)
+        total_used, total_size = _cycle_sum(subscription + gifted)
         if total_size > 0:
             total_line = f"Total: {total_used:.1f}/{total_size:.1f} credits"
             if parts:

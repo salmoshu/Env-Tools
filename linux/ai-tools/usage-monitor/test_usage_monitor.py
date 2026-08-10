@@ -141,6 +141,90 @@ class NormalizeTests(unittest.TestCase):
             result["extra_lines"],
         )
 
+    def test_codebuddy_excludes_used_up_gift_packs(self):
+        # 已用完的赠送包（剩余 ≤ 0）不计入能量统计，只统计仍有余量的赠送包
+        result = usage_monitor.normalize_codebuddy(
+            {
+                "account": {"type": "personal"},
+                "notify": {},
+                "resource": {
+                    "Accounts": [
+                        {
+                            "PackageName": "CodeBuddy个人体验版",
+                            "SubProductCode": "sp_tcaca_codebuddy_ide",
+                            "CycleCapacityUsedPrecise": "500",
+                            "CycleCapacitySizePrecise": "500",
+                            "CycleCapacityRemainPrecise": "0",
+                            "CycleEndTime": "2026-07-31 23:59:59",
+                        },
+                        {
+                            "PackageName": "已用完的赠送包",
+                            "SubProductCode": "sp_tcaca_codebuddyide_bonus_pack",
+                            "CycleCapacityUsedPrecise": "1500",
+                            "CycleCapacitySizePrecise": "1500",
+                            "CycleCapacityRemainPrecise": "0",
+                            "CycleEndTime": "2026-06-01 00:00:00",
+                        },
+                        {
+                            "PackageName": "还有余量的赠送包",
+                            "SubProductCode": "sp_tcaca_codebuddyide_bonus_pack",
+                            "CycleCapacityUsedPrecise": "200",
+                            "CycleCapacitySizePrecise": "800",
+                            "CycleCapacityRemainPrecise": "600",
+                            "CycleEndTime": "2099-08-13 14:52:06",
+                        },
+                    ]
+                },
+            }
+        )
+        self.assertEqual(len(result["windows"]), 2)
+        subscription, gifted = result["windows"]
+        # 订阅按月续期：仍按原周期汇总，不受赠送包过滤影响
+        self.assertEqual(subscription["label"], "Subscription")
+        self.assertAlmostEqual(subscription["used_percent"], 100.0)
+        # 已用完的赠送包被排除，仅剩 200/800 的赠送包计入
+        self.assertEqual(gifted["label"], "Gifted")
+        self.assertAlmostEqual(gifted["used_percent"], 100.0 * 200 / 800)
+        self.assertIn(
+            "Total: 700.0/1300.0 credits (sub 500.0/500.0, gift 200.0/800.0)",
+            result["extra_lines"],
+        )
+
+    def test_codebuddy_omits_gifted_window_when_all_gifts_used_up(self):
+        # 所有赠送包都用完了：不再展示 Gifted 窗口
+        result = usage_monitor.normalize_codebuddy(
+            {
+                "account": {"type": "personal"},
+                "notify": {},
+                "resource": {
+                    "Accounts": [
+                        {
+                            "PackageName": "CodeBuddy个人体验版",
+                            "SubProductCode": "sp_tcaca_codebuddy_ide",
+                            "CycleCapacityUsedPrecise": "500",
+                            "CycleCapacitySizePrecise": "500",
+                            "CycleCapacityRemainPrecise": "0",
+                            "CycleEndTime": "2026-07-31 23:59:59",
+                        },
+                        {
+                            "PackageName": "已用完的赠送包",
+                            "SubProductCode": "sp_tcaca_codebuddyide_bonus_pack",
+                            "CycleCapacityUsedPrecise": "1500",
+                            "CycleCapacitySizePrecise": "1500",
+                            "CycleCapacityRemainPrecise": "0",
+                            "CycleEndTime": "2026-06-01 00:00:00",
+                        },
+                    ]
+                },
+            }
+        )
+        self.assertEqual(len(result["windows"]), 1)
+        self.assertEqual(result["windows"][0]["label"], "Subscription")
+        self.assertIn(
+            "Total: 500.0/500.0 credits (sub 500.0/500.0)",
+            result["extra_lines"],
+        )
+
     def test_codebuddy_no_resource(self):
         result = usage_monitor.normalize_codebuddy(
             {
