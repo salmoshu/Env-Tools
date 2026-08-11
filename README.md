@@ -12,6 +12,7 @@ tools.sh             已部署应用的统一操作入口（Linux；Git Bash 下
 tools.ps1            已部署应用的统一操作入口（Windows，功能与 tools.sh 一致）
 windows/             Windows 侧组件（kdesk / nodejs / ai-tools / openssh）
 linux/               Linux 侧组件（nodejs / ai-tools / openssh）
+completion/          tools.sh / tools.ps1（含 setup 入口）的 Tab 智能补全脚本
 docs/                部署与维护文档（见下方索引）
 ```
 
@@ -61,6 +62,24 @@ Linux 用 `./tools.sh`，Windows 用 `tools.ps1`，参数完全一致：
 
 余量监控的配置（凭证位置、Kimi 月度总量网页 token 等）见
 [docs/usage-monitor.md](docs/usage-monitor.md)。
+
+## 指令智能补全
+
+`completion/` 提供 `tools.sh` / `setup.sh`（bash）与 `tools.ps1` / `setup.ps1`
+（PowerShell）的 Tab 补全：应用名、操作与 usage 参数（含 `--provider` 的取值、
+凭证文件路径）都能补全。
+
+bash（当前会话临时生效；把 source 行写进 `~/.bashrc` 可永久生效）：
+
+```bash
+source completion/env-tools.bash
+```
+
+PowerShell（把下面这行写进 `$PROFILE`，路径按实际仓库位置修改）：
+
+```powershell
+. "D:\path\to\Env-Tools\completion\Env-Tools.Completion.ps1"
+```
 
 ## 文档索引
 
