@@ -12,6 +12,11 @@ const IS_WSL = Boolean(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP);
 
 let win = null;
 let refreshTimer = null;
+// 置顶期间周期性补挂 WS_EX_TOPMOST 的巡检定时器：
+// WSLg 的 RAIL 窗口在焦点切换、尺寸变化等场景下可能重建或重排 Z 序，
+// 导致之前用 SetWindowPos 设置的置顶样式丢失（表现：切应用后看板被盖住，
+// 拖动一下窗口又恢复）。
+let pinWatchdog = null;
 // 用户手动拖过高度后暂停自动贴合;拖回接近自然高度时恢复
 let manualHeight = false;
 let programmaticResize = false;
@@ -39,6 +44,22 @@ function applyWindowsTopmost(topmost, attemptsLeft = 5) {
       setTimeout(() => applyWindowsTopmost(topmost, attemptsLeft - 1), 800);
     }
   });
+}
+
+function startPinWatchdog() {
+  if (!IS_WSL || pinWatchdog) return;
+  // 置顶样式丢失无法从 Linux 侧感知，只能周期性补挂；
+  // set-topmost.ps1 对已置顶的窗口跳过 SetWindowPos，不会抢焦点。
+  pinWatchdog = setInterval(() => {
+    if (win && win.isAlwaysOnTop()) applyWindowsTopmost(true, 1);
+  }, 5000);
+}
+
+function stopPinWatchdog() {
+  if (pinWatchdog) {
+    clearInterval(pinWatchdog);
+    pinWatchdog = null;
+  }
 }
 
 // 单实例:再次启动(Ctrl+E)时聚焦已有窗口而不是开新窗口
@@ -105,6 +126,12 @@ function createWindow() {
   win.on("closed", () => {
     win = null;
     if (refreshTimer) clearInterval(refreshTimer);
+    stopPinWatchdog();
+  });
+  // 窗口失焦(用户切到其它应用)时立即补挂一次置顶;
+  // 已置顶时脚本侧直接跳过,不会把窗口抢回前台
+  win.on("blur", () => {
+    if (win && win.isAlwaysOnTop()) applyWindowsTopmost(true, 1);
   });
   // 用户手动调整高度后,暂停数据刷新带来的自动贴合;
   // WSLg 不一定遵守 minHeight,程序强制最小高度(防止拉成一条线)
@@ -138,6 +165,7 @@ ipcMain.handle("toggle-pin", () => {
   const next = !win.isAlwaysOnTop();
   win.setAlwaysOnTop(next);
   applyWindowsTopmost(next);
+  if (next) startPinWatchdog(); else stopPinWatchdog();
   return next;
 });
 ipcMain.handle("get-pin-state", () => (win ? win.isAlwaysOnTop() : false));

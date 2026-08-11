@@ -1,4 +1,4 @@
-# Set or clear WS_EX_TOPMOST on the window whose title matches -Title.
+﻿# Set or clear WS_EX_TOPMOST on the window whose title matches -Title.
 # Under WSLg, Electron's alwaysOnTop does not propagate to the Windows
 # window manager, so this script applies it via SetWindowPos instead.
 #
@@ -42,10 +42,17 @@ Get-Process | Where-Object {
 }
 
 $topmostState = 0
+$wantTopmost = ($Topmost -eq "1")
 foreach ($h in $found) {
-    [void][Win32Topmost]::SetWindowPos($h, $after, 0, 0, 0, 0, $flags)
     $exstyle = [Win32Topmost]::GetWindowLong($h, -20)  # GWL_EXSTYLE
-    if (($exstyle -band 0x8) -ne 0) { $topmostState = 1 }  # WS_EX_TOPMOST
+    $isTopmost = ($exstyle -band 0x8) -ne 0            # WS_EX_TOPMOST
+    # 已处于目标状态时跳过 SetWindowPos：置顶方向的调用不带 SWP_NOACTIVATE，
+    # 盲目重放会在周期性巡检/失焦补挂时反复激活窗口、抢占用户焦点。
+    if ($isTopmost -ne $wantTopmost) {
+        [void][Win32Topmost]::SetWindowPos($h, $after, 0, 0, 0, 0, $flags)
+        $exstyle = [Win32Topmost]::GetWindowLong($h, -20)
+    }
+    if (($exstyle -band 0x8) -ne 0) { $topmostState = 1 }
 }
 Write-Output ("matched: " + $found.Count)
 Write-Output ("topmost: " + $topmostState)
