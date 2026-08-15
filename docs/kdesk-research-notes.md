@@ -7,8 +7,8 @@
 
 | 文件 | 作用 |
 | --- | --- |
-| `setup_elevated.ps1` | 一次性入口（自动提权）：定位/部署 kdesk → 恢复快照 → 注册集成 → 迁移壁纸缓存 → 创建登录计划任务 → 启动壁纸并运行优化程序 |
-| `scripts/deploy.ps1` | 每次登录由计划任务 `KdeskAutoDeploy`（最高权限）触发：停服务/进程 → 恢复 33_1 快照（对抗自动升级）→ 重启服务与壁纸 → 运行优化程序 |
+| `setup_elevated.ps1` | 入口（自动提权），登录任务每次登录也会运行它：定位/部署 kdesk → 恢复快照 → 封堵自动升级（hosts + IFEO）→ 注册集成 → 迁移壁纸缓存 → 创建登录计划任务 → 启动壁纸并运行优化程序 |
+| `scripts/deploy.ps1` | 轻量重部署（保留作手动使用）：停服务/进程 → 恢复 33_1 快照（对抗自动升级）→ 重启服务与壁纸 → 运行优化程序 |
 | `scripts/kdesk_locator.ps1` | 多渠道定位 kdesk 安装目录（缓存文件 → 运行中进程 → App Paths → 卸载注册表 → 快捷方式 → 常见目录 → 全盘扫描），始终排除自带备份目录 |
 | `scripts/kdesk_integration.ps1` | 共享函数库：便携目录选择、服务/注册表/快捷方式注册、壁纸缓存迁移、壁纸就绪等待、优化程序启动 |
 | `kdesk_33_1_backup/` | 33_1 版本完整快照（949 个文件，约 225 MB），主程序、CEF、VC++ 运行库齐全 |
@@ -57,13 +57,26 @@
 
 - 任务 `KdeskAutoDeploy` 由 `schtasks /Create /SC ONLOGON /RL HIGHEST` 创建，`Get-ScheduledTaskInfo.LastRunTime` 为 `1999/11/30` 表示从未触发（用户尚未在任务创建后重新登录过）；手动跑 deploy 不计入。
 - 任务操作为交互式（Interactive）+ 最高权限，启动的 GUI 程序会显示在用户桌面。
+- 2026-08-14 起任务指向 `setup_elevated.ps1` 本身（每次登录都全量 setup，等效 `setup.ps1 kdesk`），不再是轻量的 `deploy.ps1`。
+
+### 7. 自动升级封堵（2026-08-14 新增）
+
+- 升级链路（从二进制字符串确认）：`kdeskcore.exe`（服务）与 `cmlive.exe`（「在线升级」）
+  查询 `http://rq.upgrade.cmpc.cmcm.com/query`，清单
+  `https://cdnpcwallpaper.zhhainiao.com/cmlive/<id>/kupdate.ini`，下载
+  `http://pc001.update.cmpc.cmcm.com/...`。
+- 封堵方式（`Disable-KdeskAutoUpdate`，setup/deploy 每次运行都重放，幂等）：
+  - hosts 将 `rq.upgrade.cmpc.cmcm.com`、`pc001.update.cmpc.cmcm.com` 指向 127.0.0.1；
+    **不屏蔽 `cdnpcwallpaper.zhhainiao.com`**——该 CDN 同时服务壁纸图片；
+  - IFEO 给 `cmlive.exe` 挂 `Debugger=systray.exe -`，使其永远无法启动。
+- 快照还原（每次登录）+ 上述封堵双保险；即便升级文件落地也会被降回 33_1。
 
 ## 换电脑部署流程
 
 1. 整体拷贝项目文件夹到新机器（位置不限）。
 2. 双击运行 `setup_elevated.ps1`（弹 UAC 确认）——找不到已安装的 kdesk 时会自动把备份部署到非 C 盘便携目录并补齐服务/注册表/快捷方式。
 3. 首次运行自动迁移壁纸缓存到项目内 `wallpaper_cache\`。
-4. 之后每次登录由计划任务自动：恢复 33_1 快照 → 启动壁纸 → 壁纸就绪后运行优化程序。
+4. 之后每次登录由计划任务自动：完整重跑 setup——恢复 33_1 快照 → 封堵自动升级 → 启动壁纸 → 壁纸就绪后运行优化程序。
 
 ## 运维速查
 

@@ -4,11 +4,12 @@
 
 ## 结构
 
-- `setup_elevated.ps1`：一次性装机脚本（自提权）。定位/便携部署 kdesk → 停进程与服务 →
-  还原 33_1 快照 → 刷新备份 → 注册服务/注册表/快捷方式 → 注册登录任务 `KdeskAutoDeploy` →
+- `setup_elevated.ps1`：装机脚本（自提权），登录任务 `KdeskAutoDeploy` 每次登录也会运行它
+  （等效 `setup.ps1 kdesk`）。定位/便携部署 kdesk → 停进程与服务 → 还原 33_1 快照 →
+  刷新备份 → 封堵自动升级（hosts + IFEO）→ 注册服务/注册表/快捷方式 → 注册登录任务 →
   重定向壁纸缓存到项目目录 → 启动 kwallpaper 并运行优化器。
-- `scripts/deploy.ps1`：每次登录由计划任务以最高权限运行，做同样的快照还原 + 优化器执行，
-  用于对抗自动升级（降回 33_1）。
+- `scripts/deploy.ps1`：轻量重部署脚本（现保留作手动使用；登录任务已改跑完整 setup），
+  做同样的快照还原 + 封堵升级 + 优化器执行，用于对抗自动升级（降回 33_1）。
 - `scripts/kdesk_locator.ps1`：定位已安装目录（缓存路径在 `scripts/data/kdesk_install_path.txt`）。
 - `scripts/kdesk_integration.ps1`：共享函数库（服务/注册表/快捷方式/壁纸缓存/优化器）。
 - `kdesk_33_1_backup/`：33_1 快照，还原与备份都靠 `robocopy /MIR`（退出码 0-7 均为成功）。
@@ -46,6 +47,25 @@
   `Wait-KdeskWallpaperReady`（等真实窗口）+ 10s 余量。
 - **成功判据**：日志 `optimizer exited, code=0`（打完即退）或 `running in background`（驻留）均正常。
 
+## 坑 4：使用中功能失效，只有重启 + setup 才恢复
+
+- **根因**：优化器的补丁只作用于**运行中的 kwallpaper 进程内存**。会话中途任何
+  kwallpaper 重启（崩溃、kdeskcore 看门狗拉活、自动升级后自启、用户退出重开）都会
+  得到未打补丁的新进程，而优化器原本只在登录时跑一次 → 只能重启触发重新部署。
+  另一诱因是 kdesk **会话中途自动升级**：替换文件并重启组件，直到下次登录才被降回 33_1。
+- **处置（2026-08-14）**：
+  1. 登录任务 `KdeskAutoDeploy` 从跑轻量 `deploy.ps1` 改为跑**完整 `setup_elevated.ps1`**
+     （等效 `setup.ps1 kdesk`），每次开机/登录都全量走一遍；
+  2. 新增 `Disable-KdeskAutoUpdate`（integration 库，setup 与 deploy 每次运行都重放）：
+     - hosts 屏蔽专用升级域名 `rq.upgrade.cmpc.cmcm.com`、`pc001.update.cmpc.cmcm.com`
+       （从 kdeskcore.exe / cmlive.exe 字符串中确认）；**不屏蔽**
+       `cdnpcwallpaper.zhhainiao.com`——该 CDN 同时服务壁纸内容（kupdate.ini 升级清单也在其上）；
+     - IFEO（`HKLM\...\Image File Execution Options\cmlive.exe` → `Debugger=systray.exe -`）
+       使「在线升级」程序 cmlive.exe 永远无法启动。
+- **排查手法**：故障时对比进程启动时间——
+  `Get-Process kwallpaper | Select Name,StartTime`，若 kwallpaper 比优化器晚启动 = 补丁丢失；
+  对比安装目录与备份的 `kwallpaper.exe` 哈希可确认是否被升级。
+
 ## 常用检查命令
 
 ```powershell
@@ -55,4 +75,7 @@ Get-Process | Where-Object { $_.Path -like 'D:\software\kdesk*' }
 Get-Service kdeskcore
 # 登录任务
 Get-ScheduledTask KdeskAutoDeploy | Get-ScheduledTaskInfo
+# 升级封堵是否生效
+Select-String -Path "$env:SystemRoot\System32\drivers\etc\hosts" -Pattern 'cmcm.com'
+Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\cmlive.exe'
 ```

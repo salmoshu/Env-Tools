@@ -1,10 +1,13 @@
-﻿# Runs at every logon (scheduled task, highest privileges):
+﻿# NOTE: the logon task KdeskAutoDeploy now runs setup_elevated.ps1 (full setup)
+# at every logon; this script is kept for manual lightweight redeploys.
+# Steps:
 # 1. locate the kdesk dir (portable-deploy from the backup if nothing is installed)
 # 2. stop kdesk and the kdeskcore service (the service locks files in the target dir)
 # 3. restore the 33_1 snapshot (defeats auto-update)
 # 4. restart the service, start kwallpaper and wait until its UI is really up
 # 5. keep the wallpaper cache pointed at <project>\wallpaper_cache (self-heals if the project moved)
-# 6. run the optimizer (only after the wallpaper UI is ready)
+# 6. re-apply the auto-update block (hosts + IFEO)
+# 7. run the optimizer (only after the wallpaper UI is ready)
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $dir       = Split-Path -Parent $scriptDir
 $backup    = Join-Path $dir 'kdesk_33_1_backup'
@@ -59,6 +62,9 @@ try { Stop-KdeskService } catch { Log "service stop: $($_.Exception.Message)" }
 
 $restoreCode = Invoke-KdeskSnapshotRestore -Backup $backup -Target $target -LogFile $log
 Log "restore robocopy exit=$restoreCode (0-7 = success)"
+
+# re-apply the auto-update block (hosts entries + IFEO on cmlive.exe)
+Disable-KdeskAutoUpdate -LogFile $log
 
 Start-Service -Name 'kdeskcore' -ErrorAction SilentlyContinue
 

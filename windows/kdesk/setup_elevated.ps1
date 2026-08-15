@@ -6,7 +6,9 @@
 # - redirects the wallpaper cache into <project>\wallpaper_cache and migrates any existing cache
 # - restores the 33_1 snapshot (downgrades auto-updated installs)
 # - refreshes the snapshot backup from the current install dir
-# - registers the elevated logon task (replaces Run-key autostart)
+# - blocks auto-update (upgrade hosts in hosts file + IFEO on cmlive.exe)
+# - registers the elevated logon task (replaces Run-key autostart) that re-runs
+#   THIS setup at every logon, so every boot gets a full setup pass
 # - restarts kwallpaper and runs the optimizer once the UI is up
 
 # self-elevate
@@ -72,6 +74,9 @@ if ($restoreCode -gt 7) {
 robocopy $target $backup /MIR /R:2 /W:2 /NFL /NDL /NJH /NJS /NP | Out-Null
 Log "backup robocopy exit=$LASTEXITCODE (0-7 = success)"
 
+# block silent auto-update (hosts entries + IFEO on cmlive.exe), re-applied on every run
+Disable-KdeskAutoUpdate -LogFile $log
+
 if ($portable) {
     try {
         Install-KdeskIntegration -Target $target
@@ -87,10 +92,12 @@ if ($portable) {
 # remove the old non-elevated Run-key autostart if present
 Remove-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'KdeskAutoDeploy' -ErrorAction SilentlyContinue
 
-# elevated scheduled task at logon: no UAC prompts ever again
-$deployScript = Join-Path $scriptDir 'deploy.ps1'
-schtasks /Create /TN 'KdeskAutoDeploy' /TR "powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$deployScript`"" /SC ONLOGON /RL HIGHEST /F
-Log "schtasks exit=$LASTEXITCODE"
+# elevated scheduled task at logon: no UAC prompts ever again.
+# Runs THIS full setup (equivalent to `setup.ps1 kdesk`) at every logon, so each
+# boot gets snapshot restore + update block + optimizer, not just the light deploy.
+$setupScript = $PSCommandPath
+schtasks /Create /TN 'KdeskAutoDeploy' /TR "powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$setupScript`"" /SC ONLOGON /RL HIGHEST /F
+Log "schtasks exit=$LASTEXITCODE (task runs: $setupScript)"
 
 # redirect the wallpaper cache into the project directory and migrate existing data
 try {

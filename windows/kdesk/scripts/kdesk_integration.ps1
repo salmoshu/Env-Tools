@@ -196,6 +196,48 @@ function Set-KdeskWallpaperCache {
     return $cacheDir
 }
 
+function Disable-KdeskAutoUpdate {
+    # Blocks kdesk's silent auto-update on two levels:
+    # 1. hosts file: the upgrade query/download hosts found in kdeskcore.exe and
+    #    cmlive.exe are pointed at 127.0.0.1. cdnpcwallpaper.zhhainiao.com is NOT
+    #    blocked on purpose - the same CDN serves wallpaper content.
+    # 2. IFEO debugger: cmlive.exe (the online upgrader) can never launch.
+    param([string]$LogFile)
+
+    $blockedHosts = @('rq.upgrade.cmpc.cmcm.com', 'pc001.update.cmpc.cmcm.com')
+    $hostsFile = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
+    $marker = '# Env-Tools: kdesk auto-update block'
+    try {
+        $existing = Get-Content -LiteralPath $hostsFile -ErrorAction SilentlyContinue
+        $toAdd = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($blocked in $blockedHosts) {
+            $pattern = '(^|\s)' + [regex]::Escape($blocked) + '(\s|$)'
+            if (-not ($existing | Where-Object { $_ -notmatch '^\s*#' -and $_ -match $pattern })) {
+                $toAdd.Add("127.0.0.1`t$blocked")
+            }
+        }
+        if ($toAdd.Count -gt 0) {
+            if (-not ($existing | Where-Object { $_ -eq $marker })) {
+                $toAdd.Insert(0, '')
+                $toAdd.Insert(1, $marker)
+            }
+            $toAdd | Out-File -LiteralPath $hostsFile -Append -Encoding ascii
+        }
+        if ($LogFile) { Write-KdeskLog -LogFile $LogFile -Message "update block hosts ok ($($blockedHosts -join ', '))" }
+    } catch {
+        if ($LogFile) { Write-KdeskLog -LogFile $LogFile -Message "UPDATE BLOCK hosts error: $($_.Exception.Message)" }
+    }
+
+    try {
+        $ifeo = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\cmlive.exe'
+        New-Item -Path $ifeo -Force | Out-Null
+        New-ItemProperty -Path $ifeo -Name 'Debugger' -Value 'systray.exe -' -PropertyType String -Force | Out-Null
+        if ($LogFile) { Write-KdeskLog -LogFile $LogFile -Message 'update block: cmlive.exe IFEO debugger set' }
+    } catch {
+        if ($LogFile) { Write-KdeskLog -LogFile $LogFile -Message "UPDATE BLOCK IFEO error: $($_.Exception.Message)" }
+    }
+}
+
 function Install-KdeskIntegration {
     param([Parameter(Mandatory = $true)][string]$Target)
 
