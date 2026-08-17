@@ -121,8 +121,9 @@ $kimiBin = Join-Path $kimiInstallDir 'bin\kimi.exe'
 
 # --- npm 工具线程：版本查询 + 合并安装（Job 内无法访问主线程函数， helpers 内置）------
 $npmWorker = {
-    param([string[]]$names, [string]$npmCache, [string]$npmPrefix, [string]$npmExe)
+    param([string]$namesJoined, [string]$npmCache, [string]$npmPrefix, [string]$npmExe)
     $ErrorActionPreference = 'Continue'
+    [string[]]$names = $namesJoined -split ','
     $pkgOf = @{ codex = '@openai/codex'; codebuddy = '@tencent-ai/codebuddy-code' }
     # 默认源失败时回退的国内 npm 镜像
     $npmMirror = 'https://registry.npmmirror.com'
@@ -311,7 +312,7 @@ $npmCache = Join-Path $env:TEMP ("ai-tools-npm-cache-" + [guid]::NewGuid().ToStr
 $npmPrefix = (& $npmExe prefix -g 2>$null | Select-Object -First 1)
 if ($npmPrefix) { $npmPrefix = $npmPrefix.Trim() }
 if (-not (Test-ValidPrefix $npmPrefix)) {
-    Log "ERROR: 无法获取有效的 npm prefix（npm prefix -g 返回: '$npmPrefix'）。请确认 npm 本身可正常运行：`npx prefix -g`"
+    Log "ERROR: 无法获取有效的 npm prefix（npm prefix -g 返回: '$npmPrefix'）。请确认 npm 本身可正常运行: npx prefix -g"
     exit 1
 }
 
@@ -321,7 +322,9 @@ $kimiTarget = @($targets | Where-Object { $_ -eq 'kimi' }).Count -gt 0
 $workers = @()
 try {
     if ($npmNames.Count -gt 0) {
-        $workers += @{ Tag = 'npm'; Tools = $npmNames; Results = @{}; Job = (Start-Job $npmWorker -ArgumentList (,$npmNames), $npmCache, $npmPrefix, $npmExe) }
+        # 数组经 Start-Job 序列化后会被拼成单个字符串（"codex codebuddy"），
+        # 所以干脆先 join 成逗号串，Job 内再 split 回来
+        $workers += @{ Tag = 'npm'; Tools = $npmNames; Results = @{}; Job = (Start-Job $npmWorker -ArgumentList ($npmNames -join ','), $npmCache, $npmPrefix, $npmExe) }
     }
     if ($kimiTarget) {
         $workers += @{ Tag = 'kimi'; Tools = @('kimi'); Results = @{}; Job = (Start-Job $kimiWorker -ArgumentList $kimiBin) }

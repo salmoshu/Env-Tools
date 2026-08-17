@@ -118,13 +118,45 @@ foreach ($name in $targets) {
 Write-Host ''
 # 把 Tab 补全写入 PowerShell $PROFILE（幂等），新开 PowerShell 会话即可用
 $completionScript = Join-Path $root 'completion\Env-Tools.Completion.ps1'
+$marker = '# Env-Tools completion'
 if (Test-Path $completionScript) {
-    $marker = '# Env-Tools completion'
     New-Item -ItemType Directory -Path (Split-Path -Parent $PROFILE) -Force | Out-Null
     if (-not (Test-Path $PROFILE)) { New-Item -ItemType File -Path $PROFILE -Force | Out-Null }
     if (-not (Select-String -Path $PROFILE -Pattern ([regex]::Escape($marker)) -Quiet)) {
         Add-Content -Path $PROFILE -Value "`r`n$marker`r`n. `"$completionScript`""
         Write-Host "已把 Tab 补全写入 $PROFILE（新开 PowerShell 会话生效）" -ForegroundColor Green
+    }
+}
+
+# Git Bash：把 bash 补全写入 ~/.bashrc（幂等）。git 可能在 PATH 里但装在自定义目录
+# （如 D:\software\Git），从 git.exe 反推 bash.exe 位置。
+$gitBashCandidates = @("$env:ProgramFiles\Git\bin\bash.exe", "$env:LOCALAPPDATA\Programs\Git\bin\bash.exe")
+$gitCmd = Get-Command git -ErrorAction SilentlyContinue
+if ($gitCmd) { $gitBashCandidates += (Join-Path (Split-Path -Parent (Split-Path -Parent $gitCmd.Source)) 'bin\bash.exe') }
+$gitBash = $gitBashCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+$completionBash = Join-Path $root 'completion\env-tools.bash'
+if ($gitBash -and (Test-Path $completionBash)) {
+    $bashrc = Join-Path $env:USERPROFILE '.bashrc'
+    # 转成 /d/... 形式；rc 文件必须保持 LF 行尾，不能用 Add-Content（会写 CRLF）
+    $posix = $completionBash -replace '\\', '/'
+    $bashPath = '/' + $posix.Substring(0, 1).ToLower() + $posix.Substring(2)
+    $existing = if (Test-Path $bashrc) { [IO.File]::ReadAllText($bashrc) } else { '' }
+    if (-not $existing.Contains($marker)) {
+        [IO.File]::AppendAllText($bashrc, "`n$marker`nsource `"$bashPath`"`n")
+        Write-Host "已把 Tab 补全写入 Git Bash $bashrc（新开 Git Bash 生效）" -ForegroundColor Green
+    }
+}
+
+# cmd.exe：原生只有文件名补全，参数补全依赖 Clink。检测到 Clink 时把
+# argmatcher 脚本挂进它的自动加载目录（幂等）。
+$clinkDir = Join-Path $env:LOCALAPPDATA 'clink'
+$clinkLua = Join-Path $root 'completion\env-tools.clink.lua'
+if ((Test-Path $clinkDir) -and (Test-Path $clinkLua)) {
+    $shim = Join-Path $clinkDir 'env-tools.lua'
+    $shimBody = "-- Env-Tools completion`ndofile([[$clinkLua]])`n"
+    if (-not (Test-Path $shim) -or [IO.File]::ReadAllText($shim) -ne $shimBody) {
+        [IO.File]::WriteAllText($shim, $shimBody)
+        Write-Host "已把 cmd 补全注册到 Clink（重开 cmd 生效）" -ForegroundColor Green
     }
 }
 

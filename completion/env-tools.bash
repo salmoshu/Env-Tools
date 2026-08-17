@@ -36,8 +36,8 @@ _env_tools_tools() {
                 --provider)
                     _env_tools_reply 'all kimi codex codebuddy deepseek' "$cur"
                     ;;
-                --interval|-i)
-                    COMPREPLY=()  # 数字参数，不补全
+                --interval|-i|--deepseek-key)
+                    COMPREPLY=()  # 值参数，不补全
                     ;;
                 --kimi-credentials|--kimi-web-credentials|--codex-credentials|--codebuddy-credentials|--deepseek-credentials)
                     # shellcheck disable=SC2207

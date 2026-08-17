@@ -70,8 +70,19 @@ Linux 用 `./tools.sh`，Windows 用 `tools.ps1`，参数完全一致：
 凭证文件路径）都能补全。PowerShell 版对 `tools.ps1`、`.\tools.ps1`、完整路径
 等调用形态均生效。
 
-**运行一次 `setup.sh` / `setup.ps1` 会自动把补全写入 `~/.bashrc` / PowerShell
-`$PROFILE`（幂等），新开终端即生效。** 手动启用（当前会话临时生效）：
+**运行一次 `setup.sh` / `setup.ps1` 会自动完成接线（幂等）**，新开终端即生效：
+
+- **bash（Linux/WSL）**：source 行写入 `~/.bashrc`；
+- **PowerShell**：补全脚本写入 `$PROFILE`（内部包装了 `TabExpansion2`，
+  让已输入 `-` 的词也能补全，对其他命令透明）；
+- **Git Bash（Windows）**：source 行写入 `%USERPROFILE%\.bashrc`
+  （git 装在自定义目录也能从 `git.exe` 反推定位）；
+- **cmd.exe**：原生只支持文件名补全。参数补全需安装 [Clink](https://chrisant996.github.io/clink/)
+  （`winget install clink`）；检测到 Clink 后 setup 会自动把
+  `completion/env-tools.clink.lua` 挂进 `%LOCALAPPDATA%\clink\`，对根目录的
+  `tools.cmd` / `setup.cmd` 桥接入口生效。
+
+手动启用（当前会话临时生效）：
 
 ```bash
 source completion/env-tools.bash
