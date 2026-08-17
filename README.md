@@ -67,15 +67,15 @@ Linux 用 `./tools.sh`，Windows 用 `tools.ps1`，参数完全一致：
 
 `completion/` 提供 `tools.sh` / `setup.sh`（bash）与 `tools.ps1` / `setup.ps1`
 （PowerShell）的 Tab 补全：应用名、操作与 usage 参数（含 `--provider` 的取值、
-凭证文件路径）都能补全。
+凭证文件路径）都能补全。PowerShell 版对 `tools.ps1`、`.\tools.ps1`、完整路径
+等调用形态均生效。
 
-bash（当前会话临时生效；把 source 行写进 `~/.bashrc` 可永久生效）：
+**运行一次 `setup.sh` / `setup.ps1` 会自动把补全写入 `~/.bashrc` / PowerShell
+`$PROFILE`（幂等），新开终端即生效。** 手动启用（当前会话临时生效）：
 
 ```bash
 source completion/env-tools.bash
 ```
-
-PowerShell（把下面这行写进 `$PROFILE`，路径按实际仓库位置修改）：
 
 ```powershell
 . "D:\path\to\Env-Tools\completion\Env-Tools.Completion.ps1"

@@ -28,7 +28,9 @@ function script:Get-EnvToolsArgIndex($CommandAst, [string]$WordToComplete) {
 
 # 注意：tools.ps1 / setup.ps1 是脚本而不是 native exe，
 # 这里不用 -Native，Windows PowerShell 5.1 与 PowerShell 7+ 都可用。
-Register-ArgumentCompleter -CommandName 'tools.ps1', 'tools' -ScriptBlock {
+# CommandName 必须覆盖各种调用形态：tools.ps1（PATH 上）、.\tools.ps1、./tools.ps1、
+# 以及完整路径调用（*\tools.ps1 通配符）。
+Register-ArgumentCompleter -CommandName 'tools', 'tools.ps1', '*\tools.ps1', '*/tools.ps1' -ScriptBlock {
     param($wordToComplete, $commandAst, $cursorPosition)
 
     $texts = @($commandAst.CommandElements | ForEach-Object { $_.Extent.Text })
@@ -53,7 +55,8 @@ Register-ArgumentCompleter -CommandName 'tools.ps1', 'tools' -ScriptBlock {
                     Write-EnvToolsCompletion @('all', 'kimi', 'codex', 'codebuddy', 'deepseek') $wordToComplete
                     return
                 }
-                # 数字 / 文件路径参数交给默认补全（文件名）
+                { $_ -in @('--interval', '-i') } { return }  # 数字参数，不补全
+                # 文件路径参数交给默认补全（文件名）
                 default { }
             }
             if ($wordToComplete -and $wordToComplete -notlike '-*') { return }
@@ -67,15 +70,15 @@ Register-ArgumentCompleter -CommandName 'tools.ps1', 'tools' -ScriptBlock {
     }
 }
 
-Register-ArgumentCompleter -CommandName 'setup.ps1', 'setup' -ScriptBlock {
+Register-ArgumentCompleter -CommandName 'setup', 'setup.ps1', '*\setup.ps1', '*/setup.ps1' -ScriptBlock {
     param($wordToComplete, $commandAst, $cursorPosition)
 
     $texts = @($commandAst.CommandElements | ForEach-Object { $_.Extent.Text })
     $index = Get-EnvToolsArgIndex $commandAst $wordToComplete
-    if ($index -ge 1 -and $texts[$index - 1] -eq '-Port') { return }  # 端口号，不补全
+    if ($index -ge 1 -and $texts[$index - 1] -in @('-Port', '-FirewallProfile')) { return }  # 参数值，不补全
 
     if ($wordToComplete -like '-*') {
-        Write-EnvToolsCompletion @('--all', '--kimi', '--codex', '--codebuddy', '-Port') $wordToComplete
+        Write-EnvToolsCompletion @('--all', '--kimi', '--codex', '--codebuddy', '--verbose', '-Port', '-FirewallProfile') $wordToComplete
     } else {
         Write-EnvToolsCompletion @('all', 'kdesk', 'nodejs', 'ai-tools', 'openssh') $wordToComplete
     }

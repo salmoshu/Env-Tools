@@ -90,7 +90,22 @@ foreach ($name in $targets) {
     $i++
     Write-Host ''
     Write-Host "=== [$i/$($targets.Count)] 部署 $name ===" -ForegroundColor Cyan
-    $childArgs = @('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $root $scripts[$name]))
+    $childScript = Join-Path $root $scripts[$name]
+
+    # 预检组件脚本能否解析：文件损坏或丢失 UTF-8 BOM（被编辑器另存）时，
+    # 直接运行只会得到一串难以理解的 ParserError，这里提前给出可操作的提示
+    $parseErrs = $null
+    [void][System.Management.Automation.Language.Parser]::ParseFile($childScript, [ref]$null, [ref]$parseErrs)
+    if ($parseErrs) {
+        $first = $parseErrs[0]
+        Write-Host "$name 组件脚本解析失败: $childScript" -ForegroundColor Red
+        Write-Host "  $($first.Message) (行 $($first.Extent.StartLineNumber), 字符 $($first.Extent.StartColumnNumber))" -ForegroundColor Red
+        Write-Host '脚本文件可能损坏或丢失了 UTF-8 BOM（编辑器另存所致），请重新从仓库同步该文件后再试。' -ForegroundColor Yellow
+        if ($Interactive) { Read-Host '按回车退出' }
+        exit 1
+    }
+
+    $childArgs = @('-NoProfile','-ExecutionPolicy','Bypass','-File',$childScript)
     if ($name -in @('ai-tools','openssh') -and $ToolArgs) { $childArgs += $ToolArgs }
     & powershell @childArgs
     if ($LASTEXITCODE -ne 0) {
@@ -101,5 +116,17 @@ foreach ($name in $targets) {
 }
 
 Write-Host ''
+# 把 Tab 补全写入 PowerShell $PROFILE（幂等），新开 PowerShell 会话即可用
+$completionScript = Join-Path $root 'completion\Env-Tools.Completion.ps1'
+if (Test-Path $completionScript) {
+    $marker = '# Env-Tools completion'
+    New-Item -ItemType Directory -Path (Split-Path -Parent $PROFILE) -Force | Out-Null
+    if (-not (Test-Path $PROFILE)) { New-Item -ItemType File -Path $PROFILE -Force | Out-Null }
+    if (-not (Select-String -Path $PROFILE -Pattern ([regex]::Escape($marker)) -Quiet)) {
+        Add-Content -Path $PROFILE -Value "`r`n$marker`r`n. `"$completionScript`""
+        Write-Host "已把 Tab 补全写入 $PROFILE（新开 PowerShell 会话生效）" -ForegroundColor Green
+    }
+}
+
 Write-Host '=== 部署完成 ===' -ForegroundColor Green
 if ($Interactive) { Read-Host '按回车退出' }

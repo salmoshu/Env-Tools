@@ -80,6 +80,12 @@ case "$(uname -s)" in
                     ;;
             esac
         done
+        # 把 Tab 补全写入 ~/.bashrc（幂等），新开的 bash 会话即可用
+        completion_marker='# Env-Tools completion'
+        if ! grep -qF "$completion_marker" "$HOME/.bashrc" 2>/dev/null; then
+            printf '\n%s\nsource "%s"\n' "$completion_marker" "$ROOT/completion/env-tools.bash" >> "$HOME/.bashrc"
+            echo "已把 Tab 补全写入 $HOME/.bashrc（新开终端生效）"
+        fi
         echo '=== 部署完成 ==='
         ;;
     *)

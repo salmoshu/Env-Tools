@@ -124,6 +124,8 @@ $npmWorker = {
     param([string[]]$names, [string]$npmCache, [string]$npmPrefix, [string]$npmExe)
     $ErrorActionPreference = 'Continue'
     $pkgOf = @{ codex = '@openai/codex'; codebuddy = '@tencent-ai/codebuddy-code' }
+    # 默认源失败时回退的国内 npm 镜像
+    $npmMirror = 'https://registry.npmmirror.com'
 
     # 从 --version 输出中提取 x.y.z（各 CLI 输出格式不一，如 "codex-cli 0.25.0"）
     function Get-Semver($text) {
@@ -151,6 +153,11 @@ $npmWorker = {
         $localVer = Get-Semver $before
         "查询 $name 最新版本 ($pkg) ..."
         $latest = ((& $npmExe view $pkg version --loglevel=error --cache $npmCache 2>$null | Select-Object -Last 1) -replace '\s', '')
+        if (-not $latest) {
+            # 默认源查询失败，回退国内镜像
+            $latest = ((& $npmExe view $pkg version --loglevel=error --cache $npmCache --registry $npmMirror 2>$null | Select-Object -Last 1) -replace '\s', '')
+            if ($latest) { "默认源查询失败，已改用国内镜像 ($npmMirror)" }
+        }
         if ($localVer -and $latest -and ($localVer -eq $latest)) {
             "$name 已是最新 ($localVer)，跳过安装"
             "RESULT|$name|OK"
@@ -164,6 +171,10 @@ $npmWorker = {
     # npm 全局目录不能安全地由多个 npm 进程同时写入，多个包合并为一次 install
     "安装/更新 $($installNames -join '、'): npm install -g $($install -join ' ')"
     & $npmExe install -g --loglevel=error --cache $npmCache $install
+    if ($LASTEXITCODE -ne 0) {
+        "默认源安装失败 (npm exit=$LASTEXITCODE)，改用国内镜像重试: $npmMirror"
+        & $npmExe install -g --loglevel=error --cache $npmCache --registry $npmMirror $install
+    }
     if ($LASTEXITCODE -ne 0) {
         foreach ($name in $installNames) {
             "ERROR: $name 安装失败 (npm exit=$LASTEXITCODE)"

@@ -22,6 +22,8 @@ log() {
 
 KIMI_NPM_PKG="@moonshot-ai/kimi-code"
 KIMI_INSTALL_URL="https://code.kimi.com/kimi-code/install.sh"
+# npm 默认源失败时回退的国内镜像
+NPM_MIRROR="https://registry.npmmirror.com"
 VERBOSE=false
 RESULT_DIR=""
 
@@ -42,9 +44,16 @@ extract_semver() {
     grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1
 }
 
-# npm registry 上该包的最新版本；查询失败（离线等）输出空，调用方按"需要安装"兜底
+# npm registry 上该包的最新版本；默认源查询失败时回退国内镜像；
+# 仍失败（离线等）输出空，调用方按"需要安装"兜底
 latest_npm_version() {
-    npm view "$1" version --loglevel=error --cache "$NPM_CACHE" 2>/dev/null | tail -1
+    local ver
+    ver="$(npm view "$1" version --loglevel=error --cache "$NPM_CACHE" 2>/dev/null | tail -1)"
+    if [ -z "$ver" ]; then
+        ver="$(npm view "$1" version --loglevel=error --cache "$NPM_CACHE" --registry "$NPM_MIRROR" 2>/dev/null | tail -1)"
+        [ -n "$ver" ] && printf '默认源查询失败，已改用国内镜像 (%s)\n' "$NPM_MIRROR" >&2
+    fi
+    printf '%s' "$ver"
 }
 
 # 本地版本与官方最新一致时跳过安装。返回 0=已是最新，1=需要安装
@@ -124,20 +133,23 @@ npm_worker() {
         return 0
     fi
     printf 'npm install -g %s\n' "${pkgs[*]}"
-    if npm install -g --loglevel=error --progress=false --cache "$NPM_CACHE" "${pkgs[@]}"; then
-        hash -r 2>/dev/null || true
-        for name in "${install_names[@]}"; do
-            after="$(version_of "$name")"
-            printf '%s 完成: %s -> %s\n' "$name" "${before_map[$name]:-未安装}" "${after:-未知}"
-            write_result "$name" OK "${before_map[$name]:-未安装}" "${after:-未知}"
-        done
-    else
-        for name in "${install_names[@]}"; do
-            printf 'ERROR: %s 安装/更新失败\n' "$name" >&2
-            write_result "$name" FAIL "${before_map[$name]:-未安装}"
-        done
-        return 1
+    # 默认源失败时回退国内镜像重试一次
+    if ! npm install -g --loglevel=error --progress=false --cache "$NPM_CACHE" "${pkgs[@]}"; then
+        printf '默认源安装失败，改用国内镜像重试: %s\n' "$NPM_MIRROR"
+        if ! npm install -g --loglevel=error --progress=false --cache "$NPM_CACHE" --registry "$NPM_MIRROR" "${pkgs[@]}"; then
+            for name in "${install_names[@]}"; do
+                printf 'ERROR: %s 安装/更新失败\n' "$name" >&2
+                write_result "$name" FAIL "${before_map[$name]:-未安装}"
+            done
+            return 1
+        fi
     fi
+    hash -r 2>/dev/null || true
+    for name in "${install_names[@]}"; do
+        after="$(version_of "$name")"
+        printf '%s 完成: %s -> %s\n' "$name" "${before_map[$name]:-未安装}" "${after:-未知}"
+        write_result "$name" OK "${before_map[$name]:-未安装}" "${after:-未知}"
+    done
 }
 
 kimi_worker() {

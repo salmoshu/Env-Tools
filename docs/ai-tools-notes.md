@@ -51,9 +51,13 @@
   又避开 `npm ls -g` 的 node 冷启动开销（Windows 上串行多次 npm 调用是卡顿主因）。
   与 linux 版行为对齐：多个 npm 工具合并为一次 `npm install -g`，npm 工具与 kimi
   原生安装分两个 Job 并行，输出带 `[npm]`/`[kimi]` 前缀实时合流进日志。
+  npm 下载（`view` 查询与 `install` 安装）默认源失败时，两平台脚本都会自动回退
+  国内镜像 `https://registry.npmmirror.com` 重试一次（2026-08-17 起）。
   三个坑：① PS 5.1 需手动开 TLS 1.2 才能连 code.kimi.com；② 系统代理（Clash/v2ray）
   对它 TLS EOF，脚本内需 `[System.Net.WebRequest]::DefaultWebProxy = $null` 直连；
-  ③ 含中文注释的 ps1 必须存成 **UTF-8 with BOM**，否则 PS 5.1 按 GBK 解析会误吞引号/括号。
+  ③ 含中文注释的 ps1 必须存成 **UTF-8 with BOM**，否则 PS 5.1 按 GBK 解析会误吞引号/括号
+  （典型报错：`字符串缺少终止符` + `缺少右"}"`）。`setup.ps1` 现在会在运行组件脚本前
+  做解析预检，直接把这类损坏报成可操作提示。
 
 ### Kimi 月度总量（网页接口，逆向自官网订阅页，2026-07 已实测）
 
