@@ -11,7 +11,7 @@
 #   setup.ps1 openssh            # 部署 OpenSSH Server（默认端口 2222）
 #   setup.ps1 openssh -Port 2223 # 指定 SSH 端口（-FirewallProfile Any 同理）
 #   setup.ps1 kdesk nodejs       # 部署指定多个组件
-#   右键「使用 PowerShell 运行」时会先询问要部署的组件（直接回车 = all）
+#   右键「使用 PowerShell 运行」时会显示编号菜单选择组件（直接回车 = all）
 #   注：带工具参数时请只指定一个组件（参数会透传给该组件的脚本）
 
 [CmdletBinding()]
@@ -40,16 +40,28 @@ if (-not $isWindows) {
 # --- 未指定组件时交互询问（如右键运行的场景）----------------------------------
 if (-not $PSBoundParameters.ContainsKey('Component')) {
     $Interactive = $true
-    Write-Host '可部署组件: all(全部) / kdesk / nodejs / ai-tools / openssh' -ForegroundColor Cyan
-    $answer = Read-Host '请输入要部署的组件（多个用空格分隔，直接回车 = all）'
+    $menu = [ordered]@{
+        '1' = 'all'
+        '2' = 'kdesk'
+        '3' = 'nodejs'
+        '4' = 'ai-tools'
+        '5' = 'openssh'
+    }
+    Write-Host '可部署组件:' -ForegroundColor Cyan
+    Write-Host '  [1] all (全部)  [2] kdesk  [3] nodejs  [4] ai-tools  [5] openssh'
+    $answer = Read-Host '请输入编号（多个用空格分隔，直接回车 = 1）'
     if (-not [string]::IsNullOrWhiteSpace($answer)) {
-        $Component = $answer -split '\s+' | Where-Object { $_ }
-        $bad = $Component | Where-Object { $_ -notin @('all','kdesk','nodejs','ai-tools','openssh') }
+        $picked = @()
+        $bad = @()
+        foreach ($item in ($answer -split '\s+' | Where-Object { $_ })) {
+            if ($menu.Contains($item)) { $picked += $menu[$item] } else { $bad += $item }
+        }
         if ($bad) {
-            Write-Host "无效组件: $($bad -join ', ')" -ForegroundColor Red
+            Write-Host "无效编号: $($bad -join ', ')" -ForegroundColor Red
             Read-Host '按回车退出'
             exit 1
         }
+        $Component = $picked
     }
 }
 
