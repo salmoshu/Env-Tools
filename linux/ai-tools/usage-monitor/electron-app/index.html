@@ -135,6 +135,9 @@
     }
     .filter-menu.open { display: block; }
     .filter-menu .item {
+      display: flex;
+      align-items: center;
+      gap: 7px;
       padding: 5px 10px;
       border-radius: 5px;
       font-size: 11px;
@@ -143,7 +146,42 @@
       white-space: nowrap;
     }
     .filter-menu .item:hover { background: rgba(255, 255, 255, 0.08); color: var(--text); }
-    .filter-menu .item.active { color: var(--accent); }
+    /* 复选框:点它自由勾选(多选);点条目文字则是"仅显示此项" */
+    .filter-menu .cb {
+      width: 12px;
+      height: 12px;
+      flex-shrink: 0;
+      border: 1px solid var(--faint);
+      border-radius: 3px;
+      position: relative;
+      transition: background 0.12s ease, border-color 0.12s ease;
+    }
+    .filter-menu .item:hover .cb { border-color: var(--dim); }
+    .filter-menu .cb.on { background: var(--accent); border-color: var(--accent); }
+    .filter-menu .cb.on::after {
+      content: "\2713";
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 9px;
+      font-weight: 700;
+      color: #10131a;
+    }
+    /* All 项的部分选中态(只勾了一部分时显示横杠) */
+    .filter-menu .cb.partial { border-color: var(--accent); }
+    .filter-menu .cb.partial::after {
+      content: "";
+      position: absolute;
+      left: 2px;
+      right: 2px;
+      top: 50%;
+      height: 2px;
+      margin-top: -1px;
+      background: var(--accent);
+      border-radius: 1px;
+    }
 
     /* 内容区 */
     .content {
@@ -294,7 +332,7 @@
     <span class="dot"></span>
     <span class="title">AI Usage Monitor</span>
     <span class="filter-wrap">
-      <button class="filter-btn" id="provider-filter" title="Select model to display">
+      <button class="filter-btn" id="provider-filter" title="Select models to display">
         <span class="filter-label">All</span>
         <span class="filter-arrow">&#x25be;</span>
       </button>

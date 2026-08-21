@@ -5,7 +5,9 @@ const filterBtn = document.getElementById("provider-filter");
 const filterMenu = document.getElementById("filter-menu");
 const filterLabel = filterBtn.querySelector(".filter-label");
 let lastPayload = null;
-let currentFilter = "__all__";
+// provider 筛选为多选集合:点 All 行=全选;点条目行=仅显示它;点复选框=自由勾选
+let selectedProviders = new Set();
+let knownProviders = [];
 const ERROR_DISMISS_MS = 8000;
 
 document.getElementById("btn-min").addEventListener("click", () => api.minimize());
@@ -59,6 +61,44 @@ document.addEventListener("click", () => {
   }
 });
 
+function isAllSelected() {
+  return knownProviders.length > 0 && selectedProviders.size === knownProviders.length;
+}
+
+// 勾选态与按钮文案统一从这里刷新
+function refreshFilterUi() {
+  filterMenu.querySelectorAll(".item").forEach((item) => {
+    const cb = item.querySelector(".cb");
+    if (item.dataset.val === "__all__") {
+      cb.classList.toggle("on", isAllSelected());
+      cb.classList.toggle("partial", !isAllSelected() && selectedProviders.size > 0);
+    } else {
+      cb.classList.toggle("on", selectedProviders.has(item.dataset.val));
+      cb.classList.remove("partial");
+    }
+  });
+  if (selectedProviders.size === 0) {
+    filterLabel.textContent = "None";
+  } else if (isAllSelected()) {
+    filterLabel.textContent = "All";
+  } else if (selectedProviders.size === 1) {
+    filterLabel.textContent = [...selectedProviders][0];
+  } else {
+    filterLabel.textContent = `${selectedProviders.size}/${knownProviders.length}`;
+  }
+}
+
+// 筛选变化后重绘内容并贴合窗口
+function applyFilter() {
+  refreshFilterUi();
+  if (lastPayload) {
+    api.resetFit();
+    render(lastPayload);
+    updateCompact();
+    fitWindow();
+  }
+}
+
 function buildFilterMenu(accounts, errors = []) {
   // 拉取失败的模型也保留在下拉框里(错误卡片单独展示),
   // 避免临时失败时选项消失、筛选被静默重置
@@ -71,29 +111,42 @@ function buildFilterMenu(accounts, errors = []) {
       names.push(p);
     }
   }
-  if (!names.includes(currentFilter)) currentFilter = "__all__";
+  // 列表自适应:首次或之前是全选 → 新列表继续全选;否则剔除已消失的 provider
+  const prevAll = knownProviders.length > 0 && selectedProviders.size === knownProviders.length;
+  if (knownProviders.length === 0 || prevAll) {
+    selectedProviders = new Set(names);
+  } else {
+    selectedProviders = new Set([...selectedProviders].filter((n) => names.includes(n)));
+  }
+  knownProviders = names;
+
   filterMenu.innerHTML =
-    '<div class="item" data-val="__all__">All</div>' +
-    names.map((n) => `<div class="item" data-val="${esc(n)}">${esc(n)}</div>`).join("");
+    '<div class="item" data-val="__all__"><span class="cb"></span>All</div>' +
+    names.map((n) => `<div class="item" data-val="${esc(n)}"><span class="cb"></span>${esc(n)}</div>`).join("");
+
   filterMenu.querySelectorAll(".item").forEach((item) => {
-    if (item.dataset.val === currentFilter) item.classList.add("active");
     item.addEventListener("click", (e) => {
       e.stopPropagation();
-      currentFilter = item.dataset.val;
-      // 立即刷新高亮,避免选中后菜单里仍停留在上一次的高亮项
-      filterMenu.querySelectorAll(".item").forEach((i) => i.classList.remove("active"));
-      item.classList.add("active");
-      filterLabel.textContent = currentFilter === "__all__" ? "All" : currentFilter;
-      filterMenu.classList.remove("open");
-      if (lastPayload) {
-        api.resetFit();
-        render(lastPayload);
-        updateCompact();
-        fitWindow();
+      const val = item.dataset.val;
+      if (e.target.closest(".cb")) {
+        // 点复选框:自由勾选/取消,菜单保持打开
+        if (val === "__all__") {
+          selectedProviders = isAllSelected() ? new Set() : new Set(knownProviders);
+        } else if (selectedProviders.has(val)) {
+          selectedProviders.delete(val);
+        } else {
+          selectedProviders.add(val);
+        }
+        applyFilter();
+      } else {
+        // 点条目行:All=全选;单个=仅显示它。点完收起菜单
+        selectedProviders = val === "__all__" ? new Set(knownProviders) : new Set([val]);
+        filterMenu.classList.remove("open");
+        applyFilter();
       }
     });
   });
-  filterLabel.textContent = currentFilter === "__all__" ? "All" : currentFilter;
+  refreshFilterUi();
 }
 
 function updatePinState(pinned) {
@@ -153,14 +206,15 @@ function render(payload) {
     return;
   }
   const { accounts: allAccounts = [], errors = [], versions = {} } = payload.data || {};
-  const accounts = currentFilter === "__all__"
-    ? allAccounts
-    : allAccounts.filter((a) => a.provider === currentFilter);
-  // 报错也按当前筛选显示:选单个模型时隐藏其它模型的报错
-  const visibleErrors = currentFilter === "__all__"
-    ? errors
-    : errors.filter((e) => e.provider === currentFilter);
+  const accounts = allAccounts.filter((a) => selectedProviders.has(a.provider));
+  // 报错也按当前筛选显示:只显示勾选中的模型的报错
+  const visibleErrors = errors.filter((e) => selectedProviders.has(e.provider));
   let html = "";
+
+  if (knownProviders.length > 0 && selectedProviders.size === 0) {
+    content.innerHTML = '<div class="status">No providers selected</div>';
+    return;
+  }
 
   for (const account of accounts) {
     const updated = account.fetched_at
