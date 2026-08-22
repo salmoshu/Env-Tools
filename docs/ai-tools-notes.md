@@ -50,7 +50,8 @@
   shim 不存在即视为未安装：既免疫 PATH 遮蔽（IDE 自带 node 工作区抢解析时会误判），
   又避开 `npm ls -g` 的 node 冷启动开销（Windows 上串行多次 npm 调用是卡顿主因）。
   与 linux 版行为对齐：多个 npm 工具合并为一次 `npm install -g`，npm 工具与 kimi
-  原生安装分两个 Job 并行，输出带 `[npm]`/`[kimi]` 前缀实时合流进日志。
+  原生安装分两个 Job 并行，Job 输出协议行（`LOG|对象|文本` / `RESULT|对象|状态|前后版本`），
+  主线程按对象分条折叠渲染（最新 3 行原位刷新），结束打印安装简报。
   npm 下载（`view` 查询与 `install` 安装）默认源失败时，两平台脚本都会自动回退
   国内镜像 `https://registry.npmmirror.com` 重试一次（2026-08-17 起）。
   三个坑：① PS 5.1 需手动开 TLS 1.2 才能连 code.kimi.com；② 系统代理（Clash/v2ray）
@@ -114,14 +115,19 @@
 - **npm 全局目录不能并发写**：多个 `npm install -g` 并行会互相破坏（codex 曾因此缺 vendor 二进制）。
   多个 npm 包合并到一条 `npm install -g pkgA@latest pkgB@latest`，npm 内部自带并行。
 
-## 终端进度显示技巧（linux/ai-tools/setup_ai_tools.sh）
+## 终端进度显示技巧（ai-tools 安装脚本，两端行为一致）
 
-- 并行线程各自写日志文件，主线程 spinner（`⠋⠙⠹…`）+ `tail -n 5` 最新日志，
-  `\033[<n>A` 上移 + `\033[2K` 清行原地重绘；行数用变量精确记账，线程无输出时占位保持行数稳定。
-- 过程信息用淡色 `\033[2m`，结果（✓/✗、汇总）用醒目色；运行期隐藏光标 `\033[?25l`，退出恢复 `\033[?25h`。
-- 失败线程自动展开日志尾部；TTY 才用折叠视图，管道/重定向退化全量流式输出。
-- 无 TTY 验证折叠 UI：`script -qec "bash xxx.sh" /dev/null` 分配 pty；桩测试用
-  "替换 `main \"$@\"` 为桩函数定义 + main 调用"的方式注入假 worker。
+- 后台工作线程（bash 函数 / PS Job）只输出协议行：`LOG|<对象>|<文本>` 与
+  `RESULT|<对象>|<OK|FAIL>|<前版本>|<后版本>`；主线程增量归集，**按安装对象分条渲染**，
+  每个对象一行标题（spinner/✓/✗）+ 最新 3 行过程消息，原位重绘。
+- Linux：线程写日志文件，主线程按字节偏移增量 `tail -c` 读取（不完整行留在内存缓冲
+  下次续读），`\033[<n>A` 上移 + `\033[2K` 清行；Windows：`Receive-Job` 轮询 +
+  `[Console]::SetCursorPosition` 重绘，panelTop 按绘制后光标位置反推以容忍缓冲区滚动。
+- 过程信息用淡色 `\033[2m`（Linux）；结束后保留面板终态并打印「安装简报」
+  （node/npm 版本 + 每个对象：安装成功/更新成功 before->after/已是最新/失败）。
+- nodejs 依赖部署同样折叠（迷你面板，标题 + 最新 3 行）；失败时展开日志尾部。
+- TTY 才用折叠视图；`--verbose`（Linux）/ `-Verbose`（Windows）、管道/重定向退化
+  全量流式输出。无 TTY 验证折叠 UI：`script -qec "bash xxx.sh" /dev/null` 分配 pty。
 
 ## Env-Tools 项目结构约定
 

@@ -46,6 +46,11 @@
   再固定延迟 3s 让其完成初始化，然后才启动优化器；两个脚本在调用前还有
   `Wait-KdeskWallpaperReady`（等真实窗口）+ 10s 余量。
 - **成功判据**：日志 `optimizer exited, code=0`（打完即退）或 `running in background`（驻留）均正常。
+- **日志出现 `optimizer not found: `（路径为空）**：说明 kdesk 项目目录下没有任何 exe——
+  即优化器文件本身从工作区丢了（`git status` 会看到 ` D windows/kdesk/软件性能优化.exe`）。
+  该 exe 会给运行中的进程打补丁，**易被杀毒软件（含 Windows Defender）隔离/删除**；
+  先用 `git checkout -- windows/kdesk/软件性能优化.exe` 恢复，若再次被删，
+  查 Defender「保护历史记录」并加排除项。
 
 ## 坑 4：使用中功能失效，只有重启 + setup 才恢复
 
