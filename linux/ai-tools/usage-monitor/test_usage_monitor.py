@@ -5,6 +5,7 @@ import os
 import tempfile
 import time
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -74,12 +75,59 @@ class NormalizeTests(unittest.TestCase):
                         "reset_after_seconds": 300,
                     },
                 },
+                "rate_limit_reset_credits": {
+                    "available_count": 1,
+                    "applicable_available_count": 0,
+                },
             }
         )
         self.assertEqual(result["plan"], "plus")
         self.assertEqual(result["windows"][0]["label"], "5h Window")
         self.assertEqual(result["windows"][1]["label"], "7d Window")
         self.assertEqual(result["windows"][1]["used_percent"], 34)
+        self.assertEqual(
+            result["rate_limit_reset_credits"],
+            {"available_count": 1, "applicable_available_count": 0},
+        )
+
+    def test_codex_reset_credits_accept_camel_case_and_numeric_strings(self):
+        result = usage_monitor.normalize_codex(
+            {
+                "planType": "plus",
+                "rateLimitResetCredits": {
+                    "availableCount": "2",
+                    "applicableAvailableCount": "1",
+                },
+            }
+        )
+        self.assertEqual(
+            result["rate_limit_reset_credits"],
+            {"available_count": 2, "applicable_available_count": 1},
+        )
+
+    def test_openai_membership_calculates_calendar_month_end(self):
+        china = timezone(timedelta(hours=8))
+        membership = usage_monitor.normalize_openai_membership(
+            {
+                "membership_purchased_at": "2026-07-23T22:45:56+08:00",
+                "membership_duration_months": 1,
+            },
+            now=datetime(2026, 8, 23, 10, 45, 56, tzinfo=china),
+        )
+
+        self.assertEqual(membership["purchased_at"], "2026-07-23T22:45:56+08:00")
+        self.assertEqual(membership["ends_at"], "2026-08-23T22:45:56+08:00")
+        self.assertEqual(membership["end_after_seconds"], 12 * 3600)
+
+    def test_openai_membership_clamps_shorter_month(self):
+        membership = usage_monitor.normalize_openai_membership(
+            {
+                "membership_purchased_at": "2026-01-31T12:00:00+00:00",
+                "membership_duration_months": 1,
+            },
+            now=datetime(2026, 1, 31, 12, 0, tzinfo=timezone.utc),
+        )
+        self.assertEqual(membership["ends_at"], "2026-02-28T20:00:00+08:00")
 
     def test_codebuddy(self):
         result = usage_monitor.normalize_codebuddy(
@@ -351,6 +399,54 @@ class NormalizeTests(unittest.TestCase):
         bar_line = next(line for line in output.splitlines() if "[" in line)
         # 时间走过一半 → | 位于宽度 28 的第 14 格
         self.assertEqual(bar_line.index("|") - bar_line.index("[") - 1, 14)
+
+    def test_render_shows_openai_usage_limit_reset_credits(self):
+        results = [
+            {
+                "provider": "OpenAI Codex",
+                "plan": "plus",
+                "windows": [],
+                "rate_limit_reset_credits": {
+                    "available_count": 1,
+                    "applicable_available_count": 0,
+                },
+                "fetched_at": "2026-08-23T10:29:31+08:00",
+            }
+        ]
+
+        output = usage_monitor.render(results, [], color=False)
+        self.assertIn(
+            "Reset chance: 1 remaining · Not usable until limit reached",
+            output,
+        )
+
+    def test_render_shows_usable_openai_reset_credit(self):
+        text = usage_monitor.rate_limit_reset_text(
+            {"available_count": 2, "applicable_available_count": 1}
+        )
+        self.assertEqual(text, "Reset chance: 2 remaining · 1 usable now")
+
+    def test_render_shows_openai_membership_period(self):
+        results = [
+            {
+                "provider": "OpenAI Codex",
+                "plan": "plus",
+                "windows": [],
+                "membership": {
+                    "purchased_at": "2026-07-23T22:45:56+08:00",
+                    "ends_at": "2026-08-23T22:45:56+08:00",
+                    "end_after_seconds": 12 * 3600,
+                },
+                "fetched_at": "2026-08-23T10:45:56+08:00",
+            }
+        ]
+
+        output = usage_monitor.render(results, [], color=False)
+        self.assertIn("Membership purchased: 2026-07-23 22:45:56", output)
+        self.assertIn(
+            "Membership ends: 2026-08-23 22:45:56 (ends in 12h 0m)",
+            output,
+        )
 
     def test_one_month_before_handles_month_end(self):
         from datetime import datetime

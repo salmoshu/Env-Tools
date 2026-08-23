@@ -11,6 +11,7 @@ usage:addarg({
     '--watch', '-w', '--interval', '-i', '--json', '--no-color',
     '--no-codex-auto-login', '--deepseek-key',
     '--provider'              .. clink.argmatcher():addarg({'all', 'kimi', 'codex', 'codebuddy', 'deepseek'}),
+    '--config'                .. clink.argmatcher():addarg(clink.filematches),
     '--kimi-credentials'      .. clink.argmatcher():addarg(clink.filematches),
     '--kimi-web-credentials'  .. clink.argmatcher():addarg(clink.filematches),
     '--codex-credentials'     .. clink.argmatcher():addarg(clink.filematches),

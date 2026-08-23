@@ -20,6 +20,11 @@ Python 3 标准库。
   复制；网页端退出登录后需重新复制。可用 `KIMI_WEB_CREDENTIALS_PATH` 或
   `--kimi-web-credentials` 指定其他路径。未配置时自动跳过，不影响其它窗口。
 - Codex：默认读取 `~/.codex/auth.json`。首次使用前执行 `codex login`。
+  会员购买时间记录在 monitor 同目录的 `config.json`。默认按一个自然月计算终止
+  时间，并在终端和 Electron 同时显示购买时间、终止时间及剩余时长。购买或续费后
+  直接修改 `openai.membership_purchased_at` 即可；无时区的时间按本机时区解释。
+  `membership_duration_months` 可调整会员时长。也可通过 `--config` 或环境变量
+  `AI_USAGE_CONFIG_PATH` 使用其他配置文件。
 - CodeBuddy：默认读取
   `~/.local/share/CodeBuddyExtension/Data/Public/auth/Tencent-Cloud.coding-copilot.info`，
   凭证即将过期时自动刷新。首次使用前在 CodeBuddy CLI 中执行 `/login`。
@@ -83,6 +88,11 @@ monitor 本身跨平台）。中文 Windows 的 GBK 控制台无法编码 `░`/
 Kimi/Codex 的 5h、7d 窗口直接带窗口总长；Kimi 月总量与 CodeBuddy 订阅额度
 按月周期重置，窗口起点按重置时间往前推一个自然月估算（28~31 天自适应）。
 CodeBuddy 赠送包等一次性额度周期未知，不显示标记。
+
+OpenAI 返回 usage limit reset 机会时，终端和 Electron 看板会额外显示
+`Reset chance: N remaining · Not usable until limit reached`；触及适用限额后，
+后半句变为 `M usable now` 并以绿色提示。它是手动重置机会，不是额度窗口的
+自动重置倒计时。
 
 各 agent 标题右侧会显示本机已安装的 CLI 版本，如 `Kimi Code (0.33.0)`；
 探测到更新版本时追加黄色的目标版本号 `Kimi Code (0.30.0 → 0.33.0)`，提示应升级 CLI。

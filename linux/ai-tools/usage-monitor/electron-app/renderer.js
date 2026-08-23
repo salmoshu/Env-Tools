@@ -163,6 +163,48 @@ function fmtReset(seconds) {
   return `resets in ${m}m`;
 }
 
+function fmtLimitResetCredits(resetCredits) {
+  if (!resetCredits || typeof resetCredits !== "object") return "";
+  const available = resetCredits.available_count;
+  const applicable = resetCredits.applicable_available_count;
+  if (available == null && applicable == null) return "";
+  const parts = [];
+  if (available != null) parts.push(`${available} remaining`);
+  if (applicable != null) {
+    parts.push(Number(applicable) > 0
+      ? `${applicable} usable now`
+      : "Not usable until limit reached");
+  }
+  return `Reset chance: ${parts.join(" · ")}`;
+}
+
+function fmtDateTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value || "");
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
+    `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+function fmtCompactDuration(seconds) {
+  const total = Math.max(0, Math.floor(seconds));
+  const d = Math.floor(total / 86400);
+  const h = Math.floor((total % 86400) / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
+function membershipEndStatus(endsAt) {
+  const endMs = new Date(endsAt).getTime();
+  if (!Number.isFinite(endMs)) return { text: "", ended: false };
+  const seconds = Math.floor((endMs - Date.now()) / 1000);
+  return seconds >= 0
+    ? { text: `ends in ${fmtCompactDuration(seconds)}`, ended: false }
+    : { text: `ended ${fmtCompactDuration(-seconds)} ago`, ended: true };
+}
+
 function levelClass(pct) {
   if (pct < 50) return "low";
   if (pct < 80) return "mid";
@@ -227,6 +269,17 @@ function render(payload) {
         <span class="plan">${esc(account.plan || "unknown")}</span>
         <span class="updated">${esc(updated)}</span>
       </div>`;
+    const membership = account.membership;
+    if (membership && membership.error) {
+      html += `<div class="membership error">${esc(membership.error)}</div>`;
+    } else if (membership && membership.purchased_at && membership.ends_at) {
+      const endStatus = membershipEndStatus(membership.ends_at);
+      const endClass = endStatus.ended ? " ended" : "";
+      html += `<div class="membership">
+        <div><span>Purchased</span><strong>${esc(fmtDateTime(membership.purchased_at))}</strong></div>
+        <div class="membership-end${endClass}"><span>Ends</span><strong>${esc(fmtDateTime(membership.ends_at))}</strong><em>${esc(endStatus.text)}</em></div>
+      </div>`;
+    }
     for (const w of account.windows || []) {
       const pct = w.used_percent == null ? 0 : Math.max(0, Math.min(100, w.used_percent));
       const frac = timeFraction(w);
@@ -246,6 +299,12 @@ function render(payload) {
         </div>
         <div class="bar"><div class="fill ${levelClass(pct)}" style="width:${pct}%"></div>${marker}</div>
       </div>`;
+    }
+    const limitResetText = fmtLimitResetCredits(account.rate_limit_reset_credits);
+    if (limitResetText) {
+      const applicable = account.rate_limit_reset_credits.applicable_available_count;
+      const statusClass = Number(applicable) > 0 ? " ready" : "";
+      html += `<div class="limit-resets${statusClass}">${esc(limitResetText)}</div>`;
     }
     html += "</div>";
   }

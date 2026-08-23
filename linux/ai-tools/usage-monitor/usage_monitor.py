@@ -56,6 +56,7 @@ KIMI_LATEST_VERSION_URL = "https://code.kimi.com/kimi-code/latest"
 NPM_LATEST_VERSION_URL = "https://registry.npmjs.org/{package}/latest"
 VERSION_CHECK_INTERVAL = 3600
 VERSION_CACHE_PATH = Path.home() / ".cache" / "ai-usage-monitor" / "versions.json"
+MONITOR_CONFIG_PATH = Path(__file__).resolve().with_name("config.json")
 VERSION_TOOLS = {
     "Kimi Code": {"command": "kimi", "source": "kimi"},
     "OpenAI Codex": {"command": "codex", "source": "npm", "package": "@openai/codex"},
@@ -136,6 +137,21 @@ def codex_credentials_path(explicit: str | None = None) -> Path:
         return Path(os.environ["CODEX_AUTH_PATH"]).expanduser()
     codex_home = Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser()
     return codex_home / "auth.json"
+
+
+def monitor_config_path(explicit: str | None = None) -> Path:
+    if explicit:
+        return Path(explicit).expanduser()
+    if os.environ.get("AI_USAGE_CONFIG_PATH"):
+        return Path(os.environ["AI_USAGE_CONFIG_PATH"]).expanduser()
+    return MONITOR_CONFIG_PATH
+
+
+def read_monitor_config(explicit: str | None = None) -> dict[str, Any]:
+    path = monitor_config_path(explicit)
+    if not path.is_file():
+        return {}
+    return read_json(path)
 
 
 def codebuddy_credentials_path(explicit: str | None = None) -> Path:
@@ -672,6 +688,15 @@ def one_month_before(moment: datetime) -> datetime:
     return moment.replace(year=year, month=month, day=day)
 
 
+def add_calendar_months(moment: datetime, months: int) -> datetime:
+    """Move forward by whole calendar months, clamping month-end dates."""
+    month_index = moment.year * 12 + moment.month - 1 + months
+    year, zero_based_month = divmod(month_index, 12)
+    month = zero_based_month + 1
+    day = min(moment.day, calendar.monthrange(year, month)[1])
+    return moment.replace(year=year, month=month, day=day)
+
+
 def monthly_window_seconds(reset_at: datetime) -> int:
     """按月周期的窗口总长：重置时间与前一个月同一时刻之差（28~31 天自适应）。"""
     return int((reset_at - one_month_before(reset_at)).total_seconds())
@@ -774,10 +799,50 @@ def normalize_kimi_monthly(stats: dict[str, Any]) -> dict[str, Any] | None:
     return {"window": window, "extra_lines": extra_lines}
 
 
-def normalize_codex(data: dict[str, Any]) -> dict[str, Any]:
+def normalize_openai_membership(
+    config: Any,
+    now: datetime | None = None,
+) -> dict[str, Any] | None:
+    if not isinstance(config, dict):
+        return None
+    purchased_value = config.get("membership_purchased_at")
+    if not purchased_value:
+        return None
+    purchased_at = parse_timestamp(purchased_value)
+    if purchased_at is None:
+        return {"error": "Invalid membership_purchased_at in config.json"}
+    if purchased_at.tzinfo is None:
+        purchased_at = purchased_at.astimezone()
+    else:
+        purchased_at = purchased_at.astimezone()
+    try:
+        duration_months = max(1, int(config.get("membership_duration_months", 1)))
+    except (TypeError, ValueError):
+        return {"error": "Invalid membership_duration_months in config.json"}
+    ends_at = add_calendar_months(purchased_at, duration_months)
+    current = now or datetime.now().astimezone()
+    if current.tzinfo is None:
+        current = current.astimezone()
+    return {
+        "purchased_at": purchased_at.isoformat(timespec="seconds"),
+        "ends_at": ends_at.isoformat(timespec="seconds"),
+        "end_after_seconds": int((ends_at - current).total_seconds()),
+        "duration_months": duration_months,
+    }
+
+
+def normalize_codex(
+    data: dict[str, Any],
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     rate_limit = data.get("rate_limit") or data.get("rateLimit") or {}
     primary = rate_limit.get("primary_window") or rate_limit.get("primaryWindow") or {}
     secondary = rate_limit.get("secondary_window") or rate_limit.get("secondaryWindow") or {}
+    reset_credits = (
+        data.get("rate_limit_reset_credits")
+        or data.get("rateLimitResetCredits")
+        or {}
+    )
     windows = []
     if primary:
         seconds = int(primary.get("limit_window_seconds") or 0)
@@ -785,13 +850,36 @@ def normalize_codex(data: dict[str, Any]) -> dict[str, Any]:
     if secondary:
         seconds = int(secondary.get("limit_window_seconds") or 0)
         windows.append(normalize_window(window_label(seconds, "Secondary Window"), secondary, seconds))
-    return {
+    result = {
         "provider": "OpenAI Codex",
         "plan": data.get("plan_type") or data.get("planType") or "unknown",
         "windows": windows,
         "credits": data.get("credits"),
         "fetched_at": datetime.now().astimezone().isoformat(timespec="seconds"),
     }
+    if isinstance(reset_credits, dict) and reset_credits:
+        available = reset_credits.get(
+            "available_count", reset_credits.get("availableCount")
+        )
+        applicable = reset_credits.get(
+            "applicable_available_count",
+            reset_credits.get("applicableAvailableCount"),
+        )
+        normalized_reset_credits = {}
+        for key, value in (
+            ("available_count", available),
+            ("applicable_available_count", applicable),
+        ):
+            try:
+                normalized_reset_credits[key] = max(0, int(value))
+            except (TypeError, ValueError):
+                pass
+        if normalized_reset_credits:
+            result["rate_limit_reset_credits"] = normalized_reset_credits
+    membership = normalize_openai_membership(config)
+    if membership:
+        result["membership"] = membership
+    return result
 
 
 def _num(value: Any) -> float:
@@ -930,6 +1018,45 @@ def duration_text(seconds: int | None, expire: bool = False, until_used_up: bool
     if hours:
         return f"{verb} in {hours}h {minutes}m"
     return f"{verb} in {minutes}m"
+
+
+def rate_limit_reset_text(reset_credits: Any) -> str | None:
+    """Format OpenAI's manually usable usage-limit reset credits."""
+    if not isinstance(reset_credits, dict):
+        return None
+    available = reset_credits.get("available_count")
+    applicable = reset_credits.get("applicable_available_count")
+    if available is None and applicable is None:
+        return None
+    parts = []
+    if available is not None:
+        parts.append(f"{available} remaining")
+    if applicable is not None:
+        if applicable > 0:
+            parts.append(f"{applicable} usable now")
+        else:
+            parts.append("Not usable until limit reached")
+    return "Reset chance: " + " · ".join(parts)
+
+
+def compact_duration(seconds: int) -> str:
+    seconds = max(0, int(seconds))
+    days, remainder = divmod(seconds, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes = remainder // 60
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {minutes}m"
+    return f"{minutes}m"
+
+
+def membership_end_text(seconds: int) -> str:
+    return (
+        f"ends in {compact_duration(seconds)}"
+        if seconds >= 0
+        else f"ended {compact_duration(-seconds)} ago"
+    )
 
 
 def bar(value: float, width: int = 28, color: bool = True, time_fraction: float | None = None) -> str:
@@ -1109,6 +1236,24 @@ def render(results: list[dict[str, Any]], errors: list[dict[str, str]], color: b
             lines.append(line)
         for extra in extra_lines:
             lines.append(f"  {extra}")
+        reset_text = rate_limit_reset_text(result.get("rate_limit_reset_credits"))
+        if reset_text:
+            reset_credits = result["rate_limit_reset_credits"]
+            ready = (reset_credits.get("applicable_available_count") or 0) > 0
+            tone = GREEN if color and ready else ""
+            lines.append(f"  {tone}{reset_text}{RESET if tone else ''}")
+        membership = result.get("membership")
+        if isinstance(membership, dict):
+            if membership.get("error"):
+                lines.append(f"  {RED if color else ''}Membership: {membership['error']}{RESET if color else ''}")
+            elif membership.get("purchased_at") and membership.get("ends_at"):
+                purchased = display_timestamp(membership["purchased_at"])
+                ends = display_timestamp(membership["ends_at"])
+                end_after = int(membership.get("end_after_seconds") or 0)
+                status = membership_end_text(end_after)
+                tone = RED if color and end_after < 0 else (YELLOW if color else "")
+                lines.append(f"  Membership purchased: {purchased}")
+                lines.append(f"  {tone}Membership ends: {ends} ({status}){RESET if tone else ''}")
         credits = result.get("credits")
         if isinstance(credits, dict) and credits:
             balance = credits.get("balance")
@@ -1131,6 +1276,11 @@ def persistent_watch_errors(errors: list[dict[str, str]]) -> list[dict[str, str]
 def collect(args: argparse.Namespace) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     results = []
     errors = []
+    try:
+        monitor_config = read_monitor_config(getattr(args, "config", None))
+    except MonitorError as exc:
+        monitor_config = {}
+        errors.append({"provider": "OpenAI Codex", "error": f"Config: {exc}"})
     if args.provider in ("all", "kimi"):
         try:
             kimi_result = normalize_kimi(fetch_kimi(kimi_credentials_path(args.kimi_credentials)))
@@ -1153,7 +1303,8 @@ def collect(args: argparse.Namespace) -> tuple[list[dict[str, Any]], list[dict[s
                     fetch_codex(
                         codex_credentials_path(args.codex_credentials),
                         auto_login=not args.no_codex_auto_login,
-                    )
+                    ),
+                    monitor_config.get("openai") or {},
                 )
             )
         except Exception as exc:
@@ -1339,6 +1490,10 @@ def main() -> int:
         help="Path to Kimi web credentials file (for Monthly Total; defaults to kimi-web.json next to the Kimi credentials)",
     )
     parser.add_argument("--codex-credentials", help="Path to Codex auth.json")
+    parser.add_argument(
+        "--config",
+        help="Path to usage monitor config.json (defaults to the file next to this script)",
+    )
     parser.add_argument("--codebuddy-credentials", help="Path to CodeBuddy credentials file")
     parser.add_argument("--deepseek-key", help="DeepSeek API key (or set DEEPSEEK_API_KEY)")
     parser.add_argument("--deepseek-credentials", help="Path to DeepSeek credentials JSON file")

@@ -7,7 +7,7 @@
 # usage_monitor.py 的全部参数（与 linux/ai-tools/usage-monitor/usage_monitor.py 保持一致）
 $script:EnvToolsUsageOptions = @(
     '--watch', '-w', '--interval', '-i', '--provider', '--json', '--no-color',
-    '--no-codex-auto-login', '--kimi-credentials', '--kimi-web-credentials',
+    '--no-codex-auto-login', '--config', '--kimi-credentials', '--kimi-web-credentials',
     '--codex-credentials', '--codebuddy-credentials', '--deepseek-key', '--deepseek-credentials'
 )
 
@@ -56,7 +56,7 @@ $global:EnvToolsCompleters = @{
                         return
                     }
                     { $_ -in @('--interval', '-i', '--deepseek-key') } { return }  # 值参数，不补全
-                    { $_ -like '--*-credentials' } { return }  # 凭证文件路径，交给默认文件名补全
+                    { $_ -eq '--config' -or $_ -like '--*-credentials' } { return }  # 文件路径，交给默认文件名补全
                     default { }
                 }
                 if ($wordToComplete -and $wordToComplete -notlike '-*') { return }

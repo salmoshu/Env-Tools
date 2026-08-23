@@ -250,6 +250,23 @@
       flex-shrink: 0;
     }
 
+    /* OpenAI 会员购买与终止时间（来自可编辑的 config.json） */
+    .membership {
+      margin: -2px 0 10px;
+      padding: 6px 8px;
+      border-radius: 7px;
+      background: rgba(255, 255, 255, 0.035);
+      color: var(--faint);
+      font-size: 10px;
+      font-variant-numeric: tabular-nums;
+    }
+    .membership > div { display: flex; align-items: baseline; gap: 7px; }
+    .membership span { width: 54px; flex-shrink: 0; }
+    .membership strong { color: var(--dim); font-weight: 500; white-space: nowrap; }
+    .membership em { margin-left: auto; color: var(--yellow); font-style: normal; white-space: nowrap; }
+    .membership-end.ended em { color: var(--red); }
+    .membership.error { color: var(--red); }
+
     /* 配额行 */
     .quota { margin-bottom: 9px; }
     .quota:last-child { margin-bottom: 2px; }
@@ -269,6 +286,13 @@
     }
     .quota-row .reset { color: var(--faint); font-weight: 400; }
     .quota-row .usage { color: var(--accent); font-weight: 600; }
+    .limit-resets {
+      margin: 1px 0 2px;
+      color: var(--faint);
+      font-size: 10px;
+      font-variant-numeric: tabular-nums;
+    }
+    .limit-resets.ready { color: var(--green); }
 
     /* 纯色分级进度条:<50% 绿,<80% 黄,否则红 */
     .bar {
@@ -301,9 +325,11 @@
     .compact .content { padding: 8px 16px 9px; }
     .compact .provider { padding: 8px 12px 7px; margin-bottom: 8px; }
     .compact .provider-head { margin-bottom: 5px; }
+    .compact .membership { margin: 0 0 5px; padding: 3px 7px; }
     .compact .quota { margin-bottom: 3px; }
     .compact .quota-row { margin-bottom: 0; }
     .compact .bar { display: none; }
+    .compact .limit-resets { margin-top: 3px; }
 
     /* 错误与状态 */
     .error-card {
