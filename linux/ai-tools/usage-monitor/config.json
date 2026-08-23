@@ -1,7 +1,7 @@
 {
   "_comment": "Edit membership_purchased_at after buying or renewing OpenAI membership. A timestamp without a timezone uses the computer's local timezone.",
   "openai": {
-    "membership_purchased_at": "2026-07-23 22:45:56",
+    "membership_purchased_at": "2026-08-23 23:00:15",
     "membership_duration_months": 1
   }
 }
