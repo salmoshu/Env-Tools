@@ -4,11 +4,19 @@ const path = require("path");
 
 const MONITOR_SCRIPT = path.join(__dirname, "..", "usage_monitor.py");
 const REFRESH_INTERVAL_MS = 60 * 1000;
+const FETCH_TIMEOUT_MS = 45 * 1000;
 const WINDOW_TITLE = "AI Usage Monitor";
 const MIN_CONTENT_HEIGHT = 140;
 // WSLg 下 Electron 的 alwaysOnTop 不会穿透到 Windows 窗口管理器,
 // 需要通过 powershell.exe 调 SetWindowPos 在 Windows 侧置顶
 const IS_WSL = Boolean(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP);
+const WSL_BACKEND = process.env.AI_USAGE_MONITOR_BACKEND === "wsl";
+const WSL_DISTRO = process.env.AI_USAGE_MONITOR_WSL_DISTRO || "";
+const WSL_MONITOR_SCRIPT = process.env.AI_USAGE_MONITOR_WSL_SCRIPT || "";
+
+if (process.platform === "win32") {
+  app.setAppUserModelId("AIUsageMonitor");
+}
 
 let win = null;
 let refreshTimer = null;
@@ -78,19 +86,46 @@ if (!gotLock) {
 
 function fetchUsage() {
   return new Promise((resolve) => {
-    const child = spawn("python3", [MONITOR_SCRIPT, "--json"], {
+    let command = "python3";
+    let args = [MONITOR_SCRIPT, "--json"];
+    if (WSL_BACKEND) {
+      if (process.platform !== "win32" || !WSL_DISTRO || !WSL_MONITOR_SCRIPT) {
+        resolve({ error: "Invalid WSL backend configuration" });
+        return;
+      }
+      command = "wsl.exe";
+      args = ["-d", WSL_DISTRO, "--exec", "python3", WSL_MONITOR_SCRIPT, "--json"];
+    }
+
+    const child = spawn(command, args, {
       stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
     });
     let stdout = "";
     let stderr = "";
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve(result);
+    };
+    const timeout = setTimeout(() => {
+      child.kill();
+      finish({ error: `Data fetch timed out after ${FETCH_TIMEOUT_MS / 1000}s` });
+    }, FETCH_TIMEOUT_MS);
     child.stdout.on("data", (d) => (stdout += d));
     child.stderr.on("data", (d) => (stderr += d));
-    child.on("error", (err) => resolve({ error: `Cannot run python3: ${err.message}` }));
+    child.on("error", (err) => {
+      const backend = WSL_BACKEND ? `WSL distro ${WSL_DISTRO}` : "python3";
+      finish({ error: `Cannot run ${backend}: ${err.message}` });
+    });
     child.on("close", (code) => {
+      if (settled) return;
       try {
-        resolve({ data: JSON.parse(stdout) });
+        finish({ data: JSON.parse(stdout) });
       } catch {
-        resolve({ error: `Data fetch failed (exit ${code}): ${stderr.trim() || stdout.trim()}` });
+        finish({ error: `Data fetch failed (exit ${code}): ${stderr.trim() || stdout.trim()}` });
       }
     });
   });
@@ -121,7 +156,7 @@ function createWindow() {
     },
   });
 
-  win.loadFile("index.html");
+  win.loadFile(path.join(__dirname, "index.html"));
   win.setTitle(WINDOW_TITLE);
   win.on("closed", () => {
     win = null;
@@ -185,7 +220,7 @@ ipcMain.on("fit-height", (_event, height) => {
   setTimeout(() => (programmaticResize = false), 150);
 });
 
-app.whenReady().then(createWindow);
+if (gotLock) app.whenReady().then(createWindow);
 
 // 窗口关闭即退出进程,终端里 Ctrl+E 可重新拉起
 app.on("window-all-closed", () => app.quit());

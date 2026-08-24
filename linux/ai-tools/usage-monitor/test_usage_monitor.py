@@ -19,6 +19,40 @@ class NormalizeTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"TEST_FLAG": "0"}):
             self.assertFalse(usage_monitor.env_enabled("TEST_FLAG", default=True))
 
+    def test_running_in_wsl_uses_wsl_environment(self):
+        with mock.patch.object(usage_monitor.os, "name", "posix"), mock.patch.dict(
+            os.environ,
+            {"WSL_DISTRO_NAME": "Ubuntu-Test"},
+            clear=True,
+        ):
+            self.assertTrue(usage_monitor.running_in_wsl())
+
+    def test_launch_usage_window_uses_native_windows_launcher_in_wsl(self):
+        process = mock.Mock()
+        with mock.patch.object(usage_monitor, "running_in_wsl", return_value=True), \
+                mock.patch.object(
+                    usage_monitor,
+                    "prepare_windows_launcher",
+                    return_value=(
+                        r"C:\Users\test\AppData\Local\AIUsageMonitor\launch-windows.ps1",
+                        r"\\wsl.localhost\Ubuntu-Test\repo\electron-app",
+                    ),
+                ), \
+                mock.patch.object(usage_monitor.subprocess, "Popen", return_value=process) as popen, \
+                mock.patch.object(usage_monitor.Path, "is_dir", return_value=True), \
+                mock.patch.dict(os.environ, {"WSL_DISTRO_NAME": "Ubuntu-Test"}, clear=True):
+            usage_monitor.launch_usage_window()
+
+        command = popen.call_args.args[0]
+        kwargs = popen.call_args.kwargs
+        self.assertEqual(command[0], "powershell.exe")
+        self.assertIn("launch-windows.ps1", command[command.index("-File") + 1])
+        self.assertIn("electron-app", command[command.index("-SourceDir") + 1])
+        self.assertEqual(command[command.index("-Distro") + 1], "Ubuntu-Test")
+        self.assertEqual(kwargs["stdin"], usage_monitor.subprocess.DEVNULL)
+        self.assertTrue(kwargs["start_new_session"])
+        self.assertIsNone(usage_monitor.launched_window_proc)
+
     def test_kimi(self):
         result = usage_monitor.normalize_kimi(
             {

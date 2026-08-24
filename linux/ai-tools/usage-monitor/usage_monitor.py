@@ -10,6 +10,7 @@ import calendar
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -1359,13 +1360,109 @@ def keyboard_refresh_mode(stream):
 launched_window_proc = None
 
 
-def launch_usage_window() -> None:
-    """启动 Electron 悬浮用量看板窗口(detached,不阻塞终端监控)。
+def running_in_wsl() -> bool:
+    """Return whether this Python process is running inside WSL."""
+    return os.name != "nt" and bool(
+        os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP")
+    )
 
-    窗口进程独立于终端运行;关闭窗口后可再次按 Ctrl+E 重新打开。
+
+def windows_path_from_wsl(path: Path) -> str:
+    """Translate an existing WSL path for consumption by a Windows process."""
+    result = subprocess.run(
+        ["wslpath", "-w", str(path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def prepare_windows_launcher(app_dir: Path) -> tuple[str, str]:
+    """Copy the PowerShell launcher locally so Windows does not execute it over UNC."""
+    windows_dir = Path("/mnt/c/Windows")
+    command_cwd = windows_dir if windows_dir.is_dir() else None
+    result = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-Command",
+            '[Environment]::GetFolderPath("LocalApplicationData")',
+        ],
+        cwd=command_cwd,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    windows_local_app_data = result.stdout.strip()
+    if not windows_local_app_data:
+        raise OSError("Windows LocalApplicationData path is unavailable")
+    local_app_data = subprocess.run(
+        ["wslpath", "-u", windows_local_app_data],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    runtime_dir = Path(local_app_data) / "AIUsageMonitor"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    local_launcher = runtime_dir / "launch-windows.ps1"
+    shutil.copy2(app_dir / "launch-windows.ps1", local_launcher)
+    return windows_path_from_wsl(local_launcher), windows_path_from_wsl(app_dir)
+
+
+def launch_usage_window() -> None:
+    """启动原生 Electron 悬浮看板(detached,不阻塞终端监控)。
+
+    WSL 中通过 powershell.exe 拉起 Windows 原生 Electron，避开 WSLg 图形链路；
+    其它平台保留本地 Electron 启动方式。窗口独立于终端运行，关闭后可再次
+    按 Ctrl+E 重新打开。
     """
     global launched_window_proc
     app_dir = Path(__file__).resolve().parent / "electron-app"
+
+    if running_in_wsl():
+        try:
+            windows_launcher, windows_source_dir = prepare_windows_launcher(app_dir)
+            distro = os.environ.get("WSL_DISTRO_NAME", "")
+            kwargs: dict[str, Any] = {
+                "stdin": subprocess.DEVNULL,
+                "stdout": subprocess.DEVNULL,
+                "stderr": subprocess.DEVNULL,
+                "start_new_session": True,
+            }
+            # Windows 可执行文件无法把 UNC WSL 路径设为当前目录；使用 Windows
+            # 目录可避免启动时出现路径转换警告，脚本位置仍通过 -File 显式传入。
+            windows_dir = Path("/mnt/c/Windows")
+            if windows_dir.is_dir():
+                kwargs["cwd"] = windows_dir
+            subprocess.Popen(
+                [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-WindowStyle",
+                    "Hidden",
+                    "-File",
+                    windows_launcher,
+                    "-SourceDir",
+                    windows_source_dir,
+                    "-Distro",
+                    distro,
+                    "-MonitorScript",
+                    str(Path(__file__).resolve()),
+                ],
+                **kwargs,
+            )
+            # PowerShell 安装/同步后即退出，真正的 Windows Electron 是独立进程；
+            # 不记录为终端子进程，以免退出 watch 时误关从 Windows 启动的看板。
+            launched_window_proc = None
+            return
+        except (OSError, subprocess.SubprocessError) as exc:
+            print(f"\nFailed to launch native Windows usage window: {exc}", flush=True)
+            time.sleep(3)
+            return
+
     electron_bin = app_dir / "node_modules" / ".bin" / (
         "electron.cmd" if os.name == "nt" else "electron"
     )
@@ -1398,8 +1495,8 @@ def launch_usage_window() -> None:
 def kill_usage_window() -> None:
     """退出(含 Ctrl+C)时关闭已拉起的 Electron 窗口。
 
-    单实例锁保证同时只有一个主进程;该进程以 start_new_session 启动,其 pid 即进程组
-    leader,直接终止整个进程组即可连带关闭其 gpu/zygote 等子进程。
+    仅管理直接启动的本地 Electron 进程。WSL 中的 Windows 原生窗口具有独立生命
+    周期，用户可从开始菜单或其它终端复用，因此不会随当前 watch 进程退出而关闭。
     """
     global launched_window_proc
     pids = set()
