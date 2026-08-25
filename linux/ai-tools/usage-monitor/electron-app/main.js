@@ -204,6 +204,71 @@ ipcMain.handle("toggle-pin", () => {
   return next;
 });
 ipcMain.handle("get-pin-state", () => (win ? win.isAlwaysOnTop() : false));
+
+// --- 看板内点击版本徽章触发升级 ---------------------------------------------
+// 直接调组件安装脚本(不经 setup.ps1 入口,避免 UAC 自提权弹窗与交互)
+const UPGRADE_FLAGS = {
+  "Kimi Code": "--kimi",
+  "OpenAI Codex": "--codex",
+  "CodeBuddy": "--codebuddy",
+};
+const UPGRADE_TIMEOUT_MS = 10 * 60 * 1000;
+
+function upgradeSpec(providers) {
+  const flags = (Array.isArray(providers) ? providers : [])
+    .map((p) => UPGRADE_FLAGS[p])
+    .filter(Boolean);
+  if (flags.length === 0) return null;
+  const repoRoot = path.join(__dirname, "..", "..", "..");
+  if (WSL_BACKEND) {
+    if (!WSL_DISTRO || !WSL_MONITOR_SCRIPT) return null;
+    // .../linux/ai-tools/usage-monitor/usage_monitor.py → .../linux/ai-tools/setup_ai_tools.sh
+    const setupScript = WSL_MONITOR_SCRIPT.replace(
+      /usage-monitor\/usage_monitor\.py$/, "setup_ai_tools.sh");
+    if (setupScript === WSL_MONITOR_SCRIPT) return null;
+    return { command: "wsl.exe", args: ["-d", WSL_DISTRO, "--exec", "bash", setupScript, ...flags] };
+  }
+  if (process.platform === "win32") {
+    return {
+      command: "powershell.exe",
+      args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+        path.join(repoRoot, "windows", "ai-tools", "setup_ai_tools.ps1"), ...flags],
+    };
+  }
+  return { command: "bash", args: [path.join(repoRoot, "linux", "ai-tools", "setup_ai_tools.sh"), ...flags] };
+}
+
+ipcMain.handle("upgrade-agents", (_event, providers) => new Promise((resolve) => {
+  const spec = upgradeSpec(providers);
+  if (!spec) {
+    resolve({ ok: false, error: "no upgradable target" });
+    return;
+  }
+  const child = spawn(spec.command, spec.args, {
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  let output = "";
+  let settled = false;
+  const finish = (result) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    resolve(result);
+  };
+  const timer = setTimeout(() => {
+    child.kill();
+    finish({ ok: false, error: `upgrade timed out after ${UPGRADE_TIMEOUT_MS / 60000}min` });
+  }, UPGRADE_TIMEOUT_MS);
+  child.stdout.on("data", (d) => (output += d));
+  child.stderr.on("data", (d) => (output += d));
+  child.on("error", (err) => finish({ ok: false, error: err.message }));
+  child.on("close", (code) => {
+    pushUsage(); // 升级完成后刷新看板数据
+    if (code === 0) finish({ ok: true });
+    else finish({ ok: false, error: `exit ${code}: ${output.trim().slice(-300)}` });
+  });
+}));
 // 渲染层根据内容高度请求自适应窗口(保持小巧,不出现大片空白);
 // 用户手动拖过高度则暂停自动贴合,拖回接近自然高度时恢复
 ipcMain.on("fit-height", (_event, height) => {

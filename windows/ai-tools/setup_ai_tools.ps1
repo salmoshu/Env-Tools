@@ -287,7 +287,35 @@ $kimiWorker = {
 # Job 协议行在主线程按安装对象归集：折叠模式下每个对象只保留最新 3 行原位刷新；
 # 非折叠模式流式打印 [对象] 文本。两种模式都会把干净文本写入日志。
 $verboseMode = ($VerbosePreference -eq 'Continue')
-$collapsed = (-not $verboseMode) -and (-not [Console]::IsOutputRedirected) -and ($Host.Name -notmatch 'ISE')
+
+# 探测宿主终端是否真的支持光标重定位：SetCursorPosition 在某些宿主里不报错但也不生效，
+# 原位重绘会退化成逐帧追加刷屏。探测失败则关闭折叠面板，退化为逐行流式输出。
+function Test-CursorRedraw {
+    try {
+        $y = [Console]::CursorTop
+        $x0 = [Console]::CursorLeft
+        $x1 = if ($x0 -eq 0) { [Math]::Min(2, [Console]::BufferWidth - 1) } else { 0 }
+        [Console]::SetCursorPosition($x1, $y)
+        if ([Console]::CursorLeft -ne $x1) { return $false }
+        [Console]::SetCursorPosition($x0, $y)
+        return ([Console]::CursorLeft -eq $x0)
+    } catch { return $false }
+}
+
+$collapsed = (-not $verboseMode) -and (-not [Console]::IsOutputRedirected) -and ($Host.Name -notmatch 'ISE') -and (Test-CursorRedraw)
+
+# 中文等全角字符在控制台占 2 列，按字符数截断/补齐会折行或错位，需按显示列宽处理
+function Format-PanelLine($s, $width) {
+    $sb = New-Object System.Text.StringBuilder
+    $used = 0
+    foreach ($c in "$s".ToCharArray()) {
+        $cw = if ([int]$c -ge 0x2E80) { 2 } else { 1 }
+        if ($used + $cw -gt $width) { break }
+        [void]$sb.Append($c)
+        $used += $cw
+    }
+    return $sb.ToString() + (' ' * ($width - $used))
+}
 
 $script:spinChars = @('|', '/', '-', '\')
 $script:tick = 0
@@ -323,8 +351,7 @@ function Render-Panel($entries) {
     if ($script:panelTop -lt 0) { $script:panelTop = [Console]::CursorTop }
     [Console]::SetCursorPosition(0, $script:panelTop)
     foreach ($l in $out) {
-        if ($l.Length -gt $width) { $l = $l.Substring(0, $width) }
-        [Console]::WriteLine($l.PadRight($width))
+        [Console]::WriteLine((Format-PanelLine $l $width))
     }
     for ($i = $out.Count; $i -lt $script:panelLines; $i++) { [Console]::WriteLine(''.PadRight($width)) }
     $script:panelLines = $out.Count

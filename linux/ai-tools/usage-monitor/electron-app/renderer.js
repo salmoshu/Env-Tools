@@ -50,16 +50,18 @@ filterBtn.addEventListener("click", (e) => {
     filterMenu.classList.remove("open");
   }
 });
-document.addEventListener("click", () => {
-  if (filterMenu.classList.contains("open")) {
-    filterMenu.classList.remove("open");
-    // 菜单关闭后让窗口缩回内容高度
-    if (lastPayload) {
-      updateCompact();
-      fitWindow();
-    }
+// 收起筛选菜单并让窗口缩回内容高度
+function closeFilterMenu() {
+  if (!filterMenu.classList.contains("open")) return;
+  filterMenu.classList.remove("open");
+  if (lastPayload) {
+    updateCompact();
+    fitWindow();
   }
-});
+}
+document.addEventListener("click", closeFilterMenu);
+// 点到窗口外(无边框悬浮窗失焦)时同样收起菜单
+window.addEventListener("blur", closeFilterMenu);
 
 function isAllSelected() {
   return knownProviders.length > 0 && selectedProviders.size === knownProviders.length;
@@ -229,11 +231,12 @@ function isNewerVersion(latest, current) {
 function versionBadge(versions, provider) {
   const info = (versions || {})[provider] || {};
   if (!info.current) return "";
-  let html = `<span class="ver">v${esc(info.current)}`;
   if (info.latest && isNewerVersion(info.latest, info.current)) {
-    html += ` <span class="new">→ ${esc(info.latest)}</span>`;
+    // 有更新时徽章可点击,触发升级确认
+    return `<span class="ver upgrade" data-provider="${esc(provider)}" title="Click to upgrade">` +
+      `v${esc(info.current)} <span class="new">→ ${esc(info.latest)}</span></span>`;
   }
-  return html + "</span>";
+  return `<span class="ver">v${esc(info.current)}</span>`;
 }
 
 function esc(s) {
@@ -273,10 +276,10 @@ function render(payload) {
     if (membership && membership.error) {
       html += `<div class="membership error">${esc(membership.error)}</div>`;
     } else if (membership && membership.purchased_at && membership.ends_at) {
+      // 单行精简显示:过期时间 + 剩余时间
       const endStatus = membershipEndStatus(membership.ends_at);
       const endClass = endStatus.ended ? " ended" : "";
       html += `<div class="membership">
-        <div><span>Purchased</span><strong>${esc(fmtDateTime(membership.purchased_at))}</strong></div>
         <div class="membership-end${endClass}"><span>Ends</span><strong>${esc(fmtDateTime(membership.ends_at))}</strong><em>${esc(endStatus.text)}</em></div>
       </div>`;
     }
@@ -365,4 +368,72 @@ api.onUsageUpdate((payload) => {
   render(payload);
   updateCompact();
   fitWindow();
+});
+
+// --- 点击版本徽章升级 ------------------------------------------------------
+let upgrading = false;
+
+// 当前所有可升级的 provider
+function outdatedProviders() {
+  const versions = (lastPayload && lastPayload.data && lastPayload.data.versions) || {};
+  return Object.keys(versions).filter((p) => {
+    const info = versions[p] || {};
+    return info.current && info.latest && isNewerVersion(info.latest, info.current);
+  });
+}
+
+function closeUpgradeOverlay() {
+  const el = document.getElementById("upgrade-overlay");
+  if (el) el.remove();
+}
+
+// 升级确认浮层(无边框窗口没有原生 confirm);多个 agent 可升级时给出"全部升级"选项
+function showUpgradeOverlay(provider) {
+  closeUpgradeOverlay();
+  const outdated = outdatedProviders();
+  if (!outdated.includes(provider)) return;
+  const info = lastPayload.data.versions[provider];
+  const buttons = [`<button data-act="one">Upgrade ${esc(provider)}</button>`];
+  if (outdated.length > 1) {
+    buttons.push(`<button data-act="all">Upgrade all (${outdated.length})</button>`);
+  }
+  buttons.push('<button data-act="cancel" class="ghost">Cancel</button>');
+  const overlay = document.createElement("div");
+  overlay.id = "upgrade-overlay";
+  overlay.innerHTML = `<div class="upgrade-card">
+    <div class="upgrade-title">${esc(provider)}</div>
+    <div class="upgrade-ver">v${esc(info.current)} → ${esc(info.latest)}</div>
+    <div class="upgrade-msg">Upgrade now?</div>
+    <div class="upgrade-btns">${buttons.join("")}</div>
+  </div>`;
+  document.body.appendChild(overlay);
+  overlay.addEventListener("click", async (e) => {
+    const btn = e.target.closest("button");
+    if (!btn || upgrading) return;
+    if (btn.dataset.act === "cancel") {
+      closeUpgradeOverlay();
+      return;
+    }
+    const targets = btn.dataset.act === "all" ? outdated : [provider];
+    upgrading = true;
+    const msg = overlay.querySelector(".upgrade-msg");
+    overlay.querySelector(".upgrade-btns").innerHTML = "";
+    msg.textContent = `Upgrading ${targets.join(", ")} …`;
+    try {
+      const res = await api.upgrade(targets);
+      msg.textContent = res && res.ok
+        ? "Upgrade finished"
+        : `Upgrade failed: ${(res && res.error) || "unknown error"}`;
+    } catch (err) {
+      msg.textContent = `Upgrade failed: ${err}`;
+    }
+    upgrading = false;
+    setTimeout(closeUpgradeOverlay, 1600);
+    // 主进程升级完成后会推送 usage-update,这里无需手动重绘
+  });
+}
+
+content.addEventListener("click", (e) => {
+  const badge = e.target.closest(".ver.upgrade");
+  if (badge && !upgrading) showUpgradeOverlay(badge.dataset.provider);
 });

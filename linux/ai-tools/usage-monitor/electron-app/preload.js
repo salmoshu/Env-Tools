@@ -10,4 +10,5 @@ contextBridge.exposeInMainWorld("api", {
   togglePin: () => ipcRenderer.invoke("toggle-pin"),
   getPinState: () => ipcRenderer.invoke("get-pin-state"),
   resetFit: () => ipcRenderer.send("reset-fit"),
+  upgrade: (targets) => ipcRenderer.invoke("upgrade-agents", targets),
 });

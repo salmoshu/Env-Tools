@@ -229,6 +229,57 @@
       min-width: 0;
     }
     .ver .new { color: var(--yellow); font-weight: 600; }
+    /* 有更新时版本徽章可点击,触发升级 */
+    .ver.upgrade { cursor: pointer; border-color: rgba(251, 191, 36, 0.4); }
+    .ver.upgrade:hover { background: rgba(251, 191, 36, 0.12); }
+
+    /* 升级确认浮层(无边框窗口无法使用原生 confirm) */
+    #upgrade-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 30;
+      background: rgba(10, 12, 18, 0.6);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .upgrade-card {
+      background: #1a1f2c;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 16px;
+      min-width: 220px;
+      max-width: 320px;
+      text-align: center;
+      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+    }
+    .upgrade-title { font-weight: 700; font-size: 12px; }
+    .upgrade-ver {
+      color: var(--yellow);
+      font-size: 11px;
+      font-family: var(--font-num);
+      font-variant-numeric: tabular-nums;
+      margin: 3px 0 8px;
+    }
+    .upgrade-msg {
+      color: var(--dim);
+      font-size: 11px;
+      margin-bottom: 10px;
+      word-break: break-all;
+    }
+    .upgrade-btns { display: flex; flex-direction: column; gap: 6px; }
+    .upgrade-btns button {
+      background: rgba(110, 168, 254, 0.15);
+      color: var(--accent);
+      border: 1px solid rgba(110, 168, 254, 0.35);
+      border-radius: 6px;
+      font: 11px var(--font-ui);
+      padding: 5px 10px;
+      cursor: pointer;
+    }
+    .upgrade-btns button:hover { background: rgba(110, 168, 254, 0.28); }
+    .upgrade-btns button.ghost { background: transparent; color: var(--faint); border-color: var(--border); }
+    .upgrade-btns button.ghost:hover { color: var(--text); }
     .plan {
       font-size: 10px;
       font-weight: 600;

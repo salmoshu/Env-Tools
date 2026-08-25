@@ -37,6 +37,44 @@ function Show-LauncherError([string]$Message) {
     }
 }
 
+function Test-ElectronRuntime([string]$ElectronPath) {
+    if (-not (Test-Path -LiteralPath $ElectronPath -PathType Leaf)) {
+        return $false
+    }
+
+    try {
+        # Test-Path alone is insufficient: an interrupted extraction can leave a
+        # truncated electron.exe behind.  Start it with a side-effect-free flag so
+        # Windows validates the PE image before we trust the installation stamp.
+        $process = Start-Process `
+            -FilePath $ElectronPath `
+            -ArgumentList @("--version") `
+            -WorkingDirectory (Split-Path -Parent $ElectronPath) `
+            -WindowStyle Hidden `
+            -Wait `
+            -PassThru
+        if ($process.ExitCode -ne 0) {
+            Write-LauncherLog "Electron runtime validation exited with code $($process.ExitCode): $ElectronPath"
+            return $false
+        }
+        return $true
+    } catch {
+        Write-LauncherLog "Electron runtime validation failed: $($_.Exception.Message)"
+        return $false
+    }
+}
+
+function Remove-BrokenElectronRuntime([string]$ElectronModuleDir) {
+    $distDir = Join-Path $ElectronModuleDir "dist"
+    $pathFile = Join-Path $ElectronModuleDir "path.txt"
+    if (Test-Path -LiteralPath $distDir) {
+        Remove-Item -LiteralPath $distDir -Recurse -Force
+    }
+    if (Test-Path -LiteralPath $pathFile) {
+        Remove-Item -LiteralPath $pathFile -Force
+    }
+}
+
 function Get-WslSourceInfo([string]$Path) {
     $plainPath = $Path -replace '^Microsoft\.PowerShell\.Core\\FileSystem::', ''
     $match = [regex]::Match(
@@ -126,9 +164,15 @@ try {
     } else {
         ""
     }
-    $electronPath = Join-Path $runtimeDir "node_modules\electron\dist\electron.exe"
+    $electronModuleDir = Join-Path $runtimeDir "node_modules\electron"
+    $electronPath = Join-Path $electronModuleDir "dist\electron.exe"
+    $electronValid = Test-ElectronRuntime $electronPath
 
-    if ($sourceHash -ne $installedHash -or -not (Test-Path -LiteralPath $electronPath)) {
+    if ($sourceHash -ne $installedHash -or -not $electronValid) {
+        if ((Test-Path -LiteralPath $electronPath) -and -not $electronValid) {
+            Write-LauncherLog "Removing an invalid or incomplete Electron runtime"
+            Remove-BrokenElectronRuntime $electronModuleDir
+        }
         Copy-Item -LiteralPath $sourcePackage -Destination $runtimePackage -Force
         $npm = Get-Command npm.cmd -ErrorAction SilentlyContinue
         if (-not $npm) {
@@ -147,12 +191,15 @@ try {
 
         # Electron 43+ exposes an explicit installer instead of relying on an
         # npm postinstall hook. The npm package alone does not contain electron.exe.
-        if (-not (Test-Path -LiteralPath $electronPath)) {
+        if (-not (Test-ElectronRuntime $electronPath)) {
             $node = Get-Command node.exe -ErrorAction SilentlyContinue
             $electronInstaller = Join-Path $runtimeDir "node_modules\electron\install.js"
             if (-not $node -or -not (Test-Path -LiteralPath $electronInstaller)) {
                 throw "Electron binary installer is unavailable after npm install."
             }
+            # install.js treats any existing electron.exe as installed, even if it
+            # is truncated.  Always extract into a clean dist directory here.
+            Remove-BrokenElectronRuntime $electronModuleDir
             $npmRegistry = (& $npm.Source config get registry).Trim()
             if (-not $env:ELECTRON_MIRROR -and $npmRegistry -like "*npmmirror.com*") {
                 $env:ELECTRON_MIRROR = "https://npmmirror.com/mirrors/electron/"
@@ -163,8 +210,8 @@ try {
                 throw "Electron binary installation failed with exit code $LASTEXITCODE."
             }
         }
-        if (-not (Test-Path -LiteralPath $electronPath)) {
-            throw "Electron installation completed without creating $electronPath"
+        if (-not (Test-ElectronRuntime $electronPath)) {
+            throw "Electron installation completed but the runtime is not executable: $electronPath"
         }
         Set-Content -LiteralPath $stampPath -Value $sourceHash -Encoding ASCII
     }
