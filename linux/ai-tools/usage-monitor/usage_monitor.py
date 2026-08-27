@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Kimi Code / OpenAI Codex / DeepSeek 本地终端额度监控（不依赖 Sub2API）。"""
+"""Kimi Code / OpenAI Codex / DeepSeek / GLM 本地终端额度监控（不依赖 Sub2API）。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import calendar
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -52,6 +53,16 @@ TOKEN_REFRESH_THRESHOLD = 300
 DEEPSEEK_BALANCE_URL = "https://api.deepseek.com/user/balance"
 # 假定每月额度上限为 50 元；余额超过时按 50 元截断后再算百分比。
 DEEPSEEK_MONTHLY_LIMIT = 50.0
+
+# 智谱 BigModel 通用 API 的余额查询。鉴权与模型 API 相同，使用 Bearer API Key。
+GLM_BALANCE_URL = "https://open.bigmodel.cn/api/paas/v4/balance"
+# BigModel 财务中心页面当前使用的账户报表接口，用于兼容未开放
+# /api/paas/v4/balance 的平台版本。
+GLM_FINANCE_URL = (
+    "https://open.bigmodel.cn/api/biz/account/query-customer-account-report"
+)
+# 与 DeepSeek 卡片保持同一展示口径，以 50 元为用量进度基准。
+GLM_MONTHLY_LIMIT = 50.0
 
 # 看板标题右侧的 CLI 版本标注：当前版本来自本机 `cmd --version`，最新版本按
 # VERSION_CHECK_INTERVAL 周期探测并缓存；有更新时追加黄色的 "→ 新版本号"
@@ -584,30 +595,113 @@ def fetch_deepseek(key: str | None = None, credentials_path: str | None = None) 
     )
 
 
-def normalize_deepseek(data: dict[str, Any]) -> dict[str, Any]:
-    infos = data.get("balance_infos") or []
-    balance = next(
-        (b for b in infos if str(b.get("currency") or "").upper() == "CNY"),
-        None,
+def glm_credentials_path(explicit: str | None = None) -> Path:
+    if explicit:
+        return Path(explicit).expanduser()
+    env = os.environ.get("GLM_CREDENTIALS_PATH")
+    if env:
+        return Path(env).expanduser()
+    return Path.home() / ".glm" / "credentials.json"
+
+
+def glm_api_key(explicit: str | None = None, credentials_path: str | None = None) -> str:
+    if explicit:
+        return explicit
+    for name in ("GLM_API_KEY", "ZHIPU_API_KEY", "ZHIPUAI_API_KEY"):
+        key = os.environ.get(name)
+        if key:
+            return key
+    path = Path(credentials_path).expanduser() if credentials_path else glm_credentials_path()
+    if path.is_file():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise MonitorError(f"Cannot read GLM credentials file {path}: {exc}")
+        key = (
+            data.get("api_key")
+            or data.get("GLM_API_KEY")
+            or data.get("ZHIPU_API_KEY")
+            or data.get("ZHIPUAI_API_KEY")
+        )
+        if not key:
+            raise MonitorError(f"GLM credentials file {path} is missing api_key")
+        return key
+    raise MonitorError(
+        "GLM_API_KEY not set; export it, write it to ~/.glm/credentials.json, or pass --glm-key"
     )
-    if balance is None:
-        balance = infos[0] if infos else {}
-    total = _num(balance.get("total_balance"))
-    granted = _num(balance.get("granted_balance"))
-    topped_up = _num(balance.get("topped_up_balance"))
+
+
+def fetch_glm(key: str | None = None, credentials_path: str | None = None) -> dict[str, Any]:
+    api_key = glm_api_key(key, credentials_path)
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Accept": "application/json",
+    }
+    override = os.environ.get("GLM_BALANCE_URL")
+    urls = [override] if override else [GLM_BALANCE_URL, GLM_FINANCE_URL]
+    last_error: Exception | None = None
+    for url in urls:
+        try:
+            result = request_json(
+                url,
+                headers=headers,
+                use_proxy=env_enabled("GLM_USE_PROXY", default=True),
+                timeout=int(os.environ.get("GLM_TIMEOUT", "30")),
+            )
+        except MonitorError as exc:
+            last_error = exc
+            continue
+        if result.get("balance_infos") is not None or isinstance(result.get("data"), dict):
+            return result
+        error = result.get("error") or result.get("msg") or result.get("message")
+        last_error = MonitorError(f"GLM balance query failed: {error or 'unexpected response'}")
+    if last_error:
+        raise last_error
+    raise MonitorError("GLM balance query failed: no endpoint configured")
+
+
+def normalize_balance_provider(
+    data: dict[str, Any],
+    provider: str,
+    monthly_limit: float,
+) -> dict[str, Any]:
+    infos = data.get("balance_infos") or []
+    report = data.get("data") if isinstance(data.get("data"), dict) else {}
+    if infos:
+        balance = next(
+            (b for b in infos if str(b.get("currency") or "").upper() == "CNY"),
+            None,
+        )
+        if balance is None:
+            balance = infos[0]
+        total = _num(balance.get("total_balance"))
+        granted = _num(balance.get("granted_balance"))
+        topped_up = _num(balance.get("topped_up_balance"))
+    else:
+        # 财务中心 query-customer-account-report 的字段命名。
+        total = _num(report.get("balance"))
+        granted = _num(report.get("giveAmount"))
+        topped_up = _num(report.get("rechargeAmount"))
     # 进度条口径与其它模型保持一致:余额转为使用量(50 - 余额),低于 0 时截断为 0
-    usage = max(0.0, DEEPSEEK_MONTHLY_LIMIT - total)
-    capped = min(usage, DEEPSEEK_MONTHLY_LIMIT)
-    fill_percent = percent(used=capped * 100 / DEEPSEEK_MONTHLY_LIMIT)
+    usage = max(0.0, monthly_limit - total)
+    capped = min(usage, monthly_limit)
+    fill_percent = percent(used=capped * 100 / monthly_limit)
     extra_lines = [
-        f"Balance: ¥{total:.2f} / ¥{DEEPSEEK_MONTHLY_LIMIT:.2f}",
-        f"Usage: ¥{usage:.2f} / ¥{DEEPSEEK_MONTHLY_LIMIT:.2f}",
+        f"Balance: ¥{total:.2f} / ¥{monthly_limit:.2f}",
+        f"Usage: ¥{usage:.2f} / ¥{monthly_limit:.2f}",
         f"Granted: ¥{granted:.2f}   Topped-up: ¥{topped_up:.2f}",
     ]
+    if report:
+        available = _num(report.get("availableBalance", total))
+        frozen = _num(report.get("frozenBalance"))
+        spent = _num(report.get("totalSpendAmount"))
+        extra_lines.append(
+            f"Available: ¥{available:.2f}   Frozen: ¥{frozen:.2f}   Total spent: ¥{spent:.2f}"
+        )
     if not data.get("is_available", True):
         extra_lines.append("Account unavailable")
     return {
-        "provider": "DeepSeek",
+        "provider": provider,
         "plan": "API",
         "windows": [
             {
@@ -622,6 +716,14 @@ def normalize_deepseek(data: dict[str, Any]) -> dict[str, Any]:
         "extra_lines": extra_lines,
         "fetched_at": datetime.now().astimezone().isoformat(timespec="seconds"),
     }
+
+
+def normalize_deepseek(data: dict[str, Any]) -> dict[str, Any]:
+    return normalize_balance_provider(data, "DeepSeek", DEEPSEEK_MONTHLY_LIMIT)
+
+
+def normalize_glm(data: dict[str, Any]) -> dict[str, Any]:
+    return normalize_balance_provider(data, "GLM", GLM_MONTHLY_LIMIT)
 
 
 def percent(
@@ -1117,10 +1219,15 @@ def _semver_key(text: str) -> tuple[int, ...]:
 
 def detect_cli_version(command: str) -> str | None:
     """本机已安装 CLI 的版本（取 --version 输出中的首个 x.y.z）；未安装返回 None。"""
+    command_args: list[str] = [command, "--version"]
+    if running_in_wsl():
+        # Windows 原生 Electron 通过 `wsl.exe --exec python3` 启动后端时，
+        # PATH 不包含 .bashrc 中初始化的 NVM 全局 bin。用交互式 bash
+        # 探测，确保版本来自与用户终端/升级脚本相同的 CLI。
+        command_args = ["bash", "-ic", f"{shlex.quote(command)} --version"]
     try:
         completed = subprocess.run(
-            f"{command} --version",
-            shell=True,
+            command_args,
             capture_output=True,
             text=True,
             timeout=15,
@@ -1320,6 +1427,13 @@ def collect(args: argparse.Namespace) -> tuple[list[dict[str, Any]], list[dict[s
             )
         except Exception as exc:
             errors.append({"provider": "DeepSeek", "error": str(exc)})
+    if args.provider in ("all", "glm"):
+        try:
+            results.append(
+                normalize_glm(fetch_glm(args.glm_key, args.glm_credentials))
+            )
+        except Exception as exc:
+            errors.append({"provider": "GLM", "error": str(exc)})
     return results, errors
 
 
@@ -1569,10 +1683,10 @@ def enable_windows_ansi() -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Standalone Kimi Code / Codex usage monitor for the terminal")
+    parser = argparse.ArgumentParser(description="Standalone Kimi Code / Codex / DeepSeek / GLM usage monitor for the terminal")
     parser.add_argument("--watch", "-w", action="store_true", help="Keep refreshing")
     parser.add_argument("--interval", "-i", type=int, default=180, help="Refresh interval in seconds (default: 180)")
-    parser.add_argument("--provider", choices=("all", "kimi", "codex", "deepseek"), default="all")
+    parser.add_argument("--provider", choices=("all", "kimi", "codex", "deepseek", "glm"), default="all")
     parser.add_argument("--kimi-credentials", help="Path to Kimi credentials file")
     parser.add_argument(
         "--kimi-web-credentials",
@@ -1585,6 +1699,8 @@ def main() -> int:
     )
     parser.add_argument("--deepseek-key", help="DeepSeek API key (or set DEEPSEEK_API_KEY)")
     parser.add_argument("--deepseek-credentials", help="Path to DeepSeek credentials JSON file")
+    parser.add_argument("--glm-key", help="GLM API key (or set GLM_API_KEY / ZHIPU_API_KEY)")
+    parser.add_argument("--glm-credentials", help="Path to GLM credentials JSON file")
     parser.add_argument("--json", action="store_true", help="Output JSON")
     parser.add_argument("--no-color", action="store_true", help="Disable ANSI colors")
     parser.add_argument(

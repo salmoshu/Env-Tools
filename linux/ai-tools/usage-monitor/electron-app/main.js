@@ -132,9 +132,10 @@ function fetchUsage() {
 }
 
 async function pushUsage() {
-  if (!win) return;
+  if (!win) return null;
   const result = await fetchUsage();
   if (win) win.webContents.send("usage-update", result);
+  return result;
 }
 
 function createWindow() {
@@ -225,7 +226,16 @@ function upgradeSpec(providers) {
     const setupScript = WSL_MONITOR_SCRIPT.replace(
       /usage-monitor\/usage_monitor\.py$/, "setup_ai_tools.sh");
     if (setupScript === WSL_MONITOR_SCRIPT) return null;
-    return { command: "wsl.exe", args: ["-d", WSL_DISTRO, "--exec", "bash", setupScript, ...flags] };
+    // wsl.exe --exec 默认不读 .bashrc，会绕过 NVM 并调到系统 npm，
+    // 结果是“安装命令成功”却升级了另一个全局目录。交互式
+    // bash 会加载用户的 NVM/PATH；位置参数传脚本和 flags，不拼 shell 字符串。
+    return {
+      command: "wsl.exe",
+      args: [
+        "-d", WSL_DISTRO, "--exec", "bash", "-ic",
+        'exec bash "$1" "${@:2}"', "ai-usage-upgrade", setupScript, ...flags,
+      ],
+    };
   }
   if (process.platform === "win32") {
     return {
@@ -262,10 +272,16 @@ ipcMain.handle("upgrade-agents", (_event, providers) => new Promise((resolve) =>
   child.stdout.on("data", (d) => (output += d));
   child.stderr.on("data", (d) => (output += d));
   child.on("error", (err) => finish({ ok: false, error: err.message }));
-  child.on("close", (code) => {
-    pushUsage(); // 升级完成后刷新看板数据
-    if (code === 0) finish({ ok: true });
-    else finish({ ok: false, error: `exit ${code}: ${output.trim().slice(-300)}` });
+  child.on("close", async (code) => {
+    if (settled) return;
+    if (code !== 0) {
+      finish({ ok: false, error: `exit ${code}: ${output.trim().slice(-300)}` });
+      return;
+    }
+    // 等到后端重新探测 CLI 版本并推送到渲染层后再报成功，
+    // 避免浮层显示完成时旧版本箭头仍留在页面上。
+    await pushUsage();
+    finish({ ok: true });
   });
 }));
 // 渲染层根据内容高度请求自适应窗口(保持小巧,不出现大片空白);

@@ -32,7 +32,7 @@ filterBtn.addEventListener("click", (e) => {
   if (opening) {
     // 窗口高度按内容自适应贴合,选中单个矮卡片时窗口可能比菜单还矮。
     // 打开菜单时先按自然高度完整展开,并让窗口临时长高到能放下整个列表,
-    // 避免菜单被窗口底部裁掉、导致列表首尾的选项(All/DeepSeek)看不见。
+    // 避免菜单被窗口底部裁掉、导致列表首尾的选项(All/最后一个 provider)看不见。
     filterMenu.classList.add("open");
     filterMenu.style.maxHeight = "";
     const natural = filterMenu.offsetHeight;

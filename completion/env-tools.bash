@@ -12,7 +12,7 @@ _env_tools_reply() {
 }
 
 # usage_monitor.py 的全部参数（与 linux/ai-tools/usage-monitor/usage_monitor.py 保持一致）
-_env_tools_usage_opts='--watch -w --interval -i --provider --json --no-color --no-codex-auto-login --config --kimi-credentials --kimi-web-credentials --codex-credentials --deepseek-key --deepseek-credentials'
+_env_tools_usage_opts='--watch -w --interval -i --provider --json --no-color --no-codex-auto-login --config --kimi-credentials --kimi-web-credentials --codex-credentials --deepseek-key --deepseek-credentials --glm-key --glm-credentials'
 
 _env_tools_tools() {
     local cur prev
@@ -34,12 +34,12 @@ _env_tools_tools() {
             [ "${COMP_WORDS[2]}" = '--usage' ] || return
             case "$prev" in
                 --provider)
-                    _env_tools_reply 'all kimi codex deepseek' "$cur"
+                    _env_tools_reply 'all kimi codex deepseek glm' "$cur"
                     ;;
-                --interval|-i|--deepseek-key)
+                --interval|-i|--deepseek-key|--glm-key)
                     COMPREPLY=()  # 值参数，不补全
                     ;;
-                --config|--kimi-credentials|--kimi-web-credentials|--codex-credentials|--deepseek-credentials)
+                --config|--kimi-credentials|--kimi-web-credentials|--codex-credentials|--deepseek-credentials|--glm-credentials)
                     # shellcheck disable=SC2207
                     COMPREPLY=( $(compgen -f -- "$cur") )  # 文件路径参数，补全文件名
                     ;;

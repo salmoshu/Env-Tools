@@ -268,13 +268,15 @@ write_result() {
 emit() { printf 'LOG|%s|%s\n' "$1" "$2"; }
 
 npm_worker() {
-    local names=("$@") pkgs=() install_names=() name before after latest local_ver n
-    local -A before_map=()
+    local names=("$@") pkgs=() install_names=() name before after latest local_ver after_ver n
+    local verify_failed=false
+    local -A before_map=() latest_map=()
     for name in "${names[@]}"; do
         before_map[$name]="$(version_of "$name")"
         local_ver="$(printf '%s' "${before_map[$name]}" | extract_semver)"
         emit "$name" "查询最新版本 ($(pkg_of "$name")) ..."
         latest="$(latest_npm_version "$(pkg_of "$name")")"
+        latest_map[$name]="$latest"
         [ -n "$NPM_SOURCE_NOTE" ] && emit "$name" "$NPM_SOURCE_NOTE"
         if is_up_to_date "$local_ver" "$latest"; then
             emit "$name" "已是最新 ($local_ver)，跳过安装"
@@ -311,9 +313,21 @@ npm_worker() {
     hash -r 2>/dev/null || true
     for name in "${install_names[@]}"; do
         after="$(version_of "$name")"
-        emit "$name" "完成: ${before_map[$name]:-未安装} -> ${after:-未知}"
-        write_result "$name" OK "${before_map[$name]:-未安装}" "${after:-未知}"
+        after_ver="$(printf '%s' "$after" | extract_semver)"
+        if [ -z "$after_ver" ]; then
+            emit "$name" "ERROR: npm 返回成功，但升级后 PATH 中找不到 $name"
+            write_result "$name" FAIL "${before_map[$name]:-未安装}" ''
+            verify_failed=true
+        elif [ -n "${latest_map[$name]}" ] && [ "$after_ver" != "${latest_map[$name]}" ]; then
+            emit "$name" "ERROR: npm 返回成功，但版本校验失败 ($after_ver != ${latest_map[$name]})"
+            write_result "$name" FAIL "${before_map[$name]:-未安装}" "$after"
+            verify_failed=true
+        else
+            emit "$name" "完成: ${before_map[$name]:-未安装} -> $after"
+            write_result "$name" OK "${before_map[$name]:-未安装}" "$after"
+        fi
     done
+    $verify_failed && return 1
 }
 
 # 合并安装（多个 npm 包一次 install，npm 全局目录不能并发写），

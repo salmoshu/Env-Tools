@@ -165,6 +165,7 @@ $npmWorker = {
     $install = @()
     $installNames = @()
     $beforeMap = @{}
+    $latestMap = @{}
     foreach ($name in $names) {
         $pkg = $pkgOf[$name]
         $before = Get-LocalVersion $name $npmPrefix
@@ -178,6 +179,7 @@ $npmWorker = {
             $latest = ((& $npmExe view $pkg version --loglevel=error --cache $npmCache --registry $npmMirror 2>$null | Select-Object -Last 1) -replace '\s', '')
             if ($latest) { "LOG|$name|默认源查询失败，已改用国内镜像 ($npmMirror)" }
         }
+        $latestMap[$name] = $latest
         if ($localVer -and $latest -and ($localVer -eq $latest)) {
             "LOG|$name|已是最新 ($localVer)，跳过安装"
             "RESULT|$name|OK|$beforeText|$beforeText"
@@ -210,8 +212,17 @@ $npmWorker = {
     foreach ($name in $installNames) {
         $after = Get-LocalVersion $name $npmPrefix
         $afterText = if ($after) { $after } else { '未知' }
-        "LOG|$name|完成: $($beforeMap[$name]) -> $afterText"
-        "RESULT|$name|OK|$($beforeMap[$name])|$afterText"
+        $afterVer = Get-Semver $after
+        if (-not $afterVer) {
+            "LOG|$name|ERROR: npm 返回成功，但升级后在 npm prefix 中找不到 $name"
+            "RESULT|$name|FAIL|$($beforeMap[$name])|"
+        } elseif ($latestMap[$name] -and ($afterVer -ne $latestMap[$name])) {
+            "LOG|$name|ERROR: npm 返回成功，但版本校验失败 ($afterVer != $($latestMap[$name]))"
+            "RESULT|$name|FAIL|$($beforeMap[$name])|$afterText"
+        } else {
+            "LOG|$name|完成: $($beforeMap[$name]) -> $afterText"
+            "RESULT|$name|OK|$($beforeMap[$name])|$afterText"
+        }
     }
 }
 

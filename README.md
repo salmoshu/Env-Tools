@@ -54,7 +54,7 @@ Linux（bash）：
 Linux 用 `./tools.sh`，Windows 用 `tools.ps1`，参数完全一致：
 
 ```bash
-./tools.sh ai-tools --usage              # 持续监控 Kimi / Codex / DeepSeek 余量（Ctrl+R 刷新）
+./tools.sh ai-tools --usage              # 持续监控 Kimi / Codex / DeepSeek / GLM 余量（Ctrl+R 刷新）
 ./tools.sh ai-tools --usage --json       # 单次输出 JSON，供其他脚本读取
 ./tools.sh openssh --status              # 查看 sshd 服务状态、监听端口与连接示例
 ./tools.sh                               # 查看完整用法

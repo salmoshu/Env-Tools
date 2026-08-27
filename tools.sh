@@ -22,7 +22,7 @@ usage() {
 用法: ./tools.sh <应用> <操作> [参数...]
 
 应用与操作:
-  ai-tools --usage [参数...]  查看 Kimi / Codex / DeepSeek 余量
+  ai-tools --usage [参数...]  查看 Kimi / Codex / DeepSeek / GLM 余量
   openssh --status            查看 sshd 服务状态与监听端口
 
 示例:

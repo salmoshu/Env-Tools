@@ -382,6 +382,92 @@ class NormalizeTests(unittest.TestCase):
         self.assertAlmostEqual(result["windows"][0]["used_percent"], 100.0)
         self.assertTrue(any("Account unavailable" in line for line in result["extra_lines"]))
 
+    def test_glm_matches_deepseek_balance_display(self):
+        result = usage_monitor.normalize_glm(
+            {
+                "is_available": True,
+                "balance_infos": [
+                    {
+                        "currency": "CNY",
+                        "total_balance": "12.50",
+                        "granted_balance": "2.50",
+                        "topped_up_balance": "10.00",
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(result["provider"], "GLM")
+        self.assertEqual(result["plan"], "API")
+        self.assertAlmostEqual(result["windows"][0]["used_percent"], 75.0)
+        self.assertIn("Balance: ¥12.50 / ¥50.00", result["extra_lines"])
+        self.assertIn("Usage: ¥37.50 / ¥50.00", result["extra_lines"])
+        self.assertIn("Granted: ¥2.50   Topped-up: ¥10.00", result["extra_lines"])
+
+    def test_glm_api_key_supports_zhipu_environment_alias(self):
+        with mock.patch.dict(
+            os.environ,
+            {"ZHIPU_API_KEY": "test-zhipu-key"},
+            clear=True,
+        ):
+            self.assertEqual(usage_monitor.glm_api_key(), "test-zhipu-key")
+
+    def test_fetch_glm_uses_bearer_authentication(self):
+        with mock.patch.object(
+            usage_monitor,
+            "request_json",
+            return_value={"balance_infos": []},
+        ) as request_json:
+            result = usage_monitor.fetch_glm("test-glm-key")
+
+        self.assertEqual(result, {"balance_infos": []})
+        call = request_json.call_args
+        self.assertEqual(call.args[0], usage_monitor.GLM_BALANCE_URL)
+        self.assertEqual(call.kwargs["headers"]["Authorization"], "Bearer test-glm-key")
+        self.assertTrue(call.kwargs["use_proxy"])
+
+    def test_fetch_glm_falls_back_to_finance_endpoint(self):
+        finance_response = {
+            "code": 200,
+            "data": {"balance": "8.00", "availableBalance": "7.50"},
+        }
+        with mock.patch.object(
+            usage_monitor,
+            "request_json",
+            side_effect=[usage_monitor.MonitorError("HTTP 404"), finance_response],
+        ) as request_json:
+            result = usage_monitor.fetch_glm("test-glm-key")
+
+        self.assertEqual(result, finance_response)
+        self.assertEqual(request_json.call_count, 2)
+        self.assertEqual(
+            request_json.call_args_list[1].args[0],
+            usage_monitor.GLM_FINANCE_URL,
+        )
+
+    def test_glm_normalizes_finance_center_response(self):
+        result = usage_monitor.normalize_glm(
+            {
+                "code": 200,
+                "data": {
+                    "balance": "20.00",
+                    "availableBalance": "18.00",
+                    "giveAmount": "5.00",
+                    "rechargeAmount": "15.00",
+                    "frozenBalance": "2.00",
+                    "totalSpendAmount": "30.00",
+                },
+            }
+        )
+
+        self.assertAlmostEqual(result["windows"][0]["used_percent"], 60.0)
+        self.assertIn("Balance: ¥20.00 / ¥50.00", result["extra_lines"])
+        self.assertIn("Granted: ¥5.00   Topped-up: ¥15.00", result["extra_lines"])
+        self.assertIn(
+            "Available: ¥18.00   Frozen: ¥2.00   Total spent: ¥30.00",
+            result["extra_lines"],
+        )
+
     def test_render_aligns_progress_bars_by_terminal_width(self):
         results = [
             {
@@ -600,10 +686,13 @@ class NormalizeTests(unittest.TestCase):
             no_codex_auto_login=False,
             deepseek_key=None,
             deepseek_credentials=None,
+            glm_key=None,
+            glm_credentials=None,
         )
         with mock.patch.object(usage_monitor, "fetch_kimi", side_effect=RuntimeError), \
                 mock.patch.object(usage_monitor, "fetch_codex", side_effect=RuntimeError), \
                 mock.patch.object(usage_monitor, "fetch_deepseek", side_effect=RuntimeError), \
+                mock.patch.object(usage_monitor, "fetch_glm", side_effect=RuntimeError), \
                 mock.patch.object(usage_monitor, "fetch_codebuddy") as fetch_codebuddy:
             usage_monitor.collect(args)
 
@@ -645,6 +734,20 @@ class NormalizeTests(unittest.TestCase):
             # 缓存里的 current 也同步刷新，供检测失败时回退
             saved = json.loads(cache_path.read_text(encoding="utf-8"))
             self.assertEqual(saved["Kimi Code"]["current"], "0.34.0")
+
+    def test_detect_cli_version_loads_interactive_wsl_environment(self):
+        completed = mock.Mock(stdout="codex-cli 0.150.1\n", stderr="")
+        with mock.patch.object(usage_monitor, "running_in_wsl", return_value=True), \
+                mock.patch.object(
+                    usage_monitor.subprocess,
+                    "run",
+                    return_value=completed,
+                ) as run:
+            version = usage_monitor.detect_cli_version("codex")
+
+        self.assertEqual(version, "0.150.1")
+        self.assertEqual(run.call_args.args[0], ["bash", "-ic", "codex --version"])
+        self.assertNotIn("shell", run.call_args.kwargs)
 
     def test_render_appends_version_badge_to_provider_heading(self):
         results = [

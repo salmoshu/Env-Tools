@@ -8,7 +8,8 @@
 $script:EnvToolsUsageOptions = @(
     '--watch', '-w', '--interval', '-i', '--provider', '--json', '--no-color',
     '--no-codex-auto-login', '--config', '--kimi-credentials', '--kimi-web-credentials',
-    '--codex-credentials', '--deepseek-key', '--deepseek-credentials'
+    '--codex-credentials', '--deepseek-key', '--deepseek-credentials',
+    '--glm-key', '--glm-credentials'
 )
 
 function script:Write-EnvToolsCompletion([string[]]$Values, [string]$WordToComplete) {
@@ -52,10 +53,10 @@ $global:EnvToolsCompleters = @{
                 $prev = $texts[$index - 1]
                 switch ($prev) {
                     '--provider' {
-                        Write-EnvToolsCompletion @('all', 'kimi', 'codex', 'deepseek') $wordToComplete
+                        Write-EnvToolsCompletion @('all', 'kimi', 'codex', 'deepseek', 'glm') $wordToComplete
                         return
                     }
-                    { $_ -in @('--interval', '-i', '--deepseek-key') } { return }  # 值参数，不补全
+                    { $_ -in @('--interval', '-i', '--deepseek-key', '--glm-key') } { return }  # 值参数，不补全
                     { $_ -eq '--config' -or $_ -like '--*-credentials' } { return }  # 文件路径，交给默认文件名补全
                     default { }
                 }

@@ -1,4 +1,4 @@
-# Env-Tools：Kimi / Codex / DeepSeek 终端额度监控
+# Env-Tools：Kimi / Codex / DeepSeek / GLM 终端额度监控
 
 完全独立于 Sub2API、PostgreSQL、Docker 和 Web 服务的本地终端应用，仅使用
 Python 3 标准库。
@@ -35,6 +35,19 @@ Python 3 标准库。
   （`使用量 = 50 − 余额`，小于 0 时按 0 截断），与其它模型的进度条口径保持一致。
   可用 `DEEPSEEK_USE_PROXY`（默认走系统代理）与 `DEEPSEEK_TIMEOUT`（默认 30 秒）
   调整请求行为，用 `DEEPSEEK_BALANCE_URL` 覆盖接口地址。
+- GLM（智谱 BigModel）：使用 BigModel 平台的 API Key，与财务中心
+  `https://bigmodel.cn/finance-center/finance/overview` 对应同一账户余额。
+  配置方式（按优先级）：
+  1. `--glm-key` 命令行参数；
+  2. 环境变量 `GLM_API_KEY`（也兼容 `ZHIPU_API_KEY` 和
+     `ZHIPUAI_API_KEY`）；
+  3. 凭证文件 `~/.glm/credentials.json`（`{"api_key": "..."}`，权限 0600），
+     可用 `GLM_CREDENTIALS_PATH` 或 `--glm-credentials` 指定其他路径。
+  监控会用 Bearer 鉴权查询 `GET /api/paas/v4/balance`；若当前平台
+  未开放该路由，会自动回退到财务中心同款账户报表接口。展示与
+  DeepSeek 保持一致：显示余额、赠送金额和充值金额，以 **50 元为每月上限**
+  换算用量进度。可用 `GLM_USE_PROXY`（默认走系统代理）、
+  `GLM_TIMEOUT`（默认 30 秒）和 `GLM_BALANCE_URL` 调整请求。
 
 程序不会复制或输出访问令牌。也可以通过
 `KIMI_CREDENTIALS_PATH`、`CODEX_AUTH_PATH`
@@ -67,6 +80,9 @@ monitor 本身跨平台）。中文 Windows 的 GBK 控制台无法编码 `░`/
 
 # 只监控 DeepSeek（需 DEEPSEEK_API_KEY）
 ./tools.sh ai-tools --usage --provider deepseek
+
+# 只监控 GLM（需 GLM_API_KEY / ZHIPU_API_KEY）
+./tools.sh ai-tools --usage --provider glm
 
 # 供其他本地脚本读取
 ./tools.sh ai-tools --usage --json
