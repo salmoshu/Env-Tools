@@ -210,7 +210,6 @@ ipcMain.handle("get-pin-state", () => (win ? win.isAlwaysOnTop() : false));
 const UPGRADE_FLAGS = {
   "Kimi Code": "--kimi",
   "OpenAI Codex": "--codex",
-  "CodeBuddy": "--codebuddy",
 };
 const UPGRADE_TIMEOUT_MS = 10 * 60 * 1000;
 

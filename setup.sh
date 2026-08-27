@@ -5,7 +5,7 @@
 #   ./setup.sh                  # 部署全部组件
 #   ./setup.sh nodejs           # 仅部署 nodejs
 #   ./setup.sh ai-tools         # 安装/更新全部 AI CLI 工具
-#   ./setup.sh ai-tools --codex # 仅安装/更新 codex（--all/--kimi/--codebuddy 同理）
+#   ./setup.sh ai-tools --codex # 仅安装/更新 codex（--all/--kimi 同理）
 #   ./setup.sh openssh          # 部署 OpenSSH Server（默认端口 22）
 #   ./setup.sh openssh --port 2222  # 指定 SSH 端口
 #   注：带工具参数时请只指定一个组件（参数会透传给该组件的脚本）

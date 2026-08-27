@@ -12,7 +12,7 @@ _env_tools_reply() {
 }
 
 # usage_monitor.py 的全部参数（与 linux/ai-tools/usage-monitor/usage_monitor.py 保持一致）
-_env_tools_usage_opts='--watch -w --interval -i --provider --json --no-color --no-codex-auto-login --config --kimi-credentials --kimi-web-credentials --codex-credentials --codebuddy-credentials --deepseek-key --deepseek-credentials'
+_env_tools_usage_opts='--watch -w --interval -i --provider --json --no-color --no-codex-auto-login --config --kimi-credentials --kimi-web-credentials --codex-credentials --deepseek-key --deepseek-credentials'
 
 _env_tools_tools() {
     local cur prev
@@ -34,12 +34,12 @@ _env_tools_tools() {
             [ "${COMP_WORDS[2]}" = '--usage' ] || return
             case "$prev" in
                 --provider)
-                    _env_tools_reply 'all kimi codex codebuddy deepseek' "$cur"
+                    _env_tools_reply 'all kimi codex deepseek' "$cur"
                     ;;
                 --interval|-i|--deepseek-key)
                     COMPREPLY=()  # 值参数，不补全
                     ;;
-                --config|--kimi-credentials|--kimi-web-credentials|--codex-credentials|--codebuddy-credentials|--deepseek-credentials)
+                --config|--kimi-credentials|--kimi-web-credentials|--codex-credentials|--deepseek-credentials)
                     # shellcheck disable=SC2207
                     COMPREPLY=( $(compgen -f -- "$cur") )  # 文件路径参数，补全文件名
                     ;;
@@ -67,7 +67,7 @@ _env_tools_setup() {
     fi
     case "$cur" in
         -*)
-            _env_tools_reply '--port --all --kimi --codex --codebuddy --verbose' "$cur"
+            _env_tools_reply '--port --all --kimi --codex --verbose' "$cur"
             ;;
         *)
             _env_tools_reply 'all nodejs ai-tools openssh kdesk' "$cur"

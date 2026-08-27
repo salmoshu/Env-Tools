@@ -2,32 +2,6 @@
 
 本文记录 `Env-Tools` 中 AI CLI 安装、升级及额度监控所依赖接口的维护经验。
 
-## CodeBuddy
-
-- **委派方式**：`codebuddy --model hy3 -p "指令"`（一次性非交互实例）。前提是已登录；
-  未登录时返回 `Authentication required`。委派记录写在项目根目录 `codebuddy-log.md`。
-- **凭证位置**：`~/.local/share/CodeBuddyExtension/Data/Public/auth/Tencent-Cloud.coding-copilot.info`
-  （JSON：auth.accessToken/refreshToken/expiresAt(毫秒)/domain，account.uid/nickname/type）。
-  刷新：`POST /v2/auth/token/refresh`，头 `X-Refresh-Token` + `X-Auth-Refresh-Source: plugin`。
-- **站点区分（坑）**：国内站 `www.codebuddy.cn` 与国际站 `www.codebuddy.ai` 的 token 不通用，
-  写死 `.ai` 会 401。正确做法：读凭证里的 `auth.domain` 自适应（`CODEBUDDY_ENDPOINT` 可覆盖）。
-- **数字额度接口**（plans-usage 网页同源，CLI Bearer token 直接可用）：
-  `POST https://<domain>/billing/meter/get-user-resource`，
-  body `{"PageNumber":1,"PageSize":200,"ProductCode":"p_tcaca","Status":[0,3],"OnlyValidPeriod":true,"PackageCodes":[]}`，
-  头 `Authorization: Bearer`、`X-User-Id: <uid>`、`X-Product: SaaS`。
-  响应 `data.Response.Data.Accounts[]`：`CycleCapacity{Size,Used,Remain}Precise`（本周期，字符串）、
-  `Capacity*Precise`（按天切片套餐的当日口径）、`CapacityType`（4=按天切片）、`CycleEndTime`（本地时间）。
-  **区分订阅/赠送**：看 `SubProductCode`——赠送包（活动/签到裂变包）含 `bonus`
-  （`sp_tcaca_codebuddyide_bonus_pack`，SubProductName 带"赠送包"），订阅计划为
-  `sp_tcaca_codebuddy_ide`；看板据此拆成 Subscription（按月续期）与 Gifted Credits（一次性，到期作废）。
-  注意：套餐多为一次性包，到期不重置（用词"过期"）；响应含 uin 等 PII，展示需取舍。
-- **CLI 内嵌接口有限**：dist 里只有 `POST /v2/billing/meter/get-dosage-notify`（仅提醒文案，无数字）；
-  `/v2/accounts` 无套餐字段。
-- **斜杠指令**：`/cost`、`/stats` 是本地会话/token 统计（不走网络，无账户额度）；
-  `/upgrade` 只是打开网页。**斜杠指令只在交互模式有效**，`-p` 模式下会被当普通 prompt 发给模型。
-- **请求流水**：`POST /billing/meter/get-user-request-usage`（需 startTime/endTime/pageNum/pageSize），
-  可看到每次请求的 credit 扣费、model、client。
-
 ## Kimi Code
 
 - 凭证 `~/.kimi-code/credentials/kimi-code.json`，临过期用 refresh_token 走
@@ -43,13 +17,13 @@
   `irm https://code.kimi.com/kimi-code/install.ps1 | iex`，原生二进制装到
   `%USERPROFILE%\.kimi-code\bin\kimi.exe`（旧版备份为 `kimi.exe.bak`），并把该目录
   **prepend** 到用户 PATH。`windows/ai-tools/setup_ai_tools.ps1` 据此让 kimi 走官方
-  安装器、codex/codebuddy 走 npm；装完自动卸载 npm 残留的 `@moonshot-ai/kimi-code`
+  安装器、codex 走 npm；装完自动卸载 npm 残留的 `@moonshot-ai/kimi-code`
   （残留判定直接看 `prefix\node_modules\@moonshot-ai\kimi-code` 目录），并对每个工具做
   PATH 遮蔽校验（`Get-Command` 解析路径 vs 预期目录，不一致打 WARN）。
-  codex/codebuddy 的"当前版本"直接调 npm prefix 下的 shim（`<cmd>.cmd --version`）判定，
+  codex 的"当前版本"直接调 npm prefix 下的 shim（`<cmd>.cmd --version`）判定，
   shim 不存在即视为未安装：既免疫 PATH 遮蔽（IDE 自带 node 工作区抢解析时会误判），
   又避开 `npm ls -g` 的 node 冷启动开销（Windows 上串行多次 npm 调用是卡顿主因）。
-  与 linux 版行为对齐：多个 npm 工具合并为一次 `npm install -g`，npm 工具与 kimi
+  与 linux 版行为对齐：npm 工具与 kimi
   原生安装分两个 Job 并行，Job 输出协议行（`LOG|对象|文本` / `RESULT|对象|状态|前后版本`），
   主线程按对象分条折叠渲染（最新 3 行原位刷新），结束打印安装简报。
   npm 下载（`view` 查询与 `install` 安装）默认源失败时，两平台脚本都会自动回退

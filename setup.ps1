@@ -7,7 +7,7 @@
 #   setup.ps1 kdesk              # 仅安装/更新/重部署 kdesk
 #   setup.ps1 nodejs             # 仅部署 nodejs
 #   setup.ps1 ai-tools           # 安装/更新全部 AI CLI 工具
-#   setup.ps1 ai-tools --codex   # 仅安装/更新 codex（--all/--kimi/--codebuddy 同理）
+#   setup.ps1 ai-tools --codex   # 仅安装/更新 codex（--all/--kimi 同理）
 #   setup.ps1 openssh            # 部署 OpenSSH Server（默认端口 2222）
 #   setup.ps1 openssh -Port 2223 # 指定 SSH 端口（-FirewallProfile Any 同理）
 #   setup.ps1 kdesk nodejs       # 部署指定多个组件
@@ -19,7 +19,7 @@ param(
     [Parameter(Position = 0)]
     [ValidateSet('all', 'kdesk', 'nodejs', 'ai-tools', 'openssh')]
     [string[]]$Component = @('all'),
-    # 透传给组件脚本的参数（ai-tools: --all/--codex/--kimi/--codebuddy；openssh: -Port/-FirewallProfile）
+    # 透传给组件脚本的参数（ai-tools: --all/--codex/--kimi；openssh: -Port/-FirewallProfile）
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$ToolArgs,
     # 内部使用：标记交互式运行（提权后结束时暂停等按键）

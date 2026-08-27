@@ -24,7 +24,7 @@ Windows（PowerShell，自动弹 UAC 提权）：
 setup.ps1                        # 部署全部组件
 setup.ps1 nodejs                 # 只部署某个组件
 setup.ps1 kdesk nodejs           # 部署多个组件
-setup.ps1 ai-tools --codex       # ai-tools 只装/更新 codex（--all/--kimi/--codebuddy 同理）
+setup.ps1 ai-tools --codex       # ai-tools 只装/更新 codex（--all/--kimi 同理）
 setup.ps1 openssh -Port 2223     # openssh 指定端口（Windows 默认 2222）
 ```
 
@@ -46,7 +46,7 @@ Linux（bash）：
 | --- | --- | --- | --- |
 | `kdesk` | ✓ | — | 元气桌面免安装便携部署 + 快照对抗自动升级，详见 [docs/kdesk-notes.md](docs/kdesk-notes.md) |
 | `nodejs` | ✓ | ✓ | Node.js 环境部署 |
-| `ai-tools` | ✓ | ✓ | Kimi Code / Codex / CodeBuddy CLI 安装与更新，详见 [docs/ai-tools-notes.md](docs/ai-tools-notes.md) |
+| `ai-tools` | ✓ | ✓ | Kimi Code / Codex CLI 安装与更新，详见 [docs/ai-tools-notes.md](docs/ai-tools-notes.md) |
 | `openssh` | ✓ | ✓ | OpenSSH Server 安装与配置，详见 [docs/openssh-notes.md](docs/openssh-notes.md) |
 
 ## 日常操作（tools.sh / tools.ps1）
@@ -54,7 +54,7 @@ Linux（bash）：
 Linux 用 `./tools.sh`，Windows 用 `tools.ps1`，参数完全一致：
 
 ```bash
-./tools.sh ai-tools --usage              # 持续监控 Kimi / Codex / CodeBuddy 余量（Ctrl+R 刷新）
+./tools.sh ai-tools --usage              # 持续监控 Kimi / Codex / DeepSeek 余量（Ctrl+R 刷新）
 ./tools.sh ai-tools --usage --json       # 单次输出 JSON，供其他脚本读取
 ./tools.sh openssh --status              # 查看 sshd 服务状态、监听端口与连接示例
 ./tools.sh                               # 查看完整用法

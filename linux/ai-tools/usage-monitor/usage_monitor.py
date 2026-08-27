@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Kimi Code / OpenAI Codex / CodeBuddy 本地终端额度监控（不依赖 Sub2API）。"""
+"""Kimi Code / OpenAI Codex / DeepSeek 本地终端额度监控（不依赖 Sub2API）。"""
 
 from __future__ import annotations
 
@@ -39,6 +39,8 @@ KIMI_WEB_STATS_URL = (
     "https://www.kimi.com/apiv2/kimi.gateway.membership.v2.MembershipService/GetSubscriptionStats"
 )
 CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
+# Legacy CodeBuddy support is intentionally retained for possible reuse, but it is
+# not exposed by the CLI and is never called by the default collection path.
 CODEBUDDY_ENDPOINT = "https://www.codebuddy.ai"
 CODEBUDDY_DOSAGE_NOTIFY_PATH = "/v2/billing/meter/get-dosage-notify"
 CODEBUDDY_RESOURCE_PATH = "/billing/meter/get-user-resource"
@@ -61,7 +63,6 @@ MONITOR_CONFIG_PATH = Path(__file__).resolve().with_name("config.json")
 VERSION_TOOLS = {
     "Kimi Code": {"command": "kimi", "source": "kimi"},
     "OpenAI Codex": {"command": "codex", "source": "npm", "package": "@openai/codex"},
-    "CodeBuddy": {"command": "codebuddy", "source": "npm", "package": "@tencent-ai/codebuddy-code"},
 }
 
 GREEN = "\033[32m"
@@ -1310,15 +1311,6 @@ def collect(args: argparse.Namespace) -> tuple[list[dict[str, Any]], list[dict[s
             )
         except Exception as exc:
             errors.append({"provider": "OpenAI Codex", "error": str(exc)})
-    if args.provider in ("all", "codebuddy"):
-        try:
-            results.append(
-                normalize_codebuddy(
-                    fetch_codebuddy(codebuddy_credentials_path(args.codebuddy_credentials))
-                )
-            )
-        except Exception as exc:
-            errors.append({"provider": "CodeBuddy", "error": str(exc)})
     if args.provider in ("all", "deepseek"):
         try:
             results.append(
@@ -1580,7 +1572,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Standalone Kimi Code / Codex usage monitor for the terminal")
     parser.add_argument("--watch", "-w", action="store_true", help="Keep refreshing")
     parser.add_argument("--interval", "-i", type=int, default=180, help="Refresh interval in seconds (default: 180)")
-    parser.add_argument("--provider", choices=("all", "kimi", "codex", "codebuddy", "deepseek"), default="all")
+    parser.add_argument("--provider", choices=("all", "kimi", "codex", "deepseek"), default="all")
     parser.add_argument("--kimi-credentials", help="Path to Kimi credentials file")
     parser.add_argument(
         "--kimi-web-credentials",
@@ -1591,7 +1583,6 @@ def main() -> int:
         "--config",
         help="Path to usage monitor config.json (defaults to the file next to this script)",
     )
-    parser.add_argument("--codebuddy-credentials", help="Path to CodeBuddy credentials file")
     parser.add_argument("--deepseek-key", help="DeepSeek API key (or set DEEPSEEK_API_KEY)")
     parser.add_argument("--deepseek-credentials", help="Path to DeepSeek credentials JSON file")
     parser.add_argument("--json", action="store_true", help="Output JSON")

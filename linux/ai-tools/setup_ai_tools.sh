@@ -10,7 +10,7 @@
 # kimi 若为非 npm 方式安装（官方脚本二进制），更新时走官方安装脚本。
 #
 # 输出约定（与 windows/ai-tools/setup_ai_tools.ps1 行为对齐）：
-#   交互终端下按安装对象（codex / kimi / codebuddy）分条陈述，每个对象的
+#   交互终端下按安装对象（codex / kimi）分条陈述，每个对象的
 #   过程消息折叠为最新 3 行、原位刷新；--verbose 或非 TTY 时退化为全量流式输出。
 #   全部结束后打印一份安装简报（每个对象：安装/更新/已是最新/失败 + 版本变化）。
 set -uo pipefail
@@ -35,7 +35,6 @@ pkg_of() {
     case "$1" in
         codex)     echo '@openai/codex' ;;
         kimi)      echo "$KIMI_NPM_PKG" ;;
-        codebuddy) echo '@tencent-ai/codebuddy-code' ;;
     esac
 }
 
@@ -73,19 +72,18 @@ is_up_to_date() {
 targets=()
 for arg in "$@"; do
     case "$arg" in
-        --all)       targets=(codex kimi codebuddy) ;;
+        --all)       targets=(codex kimi) ;;
         --codex)     targets+=(codex) ;;
         --kimi)      targets+=(kimi) ;;
-        --codebuddy) targets+=(codebuddy) ;;
         --verbose|-v) VERBOSE=true ;;
         *)
-            log "未知参数: $arg（可选: --all / --codex / --kimi / --codebuddy / --verbose）"
+            log "未知参数: $arg（可选: --all / --codex / --kimi / --verbose）"
             exit 2
             ;;
     esac
 done
 if ((${#targets[@]} == 0)); then
-    targets=(codex kimi codebuddy)
+    targets=(codex kimi)
 fi
 
 log "=== ai-tools setup start (targets: ${targets[*]}) ==="

@@ -8,13 +8,12 @@
 # 依赖 nodejs（npm），缺失时自动调用 ..\nodejs\setup_nodejs.ps1 安装。
 #
 # 输出约定（与 linux/ai-tools/setup_ai_tools.sh 行为对齐）：
-#   交互终端下按安装对象（codex / kimi / codebuddy）分条陈述，每个对象的
+#   交互终端下按安装对象（codex / kimi）分条陈述，每个对象的
 #   过程消息折叠为最新 3 行、原位刷新；-Verbose 或输出被重定向时退化为全量流式。
 #   全部结束后打印一份安装简报（每个对象：安装/更新/已是最新/失败 + 版本变化）。
 #
 # 安装方式说明：
-#   codex / codebuddy 走 npm 全局安装（装到 npm prefix -g，通常为 %AppData%\npm），
-#   多个 npm 工具合并为一次 npm install -g（npm 全局目录不能并发写，npm 内部自带并行）。
+#   codex 走 npm 全局安装（装到 npm prefix -g，通常为 %AppData%\npm）。
 #   kimi 走官方原生安装器（irm https://code.kimi.com/kimi-code/install.ps1 | iex），
 #   二进制装到 %USERPROFILE%\.kimi-code\bin（可用 KIMI_INSTALL_DIR 覆盖），与 npm 无关。
 #   npm 工具与 kimi 原生安装作为两个 Job 并行执行；Job 只输出协议行
@@ -28,8 +27,7 @@
 param(
     [switch]$All,
     [switch]$Codex,
-    [switch]$Kimi,
-    [switch]$Codebuddy
+    [switch]$Kimi
 )
 
 $dir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -133,7 +131,7 @@ $npmWorker = {
     param([string]$namesJoined, [string]$npmCache, [string]$npmPrefix, [string]$npmExe)
     $ErrorActionPreference = 'Continue'
     [string[]]$names = $namesJoined -split ','
-    $pkgOf = @{ codex = '@openai/codex'; codebuddy = '@tencent-ai/codebuddy-code' }
+    $pkgOf = @{ codex = '@openai/codex' }
     # 默认源失败时回退的国内 npm 镜像
     $npmMirror = 'https://registry.npmmirror.com'
 
@@ -412,15 +410,13 @@ function Receive-NodejsOutput($job) {
 }
 
 $tools = [ordered]@{
-    codex     = @{ Command = 'codex';     Method = 'npm' }
-    kimi      = @{ Command = 'kimi';      Method = 'native' }
-    codebuddy = @{ Command = 'codebuddy'; Method = 'npm' }
+    codex = @{ Command = 'codex'; Method = 'npm' }
+    kimi  = @{ Command = 'kimi';  Method = 'native' }
 }
 
 $targets = @()
 if ($Codex)     { $targets += 'codex' }
 if ($Kimi)      { $targets += 'kimi' }
-if ($Codebuddy) { $targets += 'codebuddy' }
 if ($All -or $targets.Count -eq 0) { $targets = @($tools.Keys) }
 
 Log "=== ai-tools setup start (targets: $($targets -join ', ')) ==="
@@ -500,7 +496,7 @@ $kimiTarget = @($targets | Where-Object { $_ -eq 'kimi' }).Count -gt 0
 $workers = @()
 try {
     if ($npmNames.Count -gt 0) {
-        # 数组经 Start-Job 序列化后会被拼成单个字符串（"codex codebuddy"），
+        # 数组经 Start-Job 序列化后会被拼成单个字符串，
         # 所以干脆先 join 成逗号串，Job 内再 split 回来
         $workers += @{ Tag = 'npm'; Tools = $npmNames; Job = (Start-Job $npmWorker -ArgumentList ($npmNames -join ','), $npmCache, $npmPrefix, $npmExe) }
     }

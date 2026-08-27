@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import tempfile
@@ -581,13 +582,32 @@ class NormalizeTests(unittest.TestCase):
     def test_kimi_monthly_error_is_transient_in_watch_mode(self):
         errors = [
             {"provider": "Kimi Monthly Total", "error": "HTTP 401"},
-            {"provider": "CodeBuddy", "error": "HTTP 500"},
+            {"provider": "DeepSeek", "error": "HTTP 500"},
         ]
 
         self.assertEqual(
             usage_monitor.persistent_watch_errors(errors),
-            [{"provider": "CodeBuddy", "error": "HTTP 500"}],
+            [{"provider": "DeepSeek", "error": "HTTP 500"}],
         )
+
+    def test_collect_all_does_not_query_codebuddy(self):
+        args = argparse.Namespace(
+            provider="all",
+            config=None,
+            kimi_credentials=None,
+            kimi_web_credentials=None,
+            codex_credentials=None,
+            no_codex_auto_login=False,
+            deepseek_key=None,
+            deepseek_credentials=None,
+        )
+        with mock.patch.object(usage_monitor, "fetch_kimi", side_effect=RuntimeError), \
+                mock.patch.object(usage_monitor, "fetch_codex", side_effect=RuntimeError), \
+                mock.patch.object(usage_monitor, "fetch_deepseek", side_effect=RuntimeError), \
+                mock.patch.object(usage_monitor, "fetch_codebuddy") as fetch_codebuddy:
+            usage_monitor.collect(args)
+
+        fetch_codebuddy.assert_not_called()
 
     def test_version_badge_marks_outdated_cli(self):
         versions = {"Kimi Code": {"current": "0.30.0", "latest": "0.33.0"}}

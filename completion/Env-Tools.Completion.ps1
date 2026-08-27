@@ -8,7 +8,7 @@
 $script:EnvToolsUsageOptions = @(
     '--watch', '-w', '--interval', '-i', '--provider', '--json', '--no-color',
     '--no-codex-auto-login', '--config', '--kimi-credentials', '--kimi-web-credentials',
-    '--codex-credentials', '--codebuddy-credentials', '--deepseek-key', '--deepseek-credentials'
+    '--codex-credentials', '--deepseek-key', '--deepseek-credentials'
 )
 
 function script:Write-EnvToolsCompletion([string[]]$Values, [string]$WordToComplete) {
@@ -52,7 +52,7 @@ $global:EnvToolsCompleters = @{
                 $prev = $texts[$index - 1]
                 switch ($prev) {
                     '--provider' {
-                        Write-EnvToolsCompletion @('all', 'kimi', 'codex', 'codebuddy', 'deepseek') $wordToComplete
+                        Write-EnvToolsCompletion @('all', 'kimi', 'codex', 'deepseek') $wordToComplete
                         return
                     }
                     { $_ -in @('--interval', '-i', '--deepseek-key') } { return }  # 值参数，不补全
@@ -77,7 +77,7 @@ $global:EnvToolsCompleters = @{
         if ($index -ge 1 -and $texts[$index - 1] -in @('-Port', '-FirewallProfile')) { return }  # 参数值，不补全
 
         if ($wordToComplete -like '-*') {
-            Write-EnvToolsCompletion @('--all', '--kimi', '--codex', '--codebuddy', '--verbose', '-Port', '-FirewallProfile') $wordToComplete
+            Write-EnvToolsCompletion @('--all', '--kimi', '--codex', '--verbose', '-Port', '-FirewallProfile') $wordToComplete
         } else {
             Write-EnvToolsCompletion @('all', 'kdesk', 'nodejs', 'ai-tools', 'openssh') $wordToComplete
         }

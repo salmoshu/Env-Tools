@@ -10,12 +10,11 @@ local usage = clink.argmatcher()
 usage:addarg({
     '--watch', '-w', '--interval', '-i', '--json', '--no-color',
     '--no-codex-auto-login', '--deepseek-key',
-    '--provider'              .. clink.argmatcher():addarg({'all', 'kimi', 'codex', 'codebuddy', 'deepseek'}),
+    '--provider'              .. clink.argmatcher():addarg({'all', 'kimi', 'codex', 'deepseek'}),
     '--config'                .. clink.argmatcher():addarg(clink.filematches),
     '--kimi-credentials'      .. clink.argmatcher():addarg(clink.filematches),
     '--kimi-web-credentials'  .. clink.argmatcher():addarg(clink.filematches),
     '--codex-credentials'     .. clink.argmatcher():addarg(clink.filematches),
-    '--codebuddy-credentials' .. clink.argmatcher():addarg(clink.filematches),
     '--deepseek-credentials'  .. clink.argmatcher():addarg(clink.filematches),
 })
 usage:loop()
@@ -29,6 +28,6 @@ clink.argmatcher('tools', 'tools.cmd', 'tools.ps1')
 clink.argmatcher('setup', 'setup.cmd', 'setup.ps1')
     :addarg({
         'all', 'kdesk', 'nodejs', 'ai-tools', 'openssh',
-        '--all', '--kimi', '--codex', '--codebuddy', '--verbose',
+        '--all', '--kimi', '--codex', '--verbose',
         '-Port', '-FirewallProfile',
     })
