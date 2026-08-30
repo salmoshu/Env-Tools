@@ -20,6 +20,10 @@ case "$(uname -s)" in
         exec powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$ROOT/setup.ps1" "$@"
         ;;
     Linux)
+        ENVTOOLS_VERSION="$(cat "$ROOT/VERSION" 2>/dev/null || true)"
+        if [ -n "$ENVTOOLS_VERSION" ]; then
+            printf 'Env-Tools v%s\n' "$ENVTOOLS_VERSION"
+        fi
         # 组件与 - 开头的工具参数分开收集；工具参数透传给 ai-tools / openssh
         # (--port 需要连后面的端口号一起收进工具参数，否则端口号会被误判为组件名)
         components=() tool_args=()

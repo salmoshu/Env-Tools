@@ -16,6 +16,12 @@
 set -uo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+ENVTOOLS_VERSION="$(cat "$DIR/../../VERSION" 2>/dev/null || true)"
+if [ -n "$ENVTOOLS_VERSION" ]; then
+    printf 'Env-Tools v%s\n' "$ENVTOOLS_VERSION"
+fi
+
 LOG_DIR="$DIR/log"
 mkdir -p "$LOG_DIR"
 LOG="$LOG_DIR/setup.log"
@@ -142,7 +148,7 @@ handle_line() {
 render_panel() {
     ((panel_drawn > 0)) && printf '\033[%dA' "$panel_drawn"
     panel_drawn=0
-    local tool line mark indent
+    local tool line mark
     for tool in "${targets[@]}"; do
         if [ -f "$RESULT_DIR/$tool.result" ]; then
             if grep -q '^OK' "$RESULT_DIR/$tool.result"; then mark='\033[32m✓\033[0m'; else mark='\033[31m✗\033[0m'; fi
@@ -151,10 +157,10 @@ render_panel() {
         fi
         printf '\033[2K%b \033[1m[%s]\033[0m\n' "$mark" "$tool"
         panel_drawn=$((panel_drawn + 1))
-        indent=$((${#tool} + 5))
         while IFS= read -r line; do
             [ -z "$line" ] && continue
-            printf '\033[2K\033[2m%*s%s\033[0m\n' "$indent" '' "${line:0:$width}"
+            # 过程文本与上一行的 `[` 左对齐，不再按工具名长度缩进。
+            printf '\033[2K\033[2m  %s\033[0m\n' "${line:0:$width}"
             panel_drawn=$((panel_drawn + 1))
         done <<< "${TOOL_LINES[$tool]:-}"
     done

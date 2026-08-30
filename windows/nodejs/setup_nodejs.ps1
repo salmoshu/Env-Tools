@@ -5,6 +5,13 @@
 # 需要管理员权限运行（由根目录 setup.ps1 统一提权）。
 
 $dir = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+$envtoolsVersionFile = Join-Path $dir '..\..\VERSION'
+if (Test-Path $envtoolsVersionFile) {
+    $envtoolsVersion = Get-Content $envtoolsVersionFile -TotalCount 1 -ErrorAction SilentlyContinue
+    if ($envtoolsVersion) { Write-Host "Env-Tools v$($envtoolsVersion.Trim())" }
+}
+
 $logDir = Join-Path $dir 'log'
 $runtimeDir = Join-Path $dir 'runtime'
 New-Item -ItemType Directory -Path $logDir -Force | Out-Null

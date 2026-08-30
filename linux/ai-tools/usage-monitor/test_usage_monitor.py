@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import tempfile
+import threading
 import time
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -20,6 +22,170 @@ class NormalizeTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"TEST_FLAG": "0"}):
             self.assertFalse(usage_monitor.env_enabled("TEST_FLAG", default=True))
 
+    def test_dashboard_request_policy_caps_timeout_without_same_round_retry(self):
+        with mock.patch.object(usage_monitor, "REQUEST_TIMEOUT_CAP", 6), \
+                mock.patch.object(usage_monitor, "GET_ATTEMPTS_CAP", 1), \
+                mock.patch.object(
+                    usage_monitor.urllib.request,
+                    "urlopen",
+                    side_effect=usage_monitor.urllib.error.URLError("offline"),
+                ) as urlopen:
+            with self.assertRaisesRegex(
+                usage_monitor.MonitorError,
+                "Network request failed: offline",
+            ):
+                usage_monitor.request_json("https://example.invalid", timeout=30)
+
+        self.assertEqual(urlopen.call_count, 1)
+        self.assertTrue(all(call.kwargs["timeout"] == 6 for call in urlopen.call_args_list))
+
+    def test_dashboard_timeout_cap_can_be_relaxed_per_request(self):
+        with mock.patch.object(usage_monitor, "REQUEST_TIMEOUT_CAP", 10), \
+                mock.patch.object(usage_monitor, "GET_ATTEMPTS_CAP", 1), \
+                mock.patch.object(
+                    usage_monitor.urllib.request,
+                    "urlopen",
+                    side_effect=usage_monitor.urllib.error.URLError("offline"),
+                ) as urlopen:
+            with self.assertRaises(usage_monitor.MonitorError):
+                usage_monitor.request_json(
+                    "https://example.invalid",
+                    timeout=30,
+                    timeout_cap=usage_monitor.CODEX_DASHBOARD_TIMEOUT_CAP,
+                )
+            with self.assertRaises(usage_monitor.MonitorError):
+                usage_monitor.request_json("https://example.invalid", timeout=30)
+
+        self.assertEqual(urlopen.call_args_list[0].kwargs["timeout"], 20)
+        self.assertEqual(urlopen.call_args_list[1].kwargs["timeout"], 10)
+
+
+class EnvironmentTests(unittest.TestCase):
+    def test_repo_version_reads_root_version_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "VERSION").write_text("9.9.9\n", encoding="utf-8")
+            with mock.patch.object(usage_monitor, "REPO_ROOT", root):
+                self.assertEqual(usage_monitor.repo_version(), "9.9.9")
+
+    def test_repo_version_missing_returns_unknown(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(usage_monitor, "REPO_ROOT", Path(tmp)):
+                self.assertEqual(usage_monitor.repo_version(), "unknown")
+
+    def test_settings_roundtrip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings_file = Path(tmp) / "settings.json"
+            with mock.patch.dict(os.environ, {"AI_USAGE_SETTINGS_PATH": str(settings_file)}), \
+                    mock.patch.object(
+                        usage_monitor, "available_environments", return_value=["wsl", "windows"]
+                    ):
+                payload = usage_monitor.get_settings_payload()
+                self.assertEqual(payload["environment"], "wsl")
+                result = usage_monitor.update_settings({"environment": "windows"})
+                self.assertTrue(result["ok"])
+                payload = usage_monitor.get_settings_payload()
+                self.assertEqual(payload["environment"], "windows")
+
+    def test_update_settings_rejects_unavailable_environment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings_file = Path(tmp) / "settings.json"
+            with mock.patch.dict(os.environ, {"AI_USAGE_SETTINGS_PATH": str(settings_file)}), \
+                    mock.patch.object(
+                        usage_monitor, "available_environments", return_value=["linux"]
+                    ):
+                with self.assertRaises(usage_monitor.MonitorError):
+                    usage_monitor.update_settings({"environment": "windows"})
+
+    def test_windows_environment_maps_credential_paths(self):
+        profile = Path("/mnt/c/Users/test")
+        with mock.patch.object(usage_monitor, "ENVIRONMENT", "windows"), \
+                mock.patch.object(usage_monitor, "running_in_wsl", return_value=True), \
+                mock.patch.object(usage_monitor, "windows_user_profile", return_value=profile), \
+                mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(
+                usage_monitor.codex_credentials_path(), profile / ".codex" / "auth.json"
+            )
+            self.assertEqual(
+                usage_monitor.deepseek_credentials_path(),
+                profile / ".deepseek" / "credentials.json",
+            )
+            self.assertEqual(
+                usage_monitor.glm_credentials_path(), profile / ".glm" / "credentials.json"
+            )
+            self.assertEqual(
+                usage_monitor.kimi_credentials_path(),
+                profile / ".kimi-code" / "credentials" / "kimi-code.json",
+            )
+
+    def test_windows_cli_version_probe_uses_powershell_without_new_session(self):
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="codex-cli 0.1.2\n", stderr=""
+        )
+        with mock.patch.object(usage_monitor, "ENVIRONMENT", "windows"), \
+                mock.patch.object(usage_monitor, "running_in_wsl", return_value=True), \
+                mock.patch.object(
+                    usage_monitor.subprocess, "run", return_value=completed
+                ) as run:
+            self.assertEqual(usage_monitor.detect_cli_version("codex"), "0.1.2")
+        command = run.call_args.args[0]
+        self.assertEqual(command[0], "powershell.exe")
+        self.assertNotIn("start_new_session", run.call_args.kwargs)
+
+    def test_configure_api_keys_writes_private_files_without_returning_secrets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            settings = {
+                "deepseek": {
+                    "env": ("TEST_DEEPSEEK_KEY",),
+                    "path": lambda: root / "deepseek" / "credentials.json",
+                    "fields": ("api_key",),
+                },
+                "glm": {
+                    "env": ("TEST_GLM_KEY",),
+                    "path": lambda: root / "glm" / "credentials.json",
+                    "fields": ("api_key",),
+                },
+            }
+            with mock.patch.object(usage_monitor, "API_KEY_SETTINGS", settings), \
+                    mock.patch.dict(os.environ, {}, clear=True):
+                result = usage_monitor.configure_api_keys(
+                    {"deepseek": "deep-secret", "glm": "glm-secret"}
+                )
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["saved"], ["deepseek", "glm"])
+            self.assertNotIn("deep-secret", json.dumps(result))
+            self.assertNotIn("glm-secret", json.dumps(result))
+            for provider, expected in (
+                ("deepseek", "deep-secret"),
+                ("glm", "glm-secret"),
+            ):
+                path = root / provider / "credentials.json"
+                self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["api_key"], expected)
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_api_key_status_never_returns_key_material(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "credentials.json"
+            path.write_text('{"api_key":"do-not-return-me"}', encoding="utf-8")
+            settings = {
+                "deepseek": {
+                    "env": ("TEST_DEEPSEEK_KEY",),
+                    "path": lambda: path,
+                    "fields": ("api_key",),
+                }
+            }
+            with mock.patch.object(usage_monitor, "API_KEY_SETTINGS", settings), \
+                    mock.patch.dict(os.environ, {}, clear=True):
+                status = usage_monitor.api_key_status()
+
+            self.assertEqual(
+                status,
+                {"deepseek": {"configured": True, "source": "file"}},
+            )
+            self.assertNotIn("do-not-return-me", json.dumps(status))
+
     def test_running_in_wsl_uses_wsl_environment(self):
         with mock.patch.object(usage_monitor.os, "name", "posix"), mock.patch.dict(
             os.environ,
@@ -27,6 +193,37 @@ class NormalizeTests(unittest.TestCase):
             clear=True,
         ):
             self.assertTrue(usage_monitor.running_in_wsl())
+
+    def test_stop_previous_watch_instances_matches_exact_script(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            script = root / "usage_monitor.py"
+            script.touch()
+            for pid, argv in (
+                (123, ["python3", str(script), "--watch"]),
+                (124, ["python3", str(script), "--json", "--dashboard"]),
+                (125, ["python3", str(root / "other.py"), "--watch"]),
+            ):
+                process_dir = root / str(pid)
+                process_dir.mkdir()
+                (process_dir / "cmdline").write_bytes(
+                    b"\0".join(os.fsencode(arg) for arg in argv) + b"\0"
+                )
+                (process_dir / "cwd").symlink_to(root)
+            with mock.patch.object(usage_monitor.os, "getpid", return_value=999), \
+                    mock.patch.object(usage_monitor.os, "kill") as kill:
+                stopped = usage_monitor.stop_previous_watch_instances(
+                    root,
+                    script,
+                    wait_for_exit=False,
+                )
+
+        self.assertEqual(stopped, [123])
+        self.assertEqual(
+            kill.call_args_list,
+            [mock.call(123, usage_monitor.signal.SIGTERM),
+             mock.call(123, usage_monitor.signal.SIGCONT)],
+        )
 
     def test_launch_usage_window_uses_native_windows_launcher_in_wsl(self):
         process = mock.Mock()
@@ -51,7 +248,7 @@ class NormalizeTests(unittest.TestCase):
         self.assertIn("electron-app", command[command.index("-SourceDir") + 1])
         self.assertEqual(command[command.index("-Distro") + 1], "Ubuntu-Test")
         self.assertEqual(kwargs["stdin"], usage_monitor.subprocess.DEVNULL)
-        self.assertTrue(kwargs["start_new_session"])
+        self.assertNotIn("start_new_session", kwargs)
         self.assertIsNone(usage_monitor.launched_window_proc)
 
     def test_kimi(self):
@@ -621,6 +818,10 @@ class NormalizeTests(unittest.TestCase):
             usage_monitor.select,
             "select",
             return_value=([stream], [], []),
+        ), mock.patch.object(
+            usage_monitor,
+            "reclaim_terminal_foreground",
+            return_value=True,
         ):
             refreshed = usage_monitor.wait_for_next_refresh(
                 interval=180,
@@ -653,6 +854,53 @@ class NormalizeTests(unittest.TestCase):
             7,
             usage_monitor.termios.TCSADRAIN,
             original_settings,
+        )
+
+    def test_keyboard_refresh_mode_ignores_terminal_restore_eio(self):
+        stream = mock.Mock()
+        stream.isatty.return_value = True
+        stream.fileno.return_value = 7
+        with mock.patch.object(
+            usage_monitor.termios,
+            "tcgetattr",
+            return_value=["terminal settings"],
+        ), mock.patch.object(
+            usage_monitor.tty,
+            "setcbreak",
+        ), mock.patch.object(
+            usage_monitor.termios,
+            "tcsetattr",
+            side_effect=OSError(5, "Input/output error"),
+        ):
+            with usage_monitor.keyboard_refresh_mode(stream) as enabled:
+                self.assertTrue(enabled)
+
+    def test_reclaim_terminal_foreground_ignores_sigttou(self):
+        stream = mock.Mock()
+        stream.isatty.return_value = True
+        stream.fileno.return_value = 7
+        with mock.patch.object(usage_monitor.os, "getpgrp", return_value=42), \
+                mock.patch.object(
+                    usage_monitor.os,
+                    "tcgetpgrp",
+                    side_effect=[99, 42],
+                ), \
+                mock.patch.object(usage_monitor.os, "tcsetpgrp") as tcsetpgrp, \
+                mock.patch.object(
+                    usage_monitor.signal,
+                    "getsignal",
+                    return_value=usage_monitor.signal.SIG_DFL,
+                ), \
+                mock.patch.object(usage_monitor.signal, "signal") as set_signal:
+            self.assertTrue(usage_monitor.reclaim_terminal_foreground(stream))
+
+        tcsetpgrp.assert_called_once_with(7, 42)
+        self.assertEqual(
+            set_signal.call_args_list,
+            [
+                mock.call(usage_monitor.signal.SIGTTOU, usage_monitor.signal.SIG_IGN),
+                mock.call(usage_monitor.signal.SIGTTOU, usage_monitor.signal.SIG_DFL),
+            ],
         )
 
     def test_noninteractive_refresh_wait_uses_sleep(self):
@@ -697,6 +945,40 @@ class NormalizeTests(unittest.TestCase):
             usage_monitor.collect(args)
 
         fetch_codebuddy.assert_not_called()
+
+    def test_dashboard_collects_providers_in_parallel_but_keeps_order(self):
+        args = argparse.Namespace(
+            provider="all",
+            dashboard=True,
+            config=None,
+            kimi_credentials=None,
+            kimi_web_credentials=None,
+            codex_credentials=None,
+            no_codex_auto_login=True,
+            deepseek_key=None,
+            deepseek_credentials=None,
+            glm_key=None,
+            glm_credentials=None,
+        )
+        barrier = threading.Barrier(4)
+
+        def fake_collect(provider, _args, _config):
+            barrier.wait(timeout=2)
+            return {
+                "provider": provider,
+                "plan": "test",
+                "windows": [],
+                "fetched_at": "2026-08-28T00:00:00+08:00",
+            }, []
+
+        with mock.patch.object(usage_monitor, "_collect_provider", side_effect=fake_collect):
+            results, errors = usage_monitor.collect(args)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            [result["provider"] for result in results],
+            ["kimi", "codex", "deepseek", "glm"],
+        )
 
     def test_version_badge_marks_outdated_cli(self):
         versions = {"Kimi Code": {"current": "0.30.0", "latest": "0.33.0"}}
@@ -748,6 +1030,8 @@ class NormalizeTests(unittest.TestCase):
         self.assertEqual(version, "0.150.1")
         self.assertEqual(run.call_args.args[0], ["bash", "-ic", "codex --version"])
         self.assertNotIn("shell", run.call_args.kwargs)
+        self.assertEqual(run.call_args.kwargs["stdin"], usage_monitor.subprocess.DEVNULL)
+        self.assertTrue(run.call_args.kwargs["start_new_session"])
 
     def test_render_appends_version_badge_to_provider_heading(self):
         results = [

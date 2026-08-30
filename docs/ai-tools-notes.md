@@ -86,6 +86,11 @@
 
 - **PATH 混入 Windows shim**：`/mnt/c/.../npm/codex` 可能被优先解析，报
   `Missing optional dependency @openai/codex-linux-x64`。用 `type -a <cmd>` 排查解析顺序。
+- **启动 Windows GUI 不要使用 `start_new_session`**：WSL interop relay 可能把
+  当前伪终端的前台进程组切给短命的 `powershell.exe` 会话；PowerShell 退出后，
+  monitor 读取键盘会收到 `SIGTTIN`/`SIGTTOU`，Bash 显示 `Stopped`，但 Windows
+  Electron 仍在运行。标准流重定向到 `DEVNULL` 即可，Electron 由 Windows launcher
+  自行独立运行。
 - **npm 全局目录不能并发写**：多个 `npm install -g` 并行会互相破坏（codex 曾因此缺 vendor 二进制）。
   多个 npm 包合并到一条 `npm install -g pkgA@latest pkgB@latest`，npm 内部自带并行。
 
@@ -99,6 +104,8 @@
   `[Console]::SetCursorPosition` 重绘，panelTop 按绘制后光标位置反推以容忍缓冲区滚动。
 - 过程信息用淡色 `\033[2m`（Linux）；结束后保留面板终态并打印「安装简报」
   （node/npm 版本 + 每个对象：安装成功/更新成功 before->after/已是最新/失败）。
+- 标题下的过程信息统一缩进两个字符，使“查询”“已是”等文本与标题中的左中括号
+  `[` 对齐；不要按工具名长度动态缩进，否则不同对象的内容起始列会来回跳动。
 - nodejs 依赖部署同样折叠（迷你面板，标题 + 最新 3 行）；失败时展开日志尾部。
 - TTY 才用折叠视图；`--verbose`（Linux）/ `-Verbose`（Windows）、管道/重定向退化
   全量流式输出。无 TTY 验证折叠 UI：`script -qec "bash xxx.sh" /dev/null` 分配 pty。

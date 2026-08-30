@@ -1,14 +1,32 @@
 const content = document.getElementById("content");
 const btnPin = document.getElementById("btn-pin");
 const btnRefresh = document.getElementById("btn-refresh");
-const filterBtn = document.getElementById("provider-filter");
-const filterMenu = document.getElementById("filter-menu");
-const filterLabel = filterBtn.querySelector(".filter-label");
+const btnSettings = document.getElementById("btn-settings");
+const titleVersion = document.getElementById("title-version");
+const envBadge = document.getElementById("env-badge");
 let lastPayload = null;
-// provider 筛选为多选集合:点 All 行=全选;点条目行=仅显示它;点复选框=自由勾选
+// provider 筛选为多选集合，位于设置页 Display 面板
 let selectedProviders = new Set();
 let knownProviders = [];
 const ERROR_DISMISS_MS = 8000;
+const settingsView = document.getElementById("settings-view");
+const settingsNote = document.getElementById("settings-note");
+const settingsSave = document.getElementById("settings-save");
+const displayList = document.getElementById("display-list");
+const sideEnvironment = document.getElementById("side-environment");
+const environmentList = document.getElementById("environment-list");
+const environmentNote = document.getElementById("environment-note");
+const apikeysEnvHint = document.getElementById("apikeys-env-hint");
+const keyInputs = {
+  deepseek: document.getElementById("deepseek-key"),
+  glm: document.getElementById("glm-key"),
+};
+const keyStates = {
+  deepseek: document.getElementById("deepseek-key-state"),
+  glm: document.getElementById("glm-key-state"),
+};
+let settingsOpen = false;
+let currentSettings = null;
 
 document.getElementById("btn-min").addEventListener("click", () => api.minimize());
 document.getElementById("btn-close").addEventListener("click", () => api.close());
@@ -25,51 +43,170 @@ btnPin.addEventListener("click", async () => {
 });
 api.getPinState().then(updatePinState);
 
-// provider 筛选:All 或单个模型(自定义下拉菜单)
-filterBtn.addEventListener("click", (e) => {
-  e.stopPropagation();
-  const opening = !filterMenu.classList.contains("open");
-  if (opening) {
-    // 窗口高度按内容自适应贴合,选中单个矮卡片时窗口可能比菜单还矮。
-    // 打开菜单时先按自然高度完整展开,并让窗口临时长高到能放下整个列表,
-    // 避免菜单被窗口底部裁掉、导致列表首尾的选项(All/最后一个 provider)看不见。
-    filterMenu.classList.add("open");
-    filterMenu.style.maxHeight = "";
-    const natural = filterMenu.offsetHeight;
-    const required = Math.max(
-      document.body.offsetHeight,
-      Math.ceil(filterBtn.getBoundingClientRect().bottom + natural + 8),
-    );
-    api.fitHeight(required);
-    // 兜底:窗口被手动拖小或长高被拒绝时,按当前可用空间限高并滚动
-    const spaceBelow = window.innerHeight - filterBtn.getBoundingClientRect().bottom - 8;
-    filterMenu.style.maxHeight = required > window.innerHeight
-      ? `${Math.max(80, Math.floor(spaceBelow))}px`
-      : "";
+function showKeyStatus(provider, info = {}) {
+  const el = keyStates[provider];
+  el.classList.remove("configured", "invalid");
+  if (info.configured) {
+    el.textContent = `Configured (${info.source || "local"})`;
+    el.classList.add("configured");
+    keyInputs[provider].placeholder = "Leave blank to keep current key";
+  } else if (info.source === "invalid") {
+    el.textContent = "Invalid credential file";
+    el.classList.add("invalid");
+    keyInputs[provider].placeholder = "Enter a replacement key";
   } else {
-    filterMenu.classList.remove("open");
-  }
-});
-// 收起筛选菜单并让窗口缩回内容高度
-function closeFilterMenu() {
-  if (!filterMenu.classList.contains("open")) return;
-  filterMenu.classList.remove("open");
-  if (lastPayload) {
-    updateCompact();
-    fitWindow();
+    el.textContent = "Not configured";
+    keyInputs[provider].placeholder = "Enter API key";
   }
 }
-document.addEventListener("click", closeFilterMenu);
-// 点到窗口外(无边框悬浮窗失焦)时同样收起菜单
-window.addEventListener("blur", closeFilterMenu);
 
+async function openSettings() {
+  settingsOpen = true;
+  content.classList.add("hidden");
+  settingsView.classList.remove("hidden");
+  btnSettings.classList.add("active");
+  api.settingsOpen(true);
+  for (const input of Object.values(keyInputs)) input.value = "";
+  settingsNote.className = "settings-note";
+  settingsNote.textContent = "Keys are sent to the backend through stdin only.";
+  settingsSave.disabled = false;
+  fitWindow();
+  loadSettingsInfo();
+  loadApiKeyStatus();
+}
+
+function closeSettings() {
+  settingsOpen = false;
+  settingsView.classList.add("hidden");
+  content.classList.remove("hidden");
+  btnSettings.classList.remove("active");
+  for (const input of Object.values(keyInputs)) input.value = "";
+  api.settingsOpen(false);
+  api.resetFit();
+  if (lastPayload) {
+    render(lastPayload);
+    updateCompact();
+  }
+  fitWindow();
+}
+
+// 设置页元信息：版本、数据源环境、后端路径
+async function loadSettingsInfo() {
+  try {
+    const result = await api.getSettings();
+    if (!result || !result.ok) throw new Error((result && result.error) || "unknown error");
+    currentSettings = result;
+    document.getElementById("about-version").textContent = `v${result.version || "unknown"}`;
+    document.getElementById("about-environment").textContent = result.environment || "—";
+    document.getElementById("about-script").textContent = result.script || "—";
+    const available = result.available_environments || [];
+    sideEnvironment.classList.toggle("hidden", available.length < 2);
+    buildEnvironmentList(available, result.environment);
+    apikeysEnvHint.textContent = result.environment === "windows"
+      ? "Keys are written to the Windows-side credential files (via WSL interop)."
+      : "Keys are stored locally with private file permissions.";
+  } catch (err) {
+    environmentNote.className = "settings-note error";
+    environmentNote.textContent = `Cannot read settings: ${err.message || err}`;
+  }
+}
+
+function buildEnvironmentList(available, current) {
+  environmentList.innerHTML = available.map((env) =>
+    `<div class="env-option${env === current ? " selected" : ""}" data-env="${esc(env)}">` +
+    `<span class="radio"></span>${esc(env === "wsl" ? "WSL" : env)}</div>`
+  ).join("");
+  environmentList.querySelectorAll(".env-option").forEach((item) => {
+    item.addEventListener("click", async () => {
+      const env = item.dataset.env;
+      if (!currentSettings || env === currentSettings.environment) return;
+      environmentNote.className = "settings-note";
+      environmentNote.textContent = "Saving…";
+      try {
+        const result = await api.setSettings({ environment: env });
+        if (!result || !result.ok) throw new Error((result && result.error) || "unknown error");
+        currentSettings.environment = env;
+        buildEnvironmentList(available, env);
+        document.getElementById("about-environment").textContent = env;
+        environmentNote.className = "settings-note ok";
+        environmentNote.textContent = "Saved. Usage data is refreshing…";
+      } catch (err) {
+        environmentNote.className = "settings-note error";
+        environmentNote.textContent = `Save failed: ${err.message || err}`;
+      }
+    });
+  });
+}
+
+async function loadApiKeyStatus() {
+  for (const provider of Object.keys(keyInputs)) {
+    keyStates[provider].textContent = "Checking…";
+  }
+  try {
+    const result = await api.getApiKeyStatus();
+    if (!result || !result.ok) throw new Error((result && result.error) || "unknown error");
+    for (const provider of Object.keys(keyInputs)) {
+      showKeyStatus(provider, (result.status || {})[provider]);
+    }
+  } catch (err) {
+    settingsNote.className = "settings-note error";
+    settingsNote.textContent = `Cannot read key status: ${err.message || err}`;
+  }
+}
+
+// 边栏切换面板
+settingsView.querySelectorAll(".side-item").forEach((item) => {
+  item.addEventListener("click", () => {
+    settingsView.querySelectorAll(".side-item").forEach((i) => i.classList.remove("active"));
+    item.classList.add("active");
+    settingsView.querySelectorAll(".panel").forEach((p) => p.classList.add("hidden"));
+    document.getElementById(`panel-${item.dataset.panel}`).classList.remove("hidden");
+    fitWindow();
+  });
+});
+
+btnSettings.addEventListener("click", () => (settingsOpen ? closeSettings() : openSettings()));
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && settingsOpen) closeSettings();
+});
+settingsSave.addEventListener("click", async () => {
+  const values = {};
+  for (const [provider, input] of Object.entries(keyInputs)) {
+    if (input.value.trim()) values[provider] = input.value.trim();
+  }
+  if (Object.keys(values).length === 0) {
+    settingsNote.className = "settings-note error";
+    settingsNote.textContent = "Enter at least one new API key.";
+    return;
+  }
+  settingsSave.disabled = true;
+  settingsNote.className = "settings-note";
+  settingsNote.textContent = "Saving…";
+  try {
+    const result = await api.saveApiKeys(values);
+    if (!result || !result.ok) throw new Error((result && result.error) || "unknown error");
+    for (const provider of Object.keys(keyInputs)) {
+      showKeyStatus(provider, (result.status || {})[provider]);
+      keyInputs[provider].value = "";
+    }
+    settingsNote.className = "settings-note ok";
+    settingsNote.textContent = "Saved. Usage data is refreshing…";
+  } catch (err) {
+    settingsNote.className = "settings-note error";
+    settingsNote.textContent = `Save failed: ${err.message || err}`;
+  } finally {
+    settingsSave.disabled = false;
+  }
+});
+
+// provider 筛选位于设置页 Display 面板：复选列表，即点即生效
 function isAllSelected() {
   return knownProviders.length > 0 && selectedProviders.size === knownProviders.length;
 }
 
-// 勾选态与按钮文案统一从这里刷新
+// 勾选态统一从这里刷新
 function refreshFilterUi() {
-  filterMenu.querySelectorAll(".item").forEach((item) => {
+  displayList.querySelectorAll(".display-list-item").forEach((item) => {
     const cb = item.querySelector(".cb");
     if (item.dataset.val === "__all__") {
       cb.classList.toggle("on", isAllSelected());
@@ -79,21 +216,12 @@ function refreshFilterUi() {
       cb.classList.remove("partial");
     }
   });
-  if (selectedProviders.size === 0) {
-    filterLabel.textContent = "None";
-  } else if (isAllSelected()) {
-    filterLabel.textContent = "All";
-  } else if (selectedProviders.size === 1) {
-    filterLabel.textContent = [...selectedProviders][0];
-  } else {
-    filterLabel.textContent = `${selectedProviders.size}/${knownProviders.length}`;
-  }
 }
 
 // 筛选变化后重绘内容并贴合窗口
 function applyFilter() {
   refreshFilterUi();
-  if (lastPayload) {
+  if (lastPayload && !settingsOpen) {
     api.resetFit();
     render(lastPayload);
     updateCompact();
@@ -101,8 +229,8 @@ function applyFilter() {
   }
 }
 
-function buildFilterMenu(accounts, errors = []) {
-  // 拉取失败的模型也保留在下拉框里(错误卡片单独展示),
+function buildDisplayList(accounts, errors = []) {
+  // 拉取失败的模型也保留在列表里(错误卡片单独展示),
   // 避免临时失败时选项消失、筛选被静默重置
   const names = accounts.map((a) => a.provider);
   const seen = new Set(names);
@@ -122,30 +250,21 @@ function buildFilterMenu(accounts, errors = []) {
   }
   knownProviders = names;
 
-  filterMenu.innerHTML =
-    '<div class="item" data-val="__all__"><span class="cb"></span>All</div>' +
-    names.map((n) => `<div class="item" data-val="${esc(n)}"><span class="cb"></span>${esc(n)}</div>`).join("");
+  displayList.innerHTML =
+    '<div class="display-list-item" data-val="__all__"><span class="cb"></span>All</div>' +
+    names.map((n) => `<div class="display-list-item" data-val="${esc(n)}"><span class="cb"></span>${esc(n)}</div>`).join("");
 
-  filterMenu.querySelectorAll(".item").forEach((item) => {
-    item.addEventListener("click", (e) => {
-      e.stopPropagation();
+  displayList.querySelectorAll(".display-list-item").forEach((item) => {
+    item.addEventListener("click", () => {
       const val = item.dataset.val;
-      if (e.target.closest(".cb")) {
-        // 点复选框:自由勾选/取消,菜单保持打开
-        if (val === "__all__") {
-          selectedProviders = isAllSelected() ? new Set() : new Set(knownProviders);
-        } else if (selectedProviders.has(val)) {
-          selectedProviders.delete(val);
-        } else {
-          selectedProviders.add(val);
-        }
-        applyFilter();
+      if (val === "__all__") {
+        selectedProviders = isAllSelected() ? new Set() : new Set(knownProviders);
+      } else if (selectedProviders.has(val)) {
+        selectedProviders.delete(val);
       } else {
-        // 点条目行:All=全选;单个=仅显示它。点完收起菜单
-        selectedProviders = val === "__all__" ? new Set(knownProviders) : new Set([val]);
-        filterMenu.classList.remove("open");
-        applyFilter();
+        selectedProviders.add(val);
       }
+      applyFilter();
     });
   });
   refreshFilterUi();
@@ -351,23 +470,27 @@ function updateCompact() {
 }
 window.addEventListener("resize", () => {
   updateCompact();
-  // 窗口尺寸变化(含菜单打开时的临时长高)后,按新尺寸校正菜单限高
-  if (filterMenu.classList.contains("open")) {
-    const spaceBelow = window.innerHeight - filterBtn.getBoundingClientRect().bottom - 8;
-    const natural = filterMenu.scrollHeight;
-    filterMenu.style.maxHeight = natural > spaceBelow
-      ? `${Math.max(80, Math.floor(spaceBelow))}px`
-      : "";
-  }
 });
 
 api.onUsageUpdate((payload) => {
   lastPayload = payload;
   btnRefresh.classList.remove("spin");
-  if (payload.data) buildFilterMenu(payload.data.accounts || [], payload.data.errors || []);
+  if (payload.data) {
+    buildDisplayList(payload.data.accounts || [], payload.data.errors || []);
+    // 标题栏版本号；数据源被切换到非本机环境时显示环境标记
+    const version = payload.data.monitor_version;
+    titleVersion.textContent = version ? `v${version}` : "";
+    const switched = payload.data.environment
+      && payload.data.native_environment
+      && payload.data.environment !== payload.data.native_environment;
+    envBadge.classList.toggle("hidden", !switched);
+    if (switched) envBadge.textContent = payload.data.environment;
+  }
   render(payload);
-  updateCompact();
-  fitWindow();
+  if (!settingsOpen) {
+    updateCompact();
+    fitWindow();
+  }
 });
 
 // --- 点击版本徽章升级 ------------------------------------------------------
@@ -420,7 +543,9 @@ function showUpgradeOverlay(provider) {
     overlay.querySelector(".upgrade-btns").innerHTML = "";
     msg.textContent = `Upgrading ${targets.join(", ")} …`;
     try {
-      const res = await api.upgrade(targets);
+      const data = (lastPayload && lastPayload.data) || {};
+      // 升级目标跟随当前数据源环境（WSL 或 Windows 侧的 agent）
+      const res = await api.upgrade(targets, data.environment, data.windows_setup_script);
       msg.textContent = res && res.ok
         ? "Upgrade finished"
         : `Upgrade failed: ${(res && res.error) || "unknown error"}`;

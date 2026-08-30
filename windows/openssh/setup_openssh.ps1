@@ -21,6 +21,13 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $dir = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+$envtoolsVersionFile = Join-Path $dir '..\..\VERSION'
+if (Test-Path $envtoolsVersionFile) {
+    $envtoolsVersion = Get-Content $envtoolsVersionFile -TotalCount 1 -ErrorAction SilentlyContinue
+    if ($envtoolsVersion) { Write-Host "Env-Tools v$($envtoolsVersion.Trim())" }
+}
+
 $logDir = Join-Path $dir 'log'
 New-Item -ItemType Directory -Path $logDir -Force | Out-Null
 $log = Join-Path $logDir 'setup.log'

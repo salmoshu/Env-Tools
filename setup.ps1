@@ -88,6 +88,12 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltinRole]::Administra
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 
+$envtoolsVersionFile = Join-Path $root 'VERSION'
+if (Test-Path $envtoolsVersionFile) {
+    $envtoolsVersion = Get-Content $envtoolsVersionFile -TotalCount 1 -ErrorAction SilentlyContinue
+    if ($envtoolsVersion) { Write-Host "Env-Tools v$($envtoolsVersion.Trim())" }
+}
+
 $targets = if ($Component -contains 'all') { @('kdesk','nodejs','ai-tools','openssh') } else { $Component }
 $scripts = [ordered]@{
     kdesk      = 'windows\kdesk\setup_elevated.ps1'

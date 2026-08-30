@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
 import calendar
 import json
@@ -83,6 +84,22 @@ CYAN = "\033[36m"
 DIM = "\033[2m"
 RESET = "\033[0m"
 
+# Electron 看板是无交互后台请求：使用更短的单次超时和有限重试，
+# 避免某个 provider 断网时整个窗口长时间卡在 Loading。终端模式保持原值。
+REQUEST_TIMEOUT_CAP: int | None = None
+GET_ATTEMPTS_CAP: int | None = None
+VERSION_REQUEST_TIMEOUT_CAP: int | None = None
+# 看板模式下 Codex 的单次超时上限，为其他 provider 上限（10 秒）的两倍。
+CODEX_DASHBOARD_TIMEOUT_CAP = 20
+
+# 仓库统一版本号：所有内部应用与脚本共用根目录 VERSION 文件。
+REPO_ROOT = Path(__file__).resolve().parents[3]
+# 数据源环境：None 表示本机；WSL 中可选 "windows" 读取 Windows 侧的
+# 凭据与 agent 版本（见 resolve_environment）。由 main() 在启动时设置。
+ENVIRONMENT: str | None = None
+SETTINGS_PATH = Path.home() / ".config" / "ai-usage-monitor" / "settings.json"
+_WINDOWS_PROFILE: Path | None = None
+
 
 class MonitorError(RuntimeError):
     pass
@@ -117,13 +134,127 @@ def write_private_json(path: Path, data: dict[str, Any]) -> None:
     os.replace(str(temporary), str(path))
 
 
+def repo_version() -> str:
+    """仓库统一版本号（根目录 VERSION 文件）；缺失时返回 unknown。"""
+    try:
+        return (REPO_ROOT / "VERSION").read_text(encoding="utf-8").strip() or "unknown"
+    except OSError:
+        return "unknown"
+
+
+def native_environment() -> str:
+    if os.name == "nt":
+        return "windows"
+    return "wsl" if running_in_wsl() else "linux"
+
+
+def windows_user_profile() -> Path:
+    """WSL 中解析 Windows 用户目录（/mnt/c/Users/<u>），带进程内缓存。"""
+    global _WINDOWS_PROFILE
+    if _WINDOWS_PROFILE is not None:
+        return _WINDOWS_PROFILE
+    if not running_in_wsl():
+        raise MonitorError("Windows environment is only reachable from WSL")
+    result = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-Command",
+            '[Environment]::GetFolderPath("UserProfile")',
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    windows_profile = result.stdout.strip()
+    if result.returncode != 0 or not windows_profile:
+        raise MonitorError("Cannot resolve the Windows user profile from WSL")
+    profile = Path(
+        subprocess.run(
+            ["wslpath", "-u", windows_profile],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=True,
+        ).stdout.strip()
+    )
+    if not profile.is_dir():
+        raise MonitorError(f"Windows user profile is not accessible: {profile}")
+    _WINDOWS_PROFILE = profile
+    return profile
+
+
+def env_home() -> Path:
+    """当前数据源环境的用户目录：env=windows 时指向 Windows 用户目录。"""
+    if ENVIRONMENT == "windows" and running_in_wsl():
+        return windows_user_profile()
+    return Path.home()
+
+
+def settings_path() -> Path:
+    if os.environ.get("AI_USAGE_SETTINGS_PATH"):
+        return Path(os.environ["AI_USAGE_SETTINGS_PATH"]).expanduser()
+    return SETTINGS_PATH
+
+
+def load_settings() -> dict[str, Any]:
+    path = settings_path()
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def available_environments() -> list[str]:
+    """本机环境列表；WSL 且能访问 Windows 侧时追加 windows。"""
+    environments = [native_environment()]
+    if environments[0] == "wsl":
+        try:
+            windows_user_profile()
+        except (MonitorError, OSError, subprocess.SubprocessError):
+            pass
+        else:
+            environments.append("windows")
+    return environments
+
+
+def resolve_environment(explicit: str | None = None) -> str:
+    """数据源环境：--environment 参数 > 设置文件 > 本机环境。"""
+    global ENVIRONMENT
+    environment = explicit or load_settings().get("environment") or native_environment()
+    if environment == "windows" and native_environment() == "wsl":
+        windows_user_profile()  # 提前失败，避免每个 provider 各自报错
+    elif environment != native_environment():
+        raise MonitorError(f"Environment '{environment}' is not available on this machine")
+    ENVIRONMENT = environment
+    return environment
+
+
+def windows_setup_script_unc() -> str | None:
+    """env=windows 时升级脚本的 UNC 路径（供 Windows 侧 Electron 起 powershell）。"""
+    if not (running_in_wsl() and ENVIRONMENT == "windows"):
+        return None
+    script = REPO_ROOT / "windows" / "ai-tools" / "setup_ai_tools.ps1"
+    if not script.is_file():
+        return None
+    try:
+        return windows_path_from_wsl(script)
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
 def kimi_credentials_path(explicit: str | None = None) -> Path:
     if explicit:
         return Path(explicit).expanduser()
     if os.environ.get("KIMI_CREDENTIALS_PATH"):
         return Path(os.environ["KIMI_CREDENTIALS_PATH"]).expanduser()
 
-    home = Path.home()
+    home = env_home()
     candidates = []
     if os.environ.get("KIMI_CODE_HOME"):
         candidates.append(
@@ -148,7 +279,10 @@ def codex_credentials_path(explicit: str | None = None) -> Path:
         return Path(explicit).expanduser()
     if os.environ.get("CODEX_AUTH_PATH"):
         return Path(os.environ["CODEX_AUTH_PATH"]).expanduser()
-    codex_home = Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser()
+    if os.environ.get("CODEX_HOME"):
+        codex_home = Path(os.environ["CODEX_HOME"]).expanduser()
+    else:
+        codex_home = env_home() / ".codex"
     return codex_home / "auth.json"
 
 
@@ -190,8 +324,15 @@ def request_json(
     data: bytes | None = None,
     timeout: int = 30,
     use_proxy: bool = True,
+    timeout_cap: int | None = None,
 ) -> dict[str, Any]:
     attempts = 3 if data is None else 1
+    if GET_ATTEMPTS_CAP is not None and data is None:
+        attempts = min(attempts, GET_ATTEMPTS_CAP)
+    if REQUEST_TIMEOUT_CAP is not None:
+        # 个别慢接口（如经代理访问 chatgpt.com）可通过 timeout_cap 放宽单次上限。
+        cap = max(REQUEST_TIMEOUT_CAP, timeout_cap) if timeout_cap else REQUEST_TIMEOUT_CAP
+        timeout = min(timeout, cap)
     result = None
     for attempt in range(attempts):
         request = urllib.request.Request(
@@ -214,11 +355,13 @@ def request_json(
             raise MonitorError(f"HTTP {exc.code}: {exc.reason}") from exc
         except urllib.error.URLError as exc:
             if attempt + 1 == attempts:
-                raise MonitorError(f"Network request failed (retried {attempts} times): {exc.reason}") from exc
+                attempt_note = "" if attempts == 1 else f" after {attempts} attempts"
+                raise MonitorError(f"Network request failed{attempt_note}: {exc.reason}") from exc
             time.sleep(attempt + 1)
         except OSError as exc:
             if attempt + 1 == attempts:
-                raise MonitorError(f"Network request failed (retried {attempts} times): {exc}") from exc
+                attempt_note = "" if attempts == 1 else f" after {attempts} attempts"
+                raise MonitorError(f"Network request failed{attempt_note}: {exc}") from exc
             time.sleep(attempt + 1)
         except ValueError as exc:
             raise MonitorError(f"Invalid API response: {exc}") from exc
@@ -418,6 +561,9 @@ def _fetch_codex(path: Path) -> dict[str, Any]:
             headers=headers,
             use_proxy=env_enabled("CODEX_USE_PROXY", default=True),
             timeout=int(os.environ.get("CODEX_TIMEOUT", "30")),
+            # 看板快速失败策略对其他 provider 限 10 秒；chatgpt.com 必须经代理
+            # 访问，延迟高且抖动大，给双倍单次容忍（20 秒）。终端模式无上限。
+            timeout_cap=CODEX_DASHBOARD_TIMEOUT_CAP,
         )
     except MonitorError as exc:
         error_text = str(exc)
@@ -558,7 +704,7 @@ def deepseek_credentials_path(explicit: str | None = None) -> Path:
     env = os.environ.get("DEEPSEEK_CREDENTIALS_PATH")
     if env:
         return Path(env).expanduser()
-    return Path.home() / ".deepseek" / "credentials.json"
+    return env_home() / ".deepseek" / "credentials.json"
 
 
 def deepseek_api_key(explicit: str | None = None, credentials_path: str | None = None) -> str:
@@ -601,7 +747,7 @@ def glm_credentials_path(explicit: str | None = None) -> Path:
     env = os.environ.get("GLM_CREDENTIALS_PATH")
     if env:
         return Path(env).expanduser()
-    return Path.home() / ".glm" / "credentials.json"
+    return env_home() / ".glm" / "credentials.json"
 
 
 def glm_api_key(explicit: str | None = None, credentials_path: str | None = None) -> str:
@@ -724,6 +870,108 @@ def normalize_deepseek(data: dict[str, Any]) -> dict[str, Any]:
 
 def normalize_glm(data: dict[str, Any]) -> dict[str, Any]:
     return normalize_balance_provider(data, "GLM", GLM_MONTHLY_LIMIT)
+
+
+API_KEY_SETTINGS = {
+    "deepseek": {
+        "env": ("DEEPSEEK_API_KEY",),
+        "path": deepseek_credentials_path,
+        "fields": ("api_key", "DEEPSEEK_API_KEY"),
+    },
+    "glm": {
+        "env": ("GLM_API_KEY", "ZHIPU_API_KEY", "ZHIPUAI_API_KEY"),
+        "path": glm_credentials_path,
+        "fields": ("api_key", "GLM_API_KEY", "ZHIPU_API_KEY", "ZHIPUAI_API_KEY"),
+    },
+}
+
+
+def api_key_status() -> dict[str, dict[str, Any]]:
+    """返回看板可配置 provider 的凭据状态，绝不返回密钥内容。"""
+    status: dict[str, dict[str, Any]] = {}
+    for provider, settings in API_KEY_SETTINGS.items():
+        if any(os.environ.get(name) for name in settings["env"]):
+            status[provider] = {"configured": True, "source": "environment"}
+            continue
+        path = settings["path"]()
+        if not path.is_file():
+            status[provider] = {"configured": False, "source": "missing"}
+            continue
+        try:
+            data = read_json(path)
+            configured = any(data.get(field) for field in settings["fields"])
+            status[provider] = {
+                "configured": configured,
+                "source": "file" if configured else "missing",
+            }
+        except MonitorError as exc:
+            status[provider] = {
+                "configured": False,
+                "source": "invalid",
+                "error": str(exc),
+            }
+    return status
+
+
+def configure_api_keys(payload: Any) -> dict[str, Any]:
+    """把 Electron 通过 stdin 传入的 API Key 写入私有凭据文件。"""
+    if not isinstance(payload, dict):
+        raise MonitorError("API key settings must be a JSON object")
+    unknown = sorted(set(payload) - set(API_KEY_SETTINGS))
+    if unknown:
+        raise MonitorError(f"Unsupported API key provider: {', '.join(unknown)}")
+    saved = []
+    for provider, value in payload.items():
+        if not isinstance(value, str) or not value.strip():
+            raise MonitorError(f"{provider} API key cannot be empty")
+        settings = API_KEY_SETTINGS[provider]
+        path = settings["path"]()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(str(path.parent), 0o700)
+        except OSError:
+            pass
+        data = read_json(path) if path.is_file() else {}
+        data["api_key"] = value.strip()
+        write_private_json(path, data)
+        saved.append(provider)
+    return {"ok": True, "saved": saved, "status": api_key_status()}
+
+
+def get_settings_payload() -> dict[str, Any]:
+    """Electron 设置页初始数据：版本、当前数据源环境与可选环境列表。"""
+    available = available_environments()
+    configured = load_settings().get("environment")
+    environment = configured if configured in available else available[0]
+    return {
+        "ok": True,
+        "version": repo_version(),
+        "environment": environment,
+        "available_environments": available,
+        "script": str(Path(__file__).resolve()),
+    }
+
+
+def update_settings(payload: Any) -> dict[str, Any]:
+    """保存 Electron 设置页改动（目前只有数据源环境）。"""
+    if not isinstance(payload, dict):
+        raise MonitorError("Settings must be a JSON object")
+    unknown = sorted(set(payload) - {"environment"})
+    if unknown:
+        raise MonitorError(f"Unsupported setting: {', '.join(unknown)}")
+    available = available_environments()
+    settings = load_settings()
+    if "environment" in payload:
+        value = payload["environment"]
+        if value not in available:
+            raise MonitorError(
+                f"Environment '{value}' is not available (choose from: {', '.join(available)})"
+            )
+        settings["environment"] = value
+    path = settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_private_json(path, settings)
+    return {"ok": True, "settings": settings}
 
 
 def percent(
@@ -1217,13 +1465,37 @@ def _semver_key(text: str) -> tuple[int, ...]:
     return tuple(int(part) for part in text.split("."))
 
 
+def _detect_windows_cli_version(command: str) -> str | None:
+    """WSL 中探测 Windows 侧 CLI 版本（powershell.exe 转发）。
+
+    不要加 start_new_session：WSL interop relay 可能把伪终端前台进程组切给
+    短命的 PowerShell 会话，导致 monitor 读键盘时收到 SIGTTIN（Stopped）。
+    """
+    try:
+        completed = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-Command", f"{command} --version"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return _semver_match(completed.stdout) or _semver_match(completed.stderr)
+
+
 def detect_cli_version(command: str) -> str | None:
     """本机已安装 CLI 的版本（取 --version 输出中的首个 x.y.z）；未安装返回 None。"""
+    if ENVIRONMENT == "windows" and running_in_wsl():
+        return _detect_windows_cli_version(command)
     command_args: list[str] = [command, "--version"]
-    if running_in_wsl():
+    in_wsl = running_in_wsl()
+    if in_wsl:
         # Windows 原生 Electron 通过 `wsl.exe --exec python3` 启动后端时，
         # PATH 不包含 .bashrc 中初始化的 NVM 全局 bin。用交互式 bash
-        # 探测，确保版本来自与用户终端/升级脚本相同的 CLI。
+        # 探测，确保版本来自与用户终端/升级脚本相同的 CLI。交互式 bash
+        # 必须脱离控制终端，否则连续探测 Codex/Kimi 时会篡改前台进程组，
+        # 第二个 shell 随即向 monitor 发送 SIGTTIN，Bash 显示 Stopped。
         command_args = ["bash", "-ic", f"{shlex.quote(command)} --version"]
     try:
         completed = subprocess.run(
@@ -1231,6 +1503,8 @@ def detect_cli_version(command: str) -> str | None:
             capture_output=True,
             text=True,
             timeout=15,
+            stdin=subprocess.DEVNULL if in_wsl else None,
+            start_new_session=in_wsl,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -1238,6 +1512,8 @@ def detect_cli_version(command: str) -> str | None:
 
 
 def _request_text(url: str, use_proxy: bool = True, timeout: int = 10) -> str | None:
+    if VERSION_REQUEST_TIMEOUT_CAP is not None:
+        timeout = min(timeout, VERSION_REQUEST_TIMEOUT_CAP)
     try:
         request = urllib.request.Request(url)
         if use_proxy:
@@ -1325,7 +1601,8 @@ def version_badge(provider: str, versions: dict[str, Any] | None, color: bool) -
 
 
 def render(results: list[dict[str, Any]], errors: list[dict[str, str]], color: bool, versions: dict[str, Any] | None = None) -> str:
-    lines = ["AI Usage Monitor", "═" * 62]
+    environment_note = "" if ENVIRONMENT in (None, native_environment()) else f" · {ENVIRONMENT}"
+    lines = [f"AI Usage Monitor v{repo_version()}{environment_note}", "═" * 62]
     for result in results:
         heading = f"{result['provider']}{version_badge(result['provider'], versions, color)}  ·  {result['plan']}"
         lines.append(f"{CYAN}{heading}{RESET}" if color else heading)
@@ -1382,15 +1659,13 @@ def persistent_watch_errors(errors: list[dict[str, str]]) -> list[dict[str, str]
     return [error for error in errors if error.get("provider") != "Kimi Monthly Total"]
 
 
-def collect(args: argparse.Namespace) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
-    results = []
-    errors = []
-    try:
-        monitor_config = read_monitor_config(getattr(args, "config", None))
-    except MonitorError as exc:
-        monitor_config = {}
-        errors.append({"provider": "OpenAI Codex", "error": f"Config: {exc}"})
-    if args.provider in ("all", "kimi"):
+def _collect_provider(
+    provider: str,
+    args: argparse.Namespace,
+    monitor_config: dict[str, Any],
+) -> tuple[dict[str, Any] | None, list[dict[str, str]]]:
+    provider_errors: list[dict[str, str]] = []
+    if provider == "kimi":
         try:
             kimi_result = normalize_kimi(fetch_kimi(kimi_credentials_path(args.kimi_credentials)))
             web_path = kimi_web_credentials_path(args.kimi_web_credentials)
@@ -1401,39 +1676,71 @@ def collect(args: argparse.Namespace) -> tuple[list[dict[str, Any]], list[dict[s
                         kimi_result["windows"].append(monthly["window"])
                         kimi_result.setdefault("extra_lines", []).extend(monthly["extra_lines"])
                 except Exception as exc:
-                    errors.append({"provider": "Kimi Monthly Total", "error": str(exc)})
-            results.append(kimi_result)
+                    provider_errors.append({"provider": "Kimi Monthly Total", "error": str(exc)})
+            return kimi_result, provider_errors
         except Exception as exc:
-            errors.append({"provider": "Kimi Code", "error": str(exc)})
-    if args.provider in ("all", "codex"):
+            return None, [{"provider": "Kimi Code", "error": str(exc)}]
+    if provider == "codex":
         try:
-            results.append(
+            return (
                 normalize_codex(
                     fetch_codex(
                         codex_credentials_path(args.codex_credentials),
                         auto_login=not args.no_codex_auto_login,
                     ),
                     monitor_config.get("openai") or {},
-                )
+                ),
+                [],
             )
         except Exception as exc:
-            errors.append({"provider": "OpenAI Codex", "error": str(exc)})
-    if args.provider in ("all", "deepseek"):
+            return None, [{"provider": "OpenAI Codex", "error": str(exc)}]
+    if provider == "deepseek":
         try:
-            results.append(
+            return (
                 normalize_deepseek(
                     fetch_deepseek(args.deepseek_key, args.deepseek_credentials)
-                )
+                ),
+                [],
             )
         except Exception as exc:
-            errors.append({"provider": "DeepSeek", "error": str(exc)})
-    if args.provider in ("all", "glm"):
+            return None, [{"provider": "DeepSeek", "error": str(exc)}]
+    if provider == "glm":
         try:
-            results.append(
-                normalize_glm(fetch_glm(args.glm_key, args.glm_credentials))
-            )
+            return normalize_glm(fetch_glm(args.glm_key, args.glm_credentials)), []
         except Exception as exc:
-            errors.append({"provider": "GLM", "error": str(exc)})
+            return None, [{"provider": "GLM", "error": str(exc)}]
+    return None, [{"provider": provider, "error": "Unsupported provider"}]
+
+
+def collect(args: argparse.Namespace) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    results: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    try:
+        monitor_config = read_monitor_config(getattr(args, "config", None))
+    except MonitorError as exc:
+        monitor_config = {}
+        errors.append({"provider": "OpenAI Codex", "error": f"Config: {exc}"})
+    order = ["kimi", "codex", "deepseek", "glm"]
+    providers = order if args.provider == "all" else [args.provider]
+    if (getattr(args, "dashboard", False) or getattr(args, "watch", False)) and len(providers) > 1:
+        # Electron 与终端持续看板中 provider 互不依赖，并行查询：单个
+        # 网络失败不再阻塞其他卡片；合并时仍按固定顺序输出，避免界面跳动。
+        with ThreadPoolExecutor(max_workers=len(providers)) as executor:
+            futures = {
+                provider: executor.submit(_collect_provider, provider, args, monitor_config)
+                for provider in providers
+            }
+            collected = {provider: futures[provider].result() for provider in providers}
+    else:
+        collected = {
+            provider: _collect_provider(provider, args, monitor_config)
+            for provider in providers
+        }
+    for provider in providers:
+        result, provider_errors = collected[provider]
+        if result:
+            results.append(result)
+        errors.extend(provider_errors)
     return results, errors
 
 
@@ -1459,7 +1766,96 @@ def keyboard_refresh_mode(stream):
         yield enabled
     finally:
         if enabled and fd is not None and original_settings is not None:
-            termios.tcsetattr(fd, termios.TCSADRAIN, original_settings)
+            try:
+                termios.tcsetattr(fd, termios.TCSADRAIN, original_settings)
+            except (OSError, ValueError):
+                # 终端已关闭或其前台进程组被外部程序破坏时，恢复可能返回 EIO；
+                # 此处不能用第二个异常掩盖真正的退出原因。
+                pass
+
+
+def reclaim_terminal_foreground(stream) -> bool:
+    """Reclaim the controlling terminal after a WSL interop GUI launch.
+
+    Some terminal hosts let the short-lived Windows interop relay replace the
+    foreground process group.  Ignore SIGTTOU while restoring our own group so
+    the next keyboard read cannot suspend the monitor as a background job.
+    """
+    if os.name == "nt":
+        return True
+    try:
+        if not stream.isatty():
+            return False
+        fd = stream.fileno()
+        own_group = os.getpgrp()
+        if os.tcgetpgrp(fd) == own_group:
+            return True
+        previous_handler = signal.getsignal(signal.SIGTTOU)
+        signal.signal(signal.SIGTTOU, signal.SIG_IGN)
+        try:
+            os.tcsetpgrp(fd, own_group)
+        finally:
+            signal.signal(signal.SIGTTOU, previous_handler)
+        return os.tcgetpgrp(fd) == own_group
+    except (AttributeError, OSError, ValueError):
+        return False
+
+
+def stop_previous_watch_instances(
+    proc_root: Path = Path("/proc"),
+    script_path: Path | None = None,
+    wait_for_exit: bool = True,
+) -> list[int]:
+    """Terminate older watch processes for this exact monitor script.
+
+    Electron dashboard fetch workers do not carry --watch/-w and are never
+    selected.  Restricting the scan to the current uid and resolved script path
+    avoids touching unrelated Python processes.
+    """
+    if os.name == "nt" or not proc_root.is_dir():
+        return []
+    current_pid = os.getpid()
+    current_uid = os.getuid()
+    expected_script = (script_path or Path(__file__)).resolve()
+    stopped: list[int] = []
+    for process_dir in proc_root.iterdir():
+        if not process_dir.name.isdigit():
+            continue
+        pid = int(process_dir.name)
+        if pid == current_pid:
+            continue
+        try:
+            if process_dir.stat().st_uid != current_uid:
+                continue
+            argv = [
+                os.fsdecode(part)
+                for part in (process_dir / "cmdline").read_bytes().split(b"\0")
+                if part
+            ]
+            if not ({"--watch", "-w"} & set(argv)):
+                continue
+            process_cwd = Path(os.readlink(process_dir / "cwd"))
+            matches_script = any(
+                (Path(arg) if Path(arg).is_absolute() else process_cwd / arg).resolve()
+                == expected_script
+                for arg in argv[1:]
+                if not arg.startswith("-")
+            )
+            if not matches_script:
+                continue
+            os.kill(pid, signal.SIGTERM)
+            # A stopped process must be continued before it can consume SIGTERM.
+            os.kill(pid, signal.SIGCONT)
+            stopped.append(pid)
+        except (OSError, ValueError):
+            continue
+    if stopped and wait_for_exit:
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            if not any((proc_root / str(pid)).exists() for pid in stopped):
+                break
+            time.sleep(0.02)
+    return stopped
 
 
 # 最近一次拉起的 Electron 主进程,用于退出时一并关闭
@@ -1534,8 +1930,12 @@ def launch_usage_window() -> None:
                 "stdin": subprocess.DEVNULL,
                 "stdout": subprocess.DEVNULL,
                 "stderr": subprocess.DEVNULL,
-                "start_new_session": True,
             }
+            # 不要在 WSL 中对 Windows 可执行文件使用 start_new_session：
+            # WSL interop relay 可能把伪终端的前台进程组切给短命的 PowerShell
+            # 会话，PowerShell 退出后 monitor 一读键盘就收到 SIGTTIN/SIGTTOU，
+            # Bash 随即显示 `Stopped`。Windows Electron 由 launcher 自行脱离，
+            # PowerShell 的标准流也已重定向，不需要 Unix 侧再创建会话。
             # Windows 可执行文件无法把 UNC WSL 路径设为当前目录；使用 Windows
             # 目录可避免启动时出现路径转换警告，脚本位置仍通过 -File 显式传入。
             windows_dir = Path("/mnt/c/Windows")
@@ -1633,6 +2033,11 @@ def wait_for_next_refresh(
         return False
 
     stream = stream or sys.stdin
+    if not reclaim_terminal_foreground(stream):
+        # 无法安全读取控制终端时退化为定时刷新；直接 read 会触发 SIGTTIN，
+        # Bash 会把进程标记为 Stopped。
+        time.sleep(interval)
+        return False
     deadline = time.monotonic() + interval
     if os.name == "nt":
         # Windows 上 select 不支持控制台句柄，改用 msvcrt 轮询
@@ -1682,6 +2087,17 @@ def enable_windows_ansi() -> None:
             pass
 
 
+def enable_dashboard_request_policy() -> None:
+    """Electron 后台的快速失败策略；不影响终端命令的容错时间。"""
+    global REQUEST_TIMEOUT_CAP, GET_ATTEMPTS_CAP, VERSION_REQUEST_TIMEOUT_CAP
+    # 看板 60 秒一刷、整轮 45 秒上限（Electron 侧强杀），provider 并行查询。
+    # 其他 provider 单次 10 秒 + 一次同轮重试；Codex 经代理访问 chatgpt.com
+    # 延迟高，单次上限放宽到 20 秒（见 CODEX_DASHBOARD_TIMEOUT_CAP）。
+    REQUEST_TIMEOUT_CAP = 10
+    GET_ATTEMPTS_CAP = 2
+    VERSION_REQUEST_TIMEOUT_CAP = 3
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Standalone Kimi Code / Codex / DeepSeek / GLM usage monitor for the terminal")
     parser.add_argument("--watch", "-w", action="store_true", help="Keep refreshing")
@@ -1703,18 +2119,73 @@ def main() -> int:
     parser.add_argument("--glm-credentials", help="Path to GLM credentials JSON file")
     parser.add_argument("--json", action="store_true", help="Output JSON")
     parser.add_argument("--no-color", action="store_true", help="Disable ANSI colors")
+    parser.add_argument("--dashboard", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--environment",
+        choices=("wsl", "windows"),
+        help="Data source environment (default: settings file, then the native environment)",
+    )
+    maintenance = parser.add_mutually_exclusive_group()
+    maintenance.add_argument("--api-key-status", action="store_true", help=argparse.SUPPRESS)
+    maintenance.add_argument("--configure-api-keys", action="store_true", help=argparse.SUPPRESS)
+    maintenance.add_argument("--get-settings", action="store_true", help=argparse.SUPPRESS)
+    maintenance.add_argument("--set-settings", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
         "--no-codex-auto-login",
         action="store_true",
         help="Disable automatic login when Codex credentials are missing",
     )
     args = parser.parse_args()
+    if args.dashboard:
+        # 快速失败策略只适用于 Electron 后台；终端 watch 保留完整超时与重试，
+        # 否则代理访问 chatgpt.com 偶发抖动就会被放大成频繁的报错。
+        enable_dashboard_request_policy()
+    if args.dashboard:
+        # Electron 后台没有可交互终端，缺凭据时直接返回错误，
+        # 禁止启动最长 10 分钟的 codex login。
+        args.no_codex_auto_login = True
     if args.interval < 5:
         parser.error("--interval must be at least 5 seconds")
     if args.json and args.watch:
         parser.error("--json cannot be used together with --watch")
 
     enable_windows_ansi()
+    if args.get_settings:
+        print(json.dumps(get_settings_payload(), ensure_ascii=False))
+        return 0
+    if args.set_settings:
+        try:
+            payload = json.loads(sys.stdin.read())
+            result = update_settings(payload)
+            print(json.dumps(result, ensure_ascii=False))
+            return 0
+        except (MonitorError, ValueError) as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+            return 1
+    try:
+        resolve_environment(args.environment)
+    except MonitorError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    if ENVIRONMENT != native_environment():
+        # 跨环境读取时不能在本机执行 codex login（登录的是另一侧的凭据）。
+        args.no_codex_auto_login = True
+    if args.api_key_status:
+        print(json.dumps({"ok": True, "status": api_key_status()}, ensure_ascii=False))
+        return 0
+    if args.configure_api_keys:
+        try:
+            payload = json.loads(sys.stdin.read())
+            result = configure_api_keys(payload)
+            print(json.dumps(result, ensure_ascii=False))
+            return 0
+        except (MonitorError, ValueError) as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+            return 1
+    if args.watch:
+        stop_previous_watch_instances()
+        if sys.stdout.isatty():
+            print(f"\033[2J\033[HAI Usage Monitor v{repo_version()}\nLoading usage data…", flush=True)
     keyboard_context = keyboard_refresh_mode(sys.stdin) if args.watch else nullcontext(False)
     try:
         with keyboard_context as keyboard_enabled:
@@ -1724,7 +2195,15 @@ def main() -> int:
                 results, errors = collect(args)
                 versions = collect_versions({result["provider"] for result in results})
                 if args.json:
-                    print(json.dumps({"accounts": results, "errors": errors, "versions": versions}, ensure_ascii=False, indent=2))
+                    print(json.dumps({
+                        "accounts": results,
+                        "errors": errors,
+                        "versions": versions,
+                        "monitor_version": repo_version(),
+                        "environment": ENVIRONMENT or native_environment(),
+                        "native_environment": native_environment(),
+                        "windows_setup_script": windows_setup_script_unc(),
+                    }, ensure_ascii=False, indent=2))
                 else:
                     color = sys.stdout.isatty() and not args.no_color
                     if args.watch and sys.stdout.isatty():

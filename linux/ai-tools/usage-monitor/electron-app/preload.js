@@ -10,5 +10,11 @@ contextBridge.exposeInMainWorld("api", {
   togglePin: () => ipcRenderer.invoke("toggle-pin"),
   getPinState: () => ipcRenderer.invoke("get-pin-state"),
   resetFit: () => ipcRenderer.send("reset-fit"),
-  upgrade: (targets) => ipcRenderer.invoke("upgrade-agents", targets),
+  upgrade: (targets, environment, windowsSetupScript) =>
+    ipcRenderer.invoke("upgrade-agents", targets, environment, windowsSetupScript),
+  getApiKeyStatus: () => ipcRenderer.invoke("api-key-status"),
+  saveApiKeys: (values) => ipcRenderer.invoke("save-api-keys", values),
+  getSettings: () => ipcRenderer.invoke("get-settings"),
+  setSettings: (values) => ipcRenderer.invoke("set-settings", values),
+  settingsOpen: (open) => ipcRenderer.send("settings-open", open),
 });

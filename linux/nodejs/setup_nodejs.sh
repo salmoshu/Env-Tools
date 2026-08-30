@@ -7,6 +7,12 @@
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+ENVTOOLS_VERSION="$(cat "$DIR/../../VERSION" 2>/dev/null || true)"
+if [ -n "$ENVTOOLS_VERSION" ]; then
+    printf 'Env-Tools v%s\n' "$ENVTOOLS_VERSION"
+fi
+
 LOG_DIR="$DIR/log"
 RUNTIME_DIR="$DIR/runtime"
 mkdir -p "$LOG_DIR"

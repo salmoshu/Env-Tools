@@ -19,6 +19,13 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltinRole]::Administra
 }
 
 $dir = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+$envtoolsVersionFile = Join-Path $dir '..\..\VERSION'
+if (Test-Path $envtoolsVersionFile) {
+    $envtoolsVersion = Get-Content $envtoolsVersionFile -TotalCount 1 -ErrorAction SilentlyContinue
+    if ($envtoolsVersion) { Write-Host "Env-Tools v$($envtoolsVersion.Trim())" }
+}
+
 $scriptDir = Join-Path $dir 'scripts'
 $logDir = Join-Path $dir 'log'
 $stateDir = Join-Path $scriptDir 'data'

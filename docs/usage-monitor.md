@@ -53,6 +53,27 @@ Python 3 标准库。
 `KIMI_CREDENTIALS_PATH`、`CODEX_AUTH_PATH`
 或命令行参数指定文件。
 
+Windows Electron 看板可点击标题栏的齿轮按钮打开设置页（铺满窗口，左侧边栏
+分类，不再是弹框）：
+
+- **Display**：勾选要在看板上显示的模型（原标题栏筛选下拉框已迁入此处）。
+- **API Keys**：配置 DeepSeek 和 GLM API Key。输入框不会回显已保存的 Key；
+  留空表示保留原值。保存时密钥只通过子进程的标准输入传给 WSL 后端，不会
+  进入命令行、进程列表或日志，最终分别写入 `~/.deepseek/credentials.json`
+  和 `~/.glm/credentials.json`（权限 0600）。如果对应环境变量已经配置，
+  看板只显示“已配置（环境变量）”，不会读取或覆盖环境变量的内容；输入新值
+  时仍会写入凭证文件，但环境变量继续拥有更高优先级。
+- **Environment**（仅在 WSL 中检测到 Windows 侧可达时出现）：切换看板数据
+  源。WSL 和 Windows 中的 agent 版本与凭据可能不同；切换后用量、版本号、
+  升级操作和 API Key 配置均作用于所选环境。选择持久化在
+  `~/.config/ai-usage-monitor/settings.json`（可用 `AI_USAGE_SETTINGS_PATH`
+  覆盖），终端 watch 同样跟随该设置，也可用 `--environment wsl|windows`
+  临时覆盖。注意网络请求始终由 WSL 后端发出，代理按 WSL 环境变量。
+- **About**：仓库版本号、当前数据源环境与后端脚本路径。
+
+看板标题栏与终端头部显示仓库统一版本号（根目录 `VERSION` 文件，所有内部
+应用与脚本共用）；数据源被切换到非本机环境时标题栏会显示环境标记。
+
 Kimi 请求默认绕过 `HTTP_PROXY`/`HTTPS_PROXY` 直连，以避免部分本地代理造成
 TLS EOF；Codex 请求仍遵循系统代理设置。如果所在网络必须通过代理访问 Kimi，
 设置 `KIMI_USE_PROXY=1` 即可恢复使用系统代理。
@@ -114,3 +135,16 @@ OpenAI 返回 usage limit reset 机会时，终端和 Electron 看板会额外�
 Codex 的登录令牌由 Codex CLI 管理；如果终端提示登录失效，请执行
 `codex login`。可以用 `CODEX_USAGE_URL` 覆盖额度接口地址，以适配后续官方
 客户端的接口调整。
+
+## Electron 看板刷新策略
+
+Electron 看板会并行查询 Kimi、Codex、DeepSeek 和 GLM，并按固定顺序展示结果。
+某个服务断网或接口异常时，只显示该服务的错误，不阻塞其他卡片。后台请求采用
+比终端模式更短的单次网络超时（10 秒，Codex 因必须经代理访问 chatgpt.com
+放宽到 20 秒），同一轮最多重试一次（下一轮定时刷新还会继续尝试），
+完整刷新超过 45 秒会终止；定时刷新、
+手动刷新和升级后的刷新若同时发生，会共用同一个进行中的请求，避免重复进程抢占
+网络而产生假超时。
+
+Electron 后台没有交互终端，因此不会自动启动 `codex login`。Codex 凭证缺失或
+过期时会立即显示错误，请在 WSL 终端完成 `codex login` 后再刷新看板。

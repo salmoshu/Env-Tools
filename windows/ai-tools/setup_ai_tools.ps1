@@ -31,6 +31,13 @@ param(
 )
 
 $dir = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+$envtoolsVersionFile = Join-Path $dir '..\..\VERSION'
+if (Test-Path $envtoolsVersionFile) {
+    $envtoolsVersion = Get-Content $envtoolsVersionFile -TotalCount 1 -ErrorAction SilentlyContinue
+    if ($envtoolsVersion) { Write-Host "Env-Tools v$($envtoolsVersion.Trim())" }
+}
+
 $logDir = Join-Path $dir 'log'
 New-Item -ItemType Directory -Path $logDir -Force | Out-Null
 $log = Join-Path $logDir 'setup.log'
@@ -354,7 +361,8 @@ function Render-Panel($entries) {
     $out = New-Object 'System.Collections.Generic.List[string]'
     foreach ($e in $entries) {
         $out.Add("$($e.Mark) [$($e.Name)]")
-        foreach ($l in $e.Lines) { $out.Add("    $l") }
+        # 过程文本与标题行的 `[` 左对齐（mark + 空格共两列）。
+        foreach ($l in $e.Lines) { $out.Add("  $l") }
     }
     if ($out.Count -eq 0) { return }
     if ($script:panelTop -lt 0) { $script:panelTop = [Console]::CursorTop }

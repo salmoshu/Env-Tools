@@ -18,6 +18,12 @@ param(
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 
+$envtoolsVersionFile = Join-Path $root 'VERSION'
+if (Test-Path $envtoolsVersionFile) {
+    $envtoolsVersion = Get-Content $envtoolsVersionFile -TotalCount 1 -ErrorAction SilentlyContinue
+    if ($envtoolsVersion) { Write-Host "Env-Tools v$($envtoolsVersion.Trim())" }
+}
+
 function Show-Usage {
     Write-Host @'
 用法: tools.ps1 <应用> <操作> [参数...]

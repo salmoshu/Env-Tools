@@ -86,55 +86,29 @@
     #btn-refresh.spin { animation: spin 0.8s linear infinite; color: var(--accent); }
     @keyframes spin { to { transform: rotate(360deg); } }
 
-    /* provider 筛选下拉框(自定义菜单,规避无边框窗口原生 select 弹层问题) */
-    .filter-wrap {
-      position: relative;
+    /* 标题栏版本号与环境标记 */
+    .title-version {
+      font-size: 9px;
+      color: var(--faint);
+      font-family: var(--font-num);
       -webkit-app-region: no-drag;
+      margin-right: 2px;
+    }
+    .env-badge {
+      font-size: 9px;
+      font-weight: 600;
+      color: var(--yellow);
+      background: rgba(251, 191, 36, 0.12);
+      border: 1px solid rgba(251, 191, 36, 0.35);
+      border-radius: 999px;
+      padding: 0 7px;
       margin-right: 4px;
-      flex-shrink: 1;
-      min-width: 0;
+      -webkit-app-region: no-drag;
     }
-    .filter-btn {
-      display: flex;
-      align-items: center;
-      gap: 5px;
-      appearance: none;
-      background: rgba(255, 255, 255, 0.06);
-      color: var(--dim);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      font: 10px var(--font-ui);
-      letter-spacing: 0.3px;
-      padding: 4px 9px;
-      max-width: 120px;
-      cursor: pointer;
-      outline: none;
-      transition: background 0.15s ease, color 0.15s ease;
-    }
-    .filter-btn:hover { background: rgba(255, 255, 255, 0.1); color: var(--text); }
-    .filter-label {
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-    .filter-arrow { font-size: 9px; color: var(--faint); flex-shrink: 0; }
-    .filter-menu {
-      position: absolute;
-      top: calc(100% + 4px);
-      left: 0;
-      min-width: 100%;
-      overflow-x: hidden;
-      overflow-y: auto;
-      background: #1a1f2c;
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 4px;
-      display: none;
-      z-index: 20;
-      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
-    }
-    .filter-menu.open { display: block; }
-    .filter-menu .item {
+    .env-badge.hidden { display: none; }
+
+    /* provider 筛选列表（位于设置页 Display 面板） */
+    .display-list-item {
       display: flex;
       align-items: center;
       gap: 7px;
@@ -145,9 +119,8 @@
       cursor: pointer;
       white-space: nowrap;
     }
-    .filter-menu .item:hover { background: rgba(255, 255, 255, 0.08); color: var(--text); }
-    /* 复选框:点它自由勾选(多选);点条目文字则是"仅显示此项" */
-    .filter-menu .cb {
+    .display-list-item:hover { background: rgba(255, 255, 255, 0.08); color: var(--text); }
+    .display-list-item .cb {
       width: 12px;
       height: 12px;
       flex-shrink: 0;
@@ -156,9 +129,9 @@
       position: relative;
       transition: background 0.12s ease, border-color 0.12s ease;
     }
-    .filter-menu .item:hover .cb { border-color: var(--dim); }
-    .filter-menu .cb.on { background: var(--accent); border-color: var(--accent); }
-    .filter-menu .cb.on::after {
+    .display-list-item:hover .cb { border-color: var(--dim); }
+    .display-list-item .cb.on { background: var(--accent); border-color: var(--accent); }
+    .display-list-item .cb.on::after {
       content: "\2713";
       position: absolute;
       inset: 0;
@@ -170,8 +143,8 @@
       color: #10131a;
     }
     /* All 项的部分选中态(只勾了一部分时显示横杠) */
-    .filter-menu .cb.partial { border-color: var(--accent); }
-    .filter-menu .cb.partial::after {
+    .display-list-item .cb.partial { border-color: var(--accent); }
+    .display-list-item .cb.partial::after {
       content: "";
       position: absolute;
       left: 2px;
@@ -187,6 +160,7 @@
     .content {
       padding: 12px 16px 14px;
     }
+    .content.hidden { display: none; }
     ::-webkit-scrollbar { width: 6px; }
     ::-webkit-scrollbar-thumb { background: #2a3140; border-radius: 3px; }
     ::-webkit-scrollbar-track { background: transparent; }
@@ -280,6 +254,137 @@
     .upgrade-btns button:hover { background: rgba(110, 168, 254, 0.28); }
     .upgrade-btns button.ghost { background: transparent; color: var(--faint); border-color: var(--border); }
     .upgrade-btns button.ghost:hover { color: var(--text); }
+
+    /* 设置页：铺满整个窗口，左侧边栏 + 右侧面板 */
+    #settings-view {
+      display: flex;
+      min-height: 200px;
+      -webkit-app-region: no-drag;
+    }
+    #settings-view.hidden { display: none; }
+    .settings-sidebar {
+      width: 112px;
+      flex-shrink: 0;
+      padding: 10px 6px;
+      border-right: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.02);
+    }
+    .side-item {
+      padding: 6px 10px;
+      border-radius: 6px;
+      font-size: 11px;
+      color: var(--dim);
+      cursor: pointer;
+      margin-bottom: 2px;
+      white-space: nowrap;
+    }
+    .side-item:hover { background: rgba(255, 255, 255, 0.07); color: var(--text); }
+    .side-item.active { background: rgba(110, 168, 254, 0.14); color: var(--accent); }
+    .side-item.hidden { display: none; }
+    .settings-main {
+      flex: 1;
+      min-width: 0;
+      padding: 12px 16px 14px;
+    }
+    .panel.hidden { display: none; }
+    .panel-title { font-weight: 700; font-size: 13px; margin-bottom: 4px; }
+    .panel-hint {
+      color: var(--faint);
+      font-size: 10px;
+      line-height: 1.5;
+      margin-bottom: 10px;
+    }
+    .about-row {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      font-size: 11px;
+      color: var(--faint);
+      margin-bottom: 7px;
+    }
+    .about-row span { width: 70px; flex-shrink: 0; }
+    .about-row strong { color: var(--dim); font-weight: 500; }
+    .about-path { word-break: break-all; user-select: text; }
+    /* 环境单选 */
+    .env-option {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      border-radius: 6px;
+      font-size: 11px;
+      color: var(--dim);
+      cursor: pointer;
+      border: 1px solid transparent;
+      margin-bottom: 4px;
+    }
+    .env-option:hover { background: rgba(255, 255, 255, 0.06); }
+    .env-option.selected { border-color: rgba(110, 168, 254, 0.4); color: var(--text); }
+    .env-option .radio {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      border: 1px solid var(--faint);
+      flex-shrink: 0;
+      position: relative;
+    }
+    .env-option.selected .radio { border-color: var(--accent); }
+    .env-option.selected .radio::after {
+      content: "";
+      position: absolute;
+      inset: 2px;
+      border-radius: 50%;
+      background: var(--accent);
+    }
+    .key-field { margin-bottom: 10px; }
+    .key-label {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      color: var(--dim);
+      font-size: 11px;
+      margin-bottom: 4px;
+    }
+    .key-state { color: var(--faint); font-size: 9px; }
+    .key-state.configured { color: var(--green); }
+    .key-state.invalid { color: var(--red); }
+    .key-input {
+      width: 100%;
+      height: 30px;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      outline: none;
+      background: rgba(255, 255, 255, 0.045);
+      color: var(--text);
+      padding: 0 9px;
+      font: 11px var(--font-num);
+      user-select: text;
+    }
+    .key-input:focus { border-color: rgba(110, 168, 254, 0.55); }
+    .key-input::placeholder { color: #596174; }
+    .settings-note {
+      min-height: 17px;
+      color: var(--faint);
+      font-size: 9px;
+      line-height: 1.4;
+      margin: -1px 0 8px;
+    }
+    .settings-note.ok { color: var(--green); }
+    .settings-note.error { color: var(--red); }
+    .settings-actions { display: flex; justify-content: flex-end; gap: 7px; }
+    .settings-actions button {
+      border-radius: 6px;
+      font: 11px var(--font-ui);
+      padding: 5px 12px;
+      cursor: pointer;
+    }
+    #settings-save {
+      background: rgba(110, 168, 254, 0.16);
+      color: var(--accent);
+      border: 1px solid rgba(110, 168, 254, 0.4);
+    }
+    #settings-save:hover { background: rgba(110, 168, 254, 0.28); }
+    #settings-save:disabled { opacity: 0.45; cursor: default; }
     .plan {
       font-size: 10px;
       font-weight: 600;
@@ -408,13 +513,9 @@
   <div class="titlebar">
     <span class="dot"></span>
     <span class="title">AI Usage Monitor</span>
-    <span class="filter-wrap">
-      <button class="filter-btn" id="provider-filter" title="Select models to display">
-        <span class="filter-label">All</span>
-        <span class="filter-arrow">&#x25be;</span>
-      </button>
-      <div class="filter-menu" id="filter-menu"></div>
-    </span>
+    <span class="title-version" id="title-version"></span>
+    <span class="env-badge hidden" id="env-badge">Windows</span>
+    <button class="btn" id="btn-settings" title="Settings">&#x2699;</button>
     <button class="btn" id="btn-refresh" title="Refresh">&#x21bb;</button>
     <button class="btn" id="btn-pin" title="Pin on top">
       <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
@@ -426,6 +527,51 @@
   </div>
   <div class="content" id="content">
     <div class="status">Loading…</div>
+  </div>
+
+  <!-- 设置页：铺满整个窗口，左侧边栏选分类，右侧为对应面板 -->
+  <div id="settings-view" class="hidden">
+    <div class="settings-sidebar">
+      <div class="side-item active" data-panel="display">Display</div>
+      <div class="side-item" data-panel="apikeys">API Keys</div>
+      <div class="side-item hidden" data-panel="environment" id="side-environment">Environment</div>
+      <div class="side-item" data-panel="about">About</div>
+    </div>
+    <div class="settings-main">
+      <div class="panel" id="panel-display">
+        <div class="panel-title">Providers</div>
+        <div class="panel-hint">Choose which models appear on the dashboard.</div>
+        <div id="display-list"></div>
+      </div>
+      <div class="panel hidden" id="panel-apikeys">
+        <div class="panel-title">API Keys</div>
+        <div class="panel-hint" id="apikeys-env-hint">Keys are stored locally with private file permissions.</div>
+        <div class="key-field">
+          <div class="key-label"><span>DeepSeek</span><span class="key-state" id="deepseek-key-state">Checking…</span></div>
+          <input class="key-input" id="deepseek-key" type="password" autocomplete="off" spellcheck="false" placeholder="Enter API key" />
+        </div>
+        <div class="key-field">
+          <div class="key-label"><span>GLM / BigModel</span><span class="key-state" id="glm-key-state">Checking…</span></div>
+          <input class="key-input" id="glm-key" type="password" autocomplete="off" spellcheck="false" placeholder="Enter API key" />
+        </div>
+        <div class="settings-note" id="settings-note">Keys are sent to the backend through stdin only.</div>
+        <div class="settings-actions">
+          <button id="settings-save">Save</button>
+        </div>
+      </div>
+      <div class="panel hidden" id="panel-environment">
+        <div class="panel-title">Data Source</div>
+        <div class="panel-hint">Agent versions and credentials may differ between WSL and Windows. The dashboard shows usage, versions and upgrades from the selected environment.</div>
+        <div id="environment-list"></div>
+        <div class="settings-note" id="environment-note"></div>
+      </div>
+      <div class="panel hidden" id="panel-about">
+        <div class="panel-title">About</div>
+        <div class="about-row"><span>Version</span><strong id="about-version">—</strong></div>
+        <div class="about-row"><span>Data source</span><strong id="about-environment">—</strong></div>
+        <div class="about-row"><span>Backend</span><strong id="about-script" class="about-path">—</strong></div>
+      </div>
+    </div>
   </div>
 
   <script src="renderer.js"></script>

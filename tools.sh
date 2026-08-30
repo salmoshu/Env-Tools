@@ -17,6 +17,11 @@ case "$(uname -s)" in
         ;;
 esac
 
+ENVTOOLS_VERSION="$(cat "$ROOT/VERSION" 2>/dev/null || true)"
+if [ -n "$ENVTOOLS_VERSION" ]; then
+    printf 'Env-Tools v%s\n' "$ENVTOOLS_VERSION"
+fi
+
 usage() {
     cat <<'EOF'
 用法: ./tools.sh <应用> <操作> [参数...]

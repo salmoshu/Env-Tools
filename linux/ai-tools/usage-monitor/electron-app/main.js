@@ -4,7 +4,10 @@ const path = require("path");
 
 const MONITOR_SCRIPT = path.join(__dirname, "..", "usage_monitor.py");
 const REFRESH_INTERVAL_MS = 60 * 1000;
+// 单轮刷新上限：Codex 经代理访问 chatgpt.com 享有双倍单次超时（20s×2 次，
+// 最坏约 41s），其余 provider 为 10s×2；留少量余量给进程启动与版本检测。
 const FETCH_TIMEOUT_MS = 45 * 1000;
+const SETTINGS_TIMEOUT_MS = 10 * 1000;
 const WINDOW_TITLE = "AI Usage Monitor";
 const MIN_CONTENT_HEIGHT = 140;
 // WSLg 下 Electron 的 alwaysOnTop 不会穿透到 Windows 窗口管理器,
@@ -20,6 +23,7 @@ if (process.platform === "win32") {
 
 let win = null;
 let refreshTimer = null;
+let usageFetchPromise = null;
 // 置顶期间周期性补挂 WS_EX_TOPMOST 的巡检定时器：
 // WSLg 的 RAIL 窗口在焦点切换、尺寸变化等场景下可能重建或重排 Z 序，
 // 导致之前用 SetWindowPos 设置的置顶样式丢失（表现：切应用后看板被盖住，
@@ -84,21 +88,28 @@ if (!gotLock) {
   });
 }
 
-function fetchUsage() {
-  return new Promise((resolve) => {
-    let command = "python3";
-    let args = [MONITOR_SCRIPT, "--json"];
-    if (WSL_BACKEND) {
-      if (process.platform !== "win32" || !WSL_DISTRO || !WSL_MONITOR_SCRIPT) {
-        resolve({ error: "Invalid WSL backend configuration" });
-        return;
-      }
-      command = "wsl.exe";
-      args = ["-d", WSL_DISTRO, "--exec", "python3", WSL_MONITOR_SCRIPT, "--json"];
+function monitorSpec(extraArgs) {
+  if (WSL_BACKEND) {
+    if (process.platform !== "win32" || !WSL_DISTRO || !WSL_MONITOR_SCRIPT) {
+      return null;
     }
+    return {
+      command: "wsl.exe",
+      args: ["-d", WSL_DISTRO, "--exec", "python3", WSL_MONITOR_SCRIPT, ...extraArgs],
+    };
+  }
+  return { command: "python3", args: [MONITOR_SCRIPT, ...extraArgs] };
+}
 
-    const child = spawn(command, args, {
-      stdio: ["ignore", "pipe", "pipe"],
+function runMonitor(extraArgs, { input = "", timeoutMs = FETCH_TIMEOUT_MS } = {}) {
+  return new Promise((resolve) => {
+    const spec = monitorSpec(extraArgs);
+    if (!spec) {
+      resolve({ error: "Invalid WSL backend configuration" });
+      return;
+    }
+    const child = spawn(spec.command, spec.args, {
+      stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });
     let stdout = "";
@@ -112,30 +123,69 @@ function fetchUsage() {
     };
     const timeout = setTimeout(() => {
       child.kill();
-      finish({ error: `Data fetch timed out after ${FETCH_TIMEOUT_MS / 1000}s` });
-    }, FETCH_TIMEOUT_MS);
+      finish({ timedOut: true, code: null, stdout, stderr });
+    }, timeoutMs);
+    child.stdin.on("error", () => {});
+    child.stdin.end(input);
     child.stdout.on("data", (d) => (stdout += d));
     child.stderr.on("data", (d) => (stderr += d));
     child.on("error", (err) => {
-      const backend = WSL_BACKEND ? `WSL distro ${WSL_DISTRO}` : "python3";
-      finish({ error: `Cannot run ${backend}: ${err.message}` });
+      finish({ error: err.message, code: null, stdout, stderr });
     });
     child.on("close", (code) => {
       if (settled) return;
-      try {
-        finish({ data: JSON.parse(stdout) });
-      } catch {
-        finish({ error: `Data fetch failed (exit ${code}): ${stderr.trim() || stdout.trim()}` });
-      }
+      finish({ code, stdout, stderr });
     });
   });
 }
 
+async function fetchUsage() {
+  const run = await runMonitor(["--json", "--dashboard"]);
+  if (run.error) {
+    const backend = WSL_BACKEND ? `WSL distro ${WSL_DISTRO}` : "python3";
+    return { error: `Cannot run ${backend}: ${run.error}` };
+  }
+  if (run.timedOut) {
+    return { error: `Data fetch timed out after ${FETCH_TIMEOUT_MS / 1000}s` };
+  }
+  try {
+    return { data: JSON.parse(run.stdout) };
+  } catch {
+    return {
+      error: `Data fetch failed (exit ${run.code}): ${run.stderr.trim() || run.stdout.trim()}`,
+    };
+  }
+}
+
+async function runMonitorJson(args, input = "") {
+  const run = await runMonitor(args, { input, timeoutMs: SETTINGS_TIMEOUT_MS });
+  if (run.error) return { ok: false, error: run.error };
+  if (run.timedOut) return { ok: false, error: "Settings request timed out" };
+  try {
+    return JSON.parse(run.stdout);
+  } catch {
+    return {
+      ok: false,
+      error: `Settings request failed (exit ${run.code}): ${run.stderr.trim() || run.stdout.trim()}`,
+    };
+  }
+}
+
 async function pushUsage() {
   if (!win) return null;
-  const result = await fetchUsage();
-  if (win) win.webContents.send("usage-update", result);
-  return result;
+  // 定时刷新、手动刷新和升级后刷新可能同时到达；复用同一
+  // 个在途请求，避免重复后端进程互相抢网络导致假超时。
+  if (usageFetchPromise) return usageFetchPromise;
+  usageFetchPromise = (async () => {
+    const result = await fetchUsage();
+    if (win) win.webContents.send("usage-update", result);
+    return result;
+  })();
+  try {
+    return await usageFetchPromise;
+  } finally {
+    usageFetchPromise = null;
+  }
 }
 
 function createWindow() {
@@ -191,6 +241,49 @@ function createWindow() {
 ipcMain.on("window-minimize", () => win && win.minimize());
 ipcMain.on("window-close", () => win && win.close());
 ipcMain.on("refresh", () => pushUsage());
+ipcMain.handle("api-key-status", () => runMonitorJson(["--api-key-status"]));
+// 设置页：读取/保存后端设置（数据源环境等）；保存成功后立即刷新看板
+ipcMain.handle("get-settings", () => runMonitorJson(["--get-settings"]));
+ipcMain.handle("set-settings", async (_event, values) => {
+  const result = await runMonitorJson(["--set-settings"], JSON.stringify(values || {}));
+  if (result && result.ok) await pushUsage();
+  return result;
+});
+// 设置页打开时加宽窗口以容纳侧边栏布局，关闭时恢复原宽
+let widthBeforeSettings = 400;
+ipcMain.on("settings-open", (_event, open) => {
+  if (!win) return;
+  const [width, height] = win.getContentSize();
+  if (open) {
+    widthBeforeSettings = width;
+    // 允许设置页按内容重新贴合高度（用户可能之前手动拖过高度）
+    manualHeight = false;
+    if (width < 560) {
+      programmaticResize = true;
+      win.setContentSize(560, height);
+      setTimeout(() => (programmaticResize = false), 150);
+    }
+  } else if (width !== widthBeforeSettings) {
+    programmaticResize = true;
+    win.setContentSize(widthBeforeSettings, height);
+    setTimeout(() => (programmaticResize = false), 150);
+    manualHeight = false;
+  }
+});
+ipcMain.handle("save-api-keys", async (_event, values) => {
+  const keys = {};
+  for (const provider of ["deepseek", "glm"]) {
+    const value = values && values[provider];
+    if (typeof value === "string" && value.trim()) keys[provider] = value.trim();
+  }
+  if (Object.keys(keys).length === 0) {
+    return { ok: false, error: "Enter at least one API key" };
+  }
+  // 密钥只通过子进程 stdin 传入，不出现在命令行、进程列表或日志。
+  const result = await runMonitorJson(["--configure-api-keys"], JSON.stringify(keys));
+  if (result && result.ok) await pushUsage();
+  return result;
+});
 // 切换筛选时清除手动高度状态,让窗口重新贴合内容(避免误触发紧凑折叠)
 ipcMain.on("reset-fit", () => {
   manualHeight = false;
@@ -214,12 +307,21 @@ const UPGRADE_FLAGS = {
 };
 const UPGRADE_TIMEOUT_MS = 10 * 60 * 1000;
 
-function upgradeSpec(providers) {
+function upgradeSpec(providers, environment, windowsSetupScript) {
   const flags = (Array.isArray(providers) ? providers : [])
     .map((p) => UPGRADE_FLAGS[p])
     .filter(Boolean);
   if (flags.length === 0) return null;
   const repoRoot = path.join(__dirname, "..", "..", "..");
+  // 数据源切到 Windows 环境时，升级目标也是 Windows 侧的 agent；
+  // 脚本路径由后端以 UNC 形式给出（main.js 运行在 Windows 本地）。
+  if (environment === "windows" && WSL_BACKEND) {
+    if (typeof windowsSetupScript !== "string" || !windowsSetupScript) return null;
+    return {
+      command: "powershell.exe",
+      args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", windowsSetupScript, ...flags],
+    };
+  }
   if (WSL_BACKEND) {
     if (!WSL_DISTRO || !WSL_MONITOR_SCRIPT) return null;
     // .../linux/ai-tools/usage-monitor/usage_monitor.py → .../linux/ai-tools/setup_ai_tools.sh
@@ -247,8 +349,8 @@ function upgradeSpec(providers) {
   return { command: "bash", args: [path.join(repoRoot, "linux", "ai-tools", "setup_ai_tools.sh"), ...flags] };
 }
 
-ipcMain.handle("upgrade-agents", (_event, providers) => new Promise((resolve) => {
-  const spec = upgradeSpec(providers);
+ipcMain.handle("upgrade-agents", (_event, providers, environment, windowsSetupScript) => new Promise((resolve) => {
+  const spec = upgradeSpec(providers, environment, windowsSetupScript);
   if (!spec) {
     resolve({ ok: false, error: "no upgradable target" });
     return;

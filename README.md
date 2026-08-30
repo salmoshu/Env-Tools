@@ -61,7 +61,8 @@ Linux 用 `./tools.sh`，Windows 用 `tools.ps1`，参数完全一致：
 ```
 
 余量监控的配置（凭证位置、Kimi 月度总量网页 token 等）见
-[docs/usage-monitor.md](docs/usage-monitor.md)。
+[docs/usage-monitor.md](docs/usage-monitor.md)。Windows Electron 看板的齿轮按钮可直接
+配置 DeepSeek / GLM API Key，密钥保存在 WSL 私有凭证文件中。
 
 ## 指令智能补全
 
