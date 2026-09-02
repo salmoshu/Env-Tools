@@ -1,6 +1,6 @@
 {
   "name": "ai-usage-monitor-window",
-  "version": "1.0.0",
+  "version": "0.1.5",
   "private": true,
   "description": "Floating Electron window for the AI usage monitor dashboard",
   "main": "main.js",

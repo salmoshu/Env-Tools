@@ -16,5 +16,6 @@ contextBridge.exposeInMainWorld("api", {
   saveApiKeys: (values) => ipcRenderer.invoke("save-api-keys", values),
   getSettings: () => ipcRenderer.invoke("get-settings"),
   setSettings: (values) => ipcRenderer.invoke("set-settings", values),
+  loginAgent: (agent, environment) => ipcRenderer.invoke("login-agent", agent, environment),
   settingsOpen: (open) => ipcRenderer.send("settings-open", open),
 });

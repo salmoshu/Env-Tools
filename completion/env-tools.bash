@@ -12,7 +12,7 @@ _env_tools_reply() {
 }
 
 # usage_monitor.py 的全部参数（与 linux/ai-tools/usage-monitor/usage_monitor.py 保持一致）
-_env_tools_usage_opts='--watch -w --interval -i --provider --json --no-color --no-codex-auto-login --config --kimi-credentials --kimi-web-credentials --codex-credentials --deepseek-key --deepseek-credentials --glm-key --glm-credentials'
+_env_tools_usage_opts='--watch -w --interval -i --provider --json --no-color --config --kimi-credentials --kimi-web-credentials --codex-credentials --deepseek-key --deepseek-credentials --glm-key --glm-credentials'
 
 _env_tools_tools() {
     local cur prev

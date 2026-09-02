@@ -16,7 +16,11 @@ const displayList = document.getElementById("display-list");
 const sideEnvironment = document.getElementById("side-environment");
 const environmentList = document.getElementById("environment-list");
 const environmentNote = document.getElementById("environment-note");
+const wslDistroField = document.getElementById("wsl-distro-field");
+const wslDistroSelect = document.getElementById("wsl-distro");
 const apikeysEnvHint = document.getElementById("apikeys-env-hint");
+const settingsBack = document.getElementById("settings-back");
+const loginNote = document.getElementById("login-note");
 const keyInputs = {
   deepseek: document.getElementById("deepseek-key"),
   glm: document.getElementById("glm-key"),
@@ -27,6 +31,14 @@ const keyStates = {
 };
 let settingsOpen = false;
 let currentSettings = null;
+const DISPLAY_SELECTION_KEY = "ai-usage-monitor.display-providers";
+let savedProviders = null;
+try {
+  const stored = JSON.parse(localStorage.getItem(DISPLAY_SELECTION_KEY) || "null");
+  if (Array.isArray(stored)) {
+    savedProviders = new Set(stored.filter((provider) => typeof provider === "string"));
+  }
+} catch {}
 
 document.getElementById("btn-min").addEventListener("click", () => api.minimize());
 document.getElementById("btn-close").addEventListener("click", () => api.close());
@@ -90,6 +102,10 @@ function closeSettings() {
   fitWindow();
 }
 
+function environmentLabel(environment, distro) {
+  return environment === "wsl" && distro ? `WSL (${distro})` : environment || "—";
+}
+
 // 设置页元信息：版本、数据源环境、后端路径
 async function loadSettingsInfo() {
   try {
@@ -97,11 +113,12 @@ async function loadSettingsInfo() {
     if (!result || !result.ok) throw new Error((result && result.error) || "unknown error");
     currentSettings = result;
     document.getElementById("about-version").textContent = `v${result.version || "unknown"}`;
-    document.getElementById("about-environment").textContent = result.environment || "—";
+    document.getElementById("about-environment").textContent = environmentLabel(result.environment, result.wsl_distro);
     document.getElementById("about-script").textContent = result.script || "—";
     const available = result.available_environments || [];
-    sideEnvironment.classList.toggle("hidden", available.length < 2);
-    buildEnvironmentList(available, result.environment);
+    const wslDistros = result.wsl_distros || [];
+    sideEnvironment.classList.toggle("hidden", available.length < 2 && wslDistros.length === 0);
+    buildEnvironmentList(available, result.environment, wslDistros, result.wsl_distro);
     apikeysEnvHint.textContent = result.environment === "windows"
       ? "Keys are written to the Windows-side credential files (via WSL interop)."
       : "Keys are stored locally with private file permissions.";
@@ -111,11 +128,16 @@ async function loadSettingsInfo() {
   }
 }
 
-function buildEnvironmentList(available, current) {
+function buildEnvironmentList(available, current, wslDistros = [], currentDistro = "") {
   environmentList.innerHTML = available.map((env) =>
     `<div class="env-option${env === current ? " selected" : ""}" data-env="${esc(env)}">` +
     `<span class="radio"></span>${esc(env === "wsl" ? "WSL" : env)}</div>`
   ).join("");
+  wslDistroSelect.innerHTML = wslDistros.map((distro) =>
+    `<option value="${esc(distro)}">${esc(distro)}</option>`
+  ).join("");
+  wslDistroSelect.value = wslDistros.includes(currentDistro) ? currentDistro : (wslDistros[0] || "");
+  wslDistroField.classList.toggle("hidden", current !== "wsl" || wslDistros.length === 0);
   environmentList.querySelectorAll(".env-option").forEach((item) => {
     item.addEventListener("click", async () => {
       const env = item.dataset.env;
@@ -123,11 +145,21 @@ function buildEnvironmentList(available, current) {
       environmentNote.className = "settings-note";
       environmentNote.textContent = "Saving…";
       try {
-        const result = await api.setSettings({ environment: env });
+        const values = { environment: env };
+        if (env === "wsl" && wslDistroSelect.value) values.wsl_distro = wslDistroSelect.value;
+        const result = await api.setSettings(values);
         if (!result || !result.ok) throw new Error((result && result.error) || "unknown error");
-        currentSettings.environment = env;
-        buildEnvironmentList(available, env);
-        document.getElementById("about-environment").textContent = env;
+        Object.assign(currentSettings, result.settings || {}, { environment: env });
+        buildEnvironmentList(
+          available,
+          currentSettings.environment,
+          currentSettings.wsl_distros || wslDistros,
+          currentSettings.wsl_distro,
+        );
+        document.getElementById("about-environment").textContent = environmentLabel(
+          currentSettings.environment,
+          currentSettings.wsl_distro,
+        );
         environmentNote.className = "settings-note ok";
         environmentNote.textContent = "Saved. Usage data is refreshing…";
       } catch (err) {
@@ -137,6 +169,26 @@ function buildEnvironmentList(available, current) {
     });
   });
 }
+
+wslDistroSelect.addEventListener("change", async () => {
+  if (!currentSettings || currentSettings.environment !== "wsl" || !wslDistroSelect.value) return;
+  environmentNote.className = "settings-note";
+  environmentNote.textContent = "Saving…";
+  try {
+    const result = await api.setSettings({ wsl_distro: wslDistroSelect.value });
+    if (!result || !result.ok) throw new Error((result && result.error) || "unknown error");
+    Object.assign(currentSettings, result.settings || {}, { wsl_distro: wslDistroSelect.value });
+    document.getElementById("about-environment").textContent = environmentLabel(
+      currentSettings.environment,
+      currentSettings.wsl_distro,
+    );
+    environmentNote.className = "settings-note ok";
+    environmentNote.textContent = "Saved. Usage data is refreshing…";
+  } catch (err) {
+    environmentNote.className = "settings-note error";
+    environmentNote.textContent = `Save failed: ${err.message || err}`;
+  }
+});
 
 async function loadApiKeyStatus() {
   for (const provider of Object.keys(keyInputs)) {
@@ -165,9 +217,35 @@ settingsView.querySelectorAll(".side-item").forEach((item) => {
   });
 });
 
+settingsBack.addEventListener("click", closeSettings);
 btnSettings.addEventListener("click", () => (settingsOpen ? closeSettings() : openSettings()));
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && settingsOpen) closeSettings();
+});
+
+let loginBusy = false;
+settingsView.querySelectorAll(".login-btn").forEach((button) => {
+  button.addEventListener("click", async () => {
+    if (loginBusy) return;
+    loginBusy = true;
+    settingsView.querySelectorAll(".login-btn").forEach((item) => (item.disabled = true));
+    loginNote.className = "settings-note";
+    loginNote.textContent = "Starting web authorization…";
+    try {
+      const environment = (currentSettings && currentSettings.environment)
+        || (lastPayload && lastPayload.data && lastPayload.data.environment);
+      const result = await api.loginAgent(button.dataset.agent, environment);
+      if (!result || !result.ok) throw new Error((result && result.error) || "unknown error");
+      loginNote.className = "settings-note ok";
+      loginNote.textContent = "Web authorization started. Finish it in your browser, then refresh.";
+    } catch (err) {
+      loginNote.className = "settings-note error";
+      loginNote.textContent = `Login failed: ${err.message || err}`;
+    } finally {
+      loginBusy = false;
+      settingsView.querySelectorAll(".login-btn").forEach((item) => (item.disabled = false));
+    }
+  });
 });
 settingsSave.addEventListener("click", async () => {
   const values = {};
@@ -221,6 +299,9 @@ function refreshFilterUi() {
 // 筛选变化后重绘内容并贴合窗口
 function applyFilter() {
   refreshFilterUi();
+  try {
+    localStorage.setItem(DISPLAY_SELECTION_KEY, JSON.stringify([...selectedProviders]));
+  } catch {}
   if (lastPayload && !settingsOpen) {
     api.resetFit();
     render(lastPayload);
@@ -243,7 +324,12 @@ function buildDisplayList(accounts, errors = []) {
   }
   // 列表自适应:首次或之前是全选 → 新列表继续全选;否则剔除已消失的 provider
   const prevAll = knownProviders.length > 0 && selectedProviders.size === knownProviders.length;
-  if (knownProviders.length === 0 || prevAll) {
+  if (knownProviders.length === 0 && names.length > 0) {
+    selectedProviders = savedProviders === null
+      ? new Set(names)
+      : new Set(names.filter((name) => savedProviders.has(name)));
+    savedProviders = null;
+  } else if (prevAll) {
     selectedProviders = new Set(names);
   } else {
     selectedProviders = new Set([...selectedProviders].filter((n) => names.includes(n)));

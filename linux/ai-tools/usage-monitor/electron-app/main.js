@@ -14,7 +14,7 @@ const MIN_CONTENT_HEIGHT = 140;
 // 需要通过 powershell.exe 调 SetWindowPos 在 Windows 侧置顶
 const IS_WSL = Boolean(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP);
 const WSL_BACKEND = process.env.AI_USAGE_MONITOR_BACKEND === "wsl";
-const WSL_DISTRO = process.env.AI_USAGE_MONITOR_WSL_DISTRO || "";
+let WSL_DISTRO = process.env.AI_USAGE_MONITOR_WSL_DISTRO || "";
 const WSL_MONITOR_SCRIPT = process.env.AI_USAGE_MONITOR_WSL_SCRIPT || "";
 
 if (process.platform === "win32") {
@@ -246,29 +246,18 @@ ipcMain.handle("api-key-status", () => runMonitorJson(["--api-key-status"]));
 ipcMain.handle("get-settings", () => runMonitorJson(["--get-settings"]));
 ipcMain.handle("set-settings", async (_event, values) => {
   const result = await runMonitorJson(["--set-settings"], JSON.stringify(values || {}));
-  if (result && result.ok) await pushUsage();
+  if (result && result.ok) {
+    const settings = result.settings || {};
+    if (WSL_BACKEND && settings.environment === "wsl" && typeof settings.wsl_distro === "string") {
+      WSL_DISTRO = settings.wsl_distro;
+    }
+    await pushUsage();
+  }
   return result;
 });
-// 设置页打开时加宽窗口以容纳侧边栏布局，关闭时恢复原宽
-let widthBeforeSettings = 400;
-ipcMain.on("settings-open", (_event, open) => {
-  if (!win) return;
-  const [width, height] = win.getContentSize();
-  if (open) {
-    widthBeforeSettings = width;
-    // 允许设置页按内容重新贴合高度（用户可能之前手动拖过高度）
-    manualHeight = false;
-    if (width < 560) {
-      programmaticResize = true;
-      win.setContentSize(560, height);
-      setTimeout(() => (programmaticResize = false), 150);
-    }
-  } else if (width !== widthBeforeSettings) {
-    programmaticResize = true;
-    win.setContentSize(widthBeforeSettings, height);
-    setTimeout(() => (programmaticResize = false), 150);
-    manualHeight = false;
-  }
+// 设置页和看板共用窗口宽度；切页时允许高度重新贴合内容
+ipcMain.on("settings-open", () => {
+  manualHeight = false;
 });
 ipcMain.handle("save-api-keys", async (_event, values) => {
   const keys = {};
@@ -284,6 +273,56 @@ ipcMain.handle("save-api-keys", async (_event, values) => {
   if (result && result.ok) await pushUsage();
   return result;
 });
+
+const LOGIN_AGENTS = {
+  kimi: "kimi",
+  codex: "codex",
+};
+
+function loginSpec(agent, environment) {
+  const commandName = LOGIN_AGENTS[agent];
+  if (!commandName) return null;
+  if (WSL_BACKEND && environment === "windows") {
+    return {
+      command: "powershell.exe",
+      args: ["-NoProfile", "-Command", `${commandName} login`],
+    };
+  }
+  if (WSL_BACKEND) {
+    if (!WSL_DISTRO) return null;
+    return {
+      command: "wsl.exe",
+      args: [
+        "-d", WSL_DISTRO, "--exec", "bash", "-ic",
+        'exec "$@"', "ai-usage-login", commandName, "login",
+      ],
+    };
+  }
+  return { command: commandName, args: ["login"] };
+}
+
+ipcMain.handle("login-agent", (_event, agent, environment) => new Promise((resolve) => {
+  const selectedEnvironment = environment || (WSL_BACKEND ? "wsl" : "windows");
+  const spec = loginSpec(agent, selectedEnvironment);
+  if (!spec) {
+    resolve({ ok: false, error: "unsupported login agent or missing WSL distro" });
+    return;
+  }
+  try {
+    const child = spawn(spec.command, spec.args, {
+      stdio: "ignore",
+      detached: true,
+      windowsHide: true,
+    });
+    child.once("error", (err) => resolve({ ok: false, error: err.message }));
+    child.once("spawn", () => {
+      child.unref();
+      resolve({ ok: true, agent });
+    });
+  } catch (err) {
+    resolve({ ok: false, error: err.message });
+  }
+}));
 // 切换筛选时清除手动高度状态,让窗口重新贴合内容(避免误触发紧凑折叠)
 ipcMain.on("reset-fit", () => {
   manualHeight = false;
@@ -402,7 +441,17 @@ ipcMain.on("fit-height", (_event, height) => {
   setTimeout(() => (programmaticResize = false), 150);
 });
 
-if (gotLock) app.whenReady().then(createWindow);
+if (gotLock) {
+  app.whenReady().then(async () => {
+    if (WSL_BACKEND) {
+      const settings = await runMonitorJson(["--get-settings"]);
+      if (settings && settings.ok && settings.environment === "wsl" && typeof settings.wsl_distro === "string") {
+        WSL_DISTRO = settings.wsl_distro;
+      }
+    }
+    createWindow();
+  });
+}
 
 // 窗口关闭即退出进程,终端里 Ctrl+E 可重新拉起
 app.on("window-all-closed", () => app.quit());

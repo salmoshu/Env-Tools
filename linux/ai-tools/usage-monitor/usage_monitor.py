@@ -210,6 +210,36 @@ def load_settings() -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def wsl_distro_name() -> str:
+    return os.environ.get("WSL_DISTRO_NAME", "").strip()
+
+
+def available_wsl_distros() -> list[str]:
+    if not running_in_wsl():
+        return []
+    try:
+        result = subprocess.run(
+            ["wsl.exe", "--list", "--quiet"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError, UnicodeError):
+        result = None
+    names = []
+    if result and result.returncode == 0:
+        for line in (result.stdout or "").replace("\x00", "").splitlines():
+            name = line.strip().lstrip("*").strip()
+            if name and name not in names:
+                names.append(name)
+    current = wsl_distro_name()
+    if current and current not in names:
+        names.insert(0, current)
+    return names
+
+
 def available_environments() -> list[str]:
     """本机环境列表；WSL 且能访问 Windows 侧时追加 windows。"""
     environments = [native_environment()]
@@ -226,7 +256,8 @@ def available_environments() -> list[str]:
 def resolve_environment(explicit: str | None = None) -> str:
     """数据源环境：--environment 参数 > 设置文件 > 本机环境。"""
     global ENVIRONMENT
-    environment = explicit or load_settings().get("environment") or native_environment()
+    settings = load_settings()
+    environment = explicit or settings.get("environment") or native_environment()
     if environment == "windows" and native_environment() == "wsl":
         windows_user_profile()  # 提前失败，避免每个 provider 各自报错
     elif environment != native_environment():
@@ -501,43 +532,8 @@ def fetch_kimi_web(path: Path) -> dict[str, Any]:
         raise
 
 
-def codex_auto_login() -> bool:
-    """尝试自动执行 codex login，返回是否成功。"""
-    commands = [
-        ["codex", "login", "--device-auth"],  # 无浏览器/远程环境优先
-        ["codex", "login"],                  # 本地浏览器回退
-    ]
-    for command in commands:
-        try:
-            print(f"Trying: {' '.join(command)}", file=sys.stderr)
-            result = subprocess.run(command, check=False, timeout=600)
-            if result.returncode == 0:
-                return True
-        except FileNotFoundError:
-            print("codex command not found; install OpenAI Codex CLI first", file=sys.stderr)
-            return False
-        except subprocess.TimeoutExpired:
-            print("codex login timed out (10 minutes)", file=sys.stderr)
-            return False
-    return False
-
-
-def fetch_codex(path: Path, auto_login: bool = True) -> dict[str, Any]:
-    try:
-        return _fetch_codex(path)
-    except MonitorError as exc:
-        error_text = str(exc)
-        need_login = any(
-            keyword in error_text
-            for keyword in ("Credential file not found", "access_token missing", "HTTP 401", "login expired")
-        )
-        if auto_login and need_login:
-            print(f"Codex credential problem detected: {exc}", file=sys.stderr)
-            print("Starting automatic login...", file=sys.stderr)
-            if codex_auto_login():
-                return _fetch_codex(path)
-            raise MonitorError("Codex automatic login failed; run `codex login` manually") from exc
-        raise
+def fetch_codex(path: Path) -> dict[str, Any]:
+    return _fetch_codex(path)
 
 
 def _fetch_codex(path: Path) -> dict[str, Any]:
@@ -579,6 +575,59 @@ def _fetch_codex(path: Path) -> dict[str, Any]:
                 "Cannot reach chatgpt.com; check proxy/DNS/network (a proxy is required in mainland China)"
             ) from exc
         raise
+
+
+LOGIN_AGENTS = {
+    "kimi": ("Kimi Code", "kimi"),
+    "codex": ("OpenAI Codex", "codex"),
+}
+
+
+def run_agent_login(agent: str) -> bool:
+    info = LOGIN_AGENTS.get(agent)
+    if not info:
+        print(f"Unknown login agent: {agent}", file=sys.stderr)
+        return False
+    label, command_name = info
+    if ENVIRONMENT == "windows" and running_in_wsl():
+        command = [
+            "powershell.exe",
+            "-NoProfile",
+            "-Command",
+            f"{command_name} login",
+        ]
+    else:
+        command = [command_name, "login"]
+    print(f"Starting {label} web authorization…", flush=True)
+    try:
+        result = subprocess.run(command, check=False)
+    except FileNotFoundError:
+        print(f"{command_name} command not found; install it first", file=sys.stderr)
+        return False
+    if result.returncode != 0:
+        print(f"{label} login exited with code {result.returncode}", file=sys.stderr)
+        return False
+    print(f"{label} login finished; refreshing usage data…", flush=True)
+    return True
+
+
+def prompt_agent_login(stream=None) -> bool:
+    stream = stream or sys.stdin
+    print("\nLogin agent: [K]imi Code  [C]odex  [Q]ancel", flush=True)
+    if os.name == "nt":
+        choice = msvcrt.getwch()
+    else:
+        if not reclaim_terminal_foreground(stream):
+            return False
+        readable, _, _ = select.select([stream], [], [], None)
+        if not readable:
+            return False
+        choice = stream.read(1)
+    agent = {"k": "kimi", "c": "codex"}.get(choice.lower())
+    if not agent:
+        print("Login cancelled.", flush=True)
+        return False
+    return run_agent_login(agent)
 
 
 def _epoch_seconds(value: Any) -> float:
@@ -940,14 +989,25 @@ def configure_api_keys(payload: Any) -> dict[str, Any]:
 
 def get_settings_payload() -> dict[str, Any]:
     """Electron 设置页初始数据：版本、当前数据源环境与可选环境列表。"""
+    settings = load_settings()
     available = available_environments()
-    configured = load_settings().get("environment")
+    configured = settings.get("environment")
     environment = configured if configured in available else available[0]
+    wsl_distros = available_wsl_distros() if "wsl" in available else []
+    configured_distro = settings.get("wsl_distro")
+    if configured_distro in wsl_distros:
+        wsl_distro = configured_distro
+    elif wsl_distro_name() in wsl_distros:
+        wsl_distro = wsl_distro_name()
+    else:
+        wsl_distro = wsl_distros[0] if wsl_distros else None
     return {
         "ok": True,
         "version": repo_version(),
         "environment": environment,
         "available_environments": available,
+        "wsl_distros": wsl_distros,
+        "wsl_distro": wsl_distro,
         "script": str(Path(__file__).resolve()),
     }
 
@@ -956,11 +1016,19 @@ def update_settings(payload: Any) -> dict[str, Any]:
     """保存 Electron 设置页改动（目前只有数据源环境）。"""
     if not isinstance(payload, dict):
         raise MonitorError("Settings must be a JSON object")
-    unknown = sorted(set(payload) - {"environment"})
+    unknown = sorted(set(payload) - {"environment", "wsl_distro"})
     if unknown:
         raise MonitorError(f"Unsupported setting: {', '.join(unknown)}")
     available = available_environments()
     settings = load_settings()
+    wsl_distros = available_wsl_distros() if "wsl" in available else []
+    if "wsl_distro" in payload:
+        value = payload["wsl_distro"]
+        if not isinstance(value, str) or not value.strip() or value not in wsl_distros:
+            raise MonitorError(
+                f"WSL distro '{value}' is not available (choose from: {', '.join(wsl_distros)})"
+            )
+        settings["wsl_distro"] = value
     if "environment" in payload:
         value = payload["environment"]
         if value not in available:
@@ -968,6 +1036,11 @@ def update_settings(payload: Any) -> dict[str, Any]:
                 f"Environment '{value}' is not available (choose from: {', '.join(available)})"
             )
         settings["environment"] = value
+    if settings.get("environment") == "wsl":
+        value = settings.get("wsl_distro") or wsl_distro_name()
+        if not value or value not in wsl_distros:
+            raise MonitorError("Select an available WSL distro before using the WSL environment")
+        settings["wsl_distro"] = value
     path = settings_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     write_private_json(path, settings)
@@ -1684,10 +1757,7 @@ def _collect_provider(
         try:
             return (
                 normalize_codex(
-                    fetch_codex(
-                        codex_credentials_path(args.codex_credentials),
-                        auto_login=not args.no_codex_auto_login,
-                    ),
+                    fetch_codex(codex_credentials_path(args.codex_credentials)),
                     monitor_config.get("openai") or {},
                 ),
                 [],
@@ -1746,7 +1816,7 @@ def collect(args: argparse.Namespace) -> tuple[list[dict[str, Any]], list[dict[s
 
 @contextmanager
 def keyboard_refresh_mode(stream):
-    """Temporarily make Ctrl+R / Ctrl+E available without requiring Enter."""
+    """Temporarily make Ctrl+R / Ctrl+E / Ctrl+L available without Enter."""
     enabled = False
     fd = None
     original_settings = None
@@ -2023,10 +2093,11 @@ def wait_for_next_refresh(
     interval: int,
     keyboard_enabled: bool,
     stream=None,
-) -> bool:
-    """Wait for the interval or Ctrl+R; return True for a manual refresh.
+) -> bool | str:
+    """Wait for the interval or a shortcut; return its action.
 
     Ctrl+E 在等待期间随时拉起/唤出 Electron 悬浮看板窗口,不中断等待。
+    Ctrl+L 打开手动登录选择。
     """
     if not keyboard_enabled:
         time.sleep(interval)
@@ -2051,6 +2122,8 @@ def wait_for_next_refresh(
                     return True
                 if ch == "\x05":  # Ctrl+E
                     launch_usage_window()
+                if ch == "\x0c":  # Ctrl+L
+                    return "login"
             time.sleep(min(0.05, remaining))
     while True:
         remaining = max(0.0, deadline - time.monotonic())
@@ -2062,6 +2135,8 @@ def wait_for_next_refresh(
             return True
         if ch == "\x05":  # Ctrl+E
             launch_usage_window()
+        if ch == "\x0c":  # Ctrl+L
+            return "login"
 
 
 def enable_windows_ansi() -> None:
@@ -2130,20 +2205,11 @@ def main() -> int:
     maintenance.add_argument("--configure-api-keys", action="store_true", help=argparse.SUPPRESS)
     maintenance.add_argument("--get-settings", action="store_true", help=argparse.SUPPRESS)
     maintenance.add_argument("--set-settings", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument(
-        "--no-codex-auto-login",
-        action="store_true",
-        help="Disable automatic login when Codex credentials are missing",
-    )
     args = parser.parse_args()
     if args.dashboard:
         # 快速失败策略只适用于 Electron 后台；终端 watch 保留完整超时与重试，
         # 否则代理访问 chatgpt.com 偶发抖动就会被放大成频繁的报错。
         enable_dashboard_request_policy()
-    if args.dashboard:
-        # Electron 后台没有可交互终端，缺凭据时直接返回错误，
-        # 禁止启动最长 10 分钟的 codex login。
-        args.no_codex_auto_login = True
     if args.interval < 5:
         parser.error("--interval must be at least 5 seconds")
     if args.json and args.watch:
@@ -2167,9 +2233,6 @@ def main() -> int:
     except MonitorError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
-    if ENVIRONMENT != native_environment():
-        # 跨环境读取时不能在本机执行 codex login（登录的是另一侧的凭据）。
-        args.no_codex_auto_login = True
     if args.api_key_status:
         print(json.dumps({"ok": True, "status": api_key_status()}, ensure_ascii=False))
         return 0
@@ -2211,7 +2274,7 @@ def main() -> int:
                     print(render(results, errors, color, versions))
                     if args.watch:
                         shortcuts = (
-                            "Ctrl+R to refresh, Ctrl+E for window, Ctrl+C to exit"
+                            "Ctrl+R refresh, Ctrl+E window, Ctrl+L login, Ctrl+C exit"
                             if keyboard_enabled
                             else "Ctrl+C to exit"
                         )
@@ -2234,7 +2297,9 @@ def main() -> int:
                             )
                 if not args.watch:
                     return 1 if errors and not results else 0
-                wait_for_next_refresh(args.interval, keyboard_enabled)
+                action = wait_for_next_refresh(args.interval, keyboard_enabled)
+                if action == "login":
+                    prompt_agent_login()
     except KeyboardInterrupt:
         print("\nExited usage monitor.")
         return 0

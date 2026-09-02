@@ -11,6 +11,9 @@ WSL. Data collection still runs in the originating WSL distro through
 - Press `Ctrl+E` in the watch terminal to open or restore the existing window.
 - On Windows, open **AI Usage Monitor** from the Start menu. The shortcut is
   created by the first setup launch.
+- Open **Settings → Login** to start Kimi Code or Codex web authorization manually.
+- **Settings → Environment** lets WSL users choose the distribution used by the
+  dashboard.
 
 Opening the Windows shortcut while WSL is stopped starts the configured distro
 in the background. It does not open a terminal window.

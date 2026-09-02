@@ -194,6 +194,49 @@ class EnvironmentTests(unittest.TestCase):
         ):
             self.assertTrue(usage_monitor.running_in_wsl())
 
+    def test_available_wsl_distros_reads_distribution_names(self):
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="\x00Ubuntu-22.04\x00\n\x00Debian\x00\n", stderr=""
+        )
+        with mock.patch.object(usage_monitor, "running_in_wsl", return_value=True), \
+                mock.patch.dict(
+                    os.environ, {"WSL_DISTRO_NAME": "Ubuntu-22.04"}, clear=True
+                ), \
+                mock.patch.object(
+                    usage_monitor.subprocess, "run", return_value=completed
+                ) as run:
+            distros = usage_monitor.available_wsl_distros()
+
+        self.assertEqual(distros, ["Ubuntu-22.04", "Debian"])
+        self.assertEqual(run.call_args.args[0], ["wsl.exe", "--list", "--quiet"])
+
+    def test_wsl_settings_require_and_save_distribution(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings_file = Path(tmp) / "settings.json"
+            with mock.patch.dict(
+                os.environ,
+                {"AI_USAGE_SETTINGS_PATH": str(settings_file)},
+                clear=True,
+            ), mock.patch.object(
+                usage_monitor, "available_environments", return_value=["wsl"]
+            ), mock.patch.object(
+                usage_monitor,
+                "available_wsl_distros",
+                return_value=["Ubuntu-20.04", "Ubuntu-22.04"],
+            ), mock.patch.object(
+                usage_monitor, "wsl_distro_name", return_value="Ubuntu-20.04"
+            ):
+                with self.assertRaises(usage_monitor.MonitorError):
+                    usage_monitor.update_settings({"environment": "wsl", "wsl_distro": "Arch"})
+                result = usage_monitor.update_settings(
+                    {"environment": "wsl", "wsl_distro": "Ubuntu-22.04"}
+                )
+                self.assertEqual(result["settings"]["wsl_distro"], "Ubuntu-22.04")
+                payload = usage_monitor.get_settings_payload()
+
+        self.assertEqual(payload["wsl_distro"], "Ubuntu-22.04")
+        self.assertEqual(payload["wsl_distros"], ["Ubuntu-20.04", "Ubuntu-22.04"])
+
     def test_stop_previous_watch_instances_matches_exact_script(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -832,6 +875,27 @@ class EnvironmentTests(unittest.TestCase):
         self.assertTrue(refreshed)
         stream.read.assert_called_once_with(1)
 
+    def test_ctrl_l_requests_manual_login(self):
+        stream = mock.Mock()
+        stream.read.return_value = "\x0c"
+        with mock.patch.object(
+            usage_monitor.select,
+            "select",
+            return_value=([stream], [], []),
+        ), mock.patch.object(
+            usage_monitor,
+            "reclaim_terminal_foreground",
+            return_value=True,
+        ):
+            action = usage_monitor.wait_for_next_refresh(
+                interval=180,
+                keyboard_enabled=True,
+                stream=stream,
+            )
+
+        self.assertEqual(action, "login")
+        stream.read.assert_called_once_with(1)
+
     def test_keyboard_refresh_mode_restores_terminal(self):
         stream = mock.Mock()
         stream.isatty.return_value = True
@@ -931,7 +995,6 @@ class EnvironmentTests(unittest.TestCase):
             kimi_credentials=None,
             kimi_web_credentials=None,
             codex_credentials=None,
-            no_codex_auto_login=False,
             deepseek_key=None,
             deepseek_credentials=None,
             glm_key=None,
@@ -954,7 +1017,6 @@ class EnvironmentTests(unittest.TestCase):
             kimi_credentials=None,
             kimi_web_credentials=None,
             codex_credentials=None,
-            no_codex_auto_login=True,
             deepseek_key=None,
             deepseek_credentials=None,
             glm_key=None,

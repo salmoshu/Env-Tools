@@ -7,7 +7,7 @@
 # usage_monitor.py 的全部参数（与 linux/ai-tools/usage-monitor/usage_monitor.py 保持一致）
 $script:EnvToolsUsageOptions = @(
     '--watch', '-w', '--interval', '-i', '--provider', '--json', '--no-color',
-    '--no-codex-auto-login', '--config', '--kimi-credentials', '--kimi-web-credentials',
+    '--config', '--kimi-credentials', '--kimi-web-credentials',
     '--codex-credentials', '--deepseek-key', '--deepseek-credentials',
     '--glm-key', '--glm-credentials'
 )

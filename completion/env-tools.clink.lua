@@ -9,7 +9,7 @@
 local usage = clink.argmatcher()
 usage:addarg({
     '--watch', '-w', '--interval', '-i', '--json', '--no-color',
-    '--no-codex-auto-login', '--deepseek-key', '--glm-key',
+    '--deepseek-key', '--glm-key',
     '--provider'              .. clink.argmatcher():addarg({'all', 'kimi', 'codex', 'deepseek', 'glm'}),
     '--config'                .. clink.argmatcher():addarg(clink.filematches),
     '--kimi-credentials'      .. clink.argmatcher():addarg(clink.filematches),

@@ -286,6 +286,23 @@
       min-width: 0;
       padding: 12px 16px 14px;
     }
+    .settings-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .settings-header-title { font-weight: 700; font-size: 13px; }
+    #settings-back {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: transparent;
+      color: var(--dim);
+      font: 11px var(--font-ui);
+      padding: 4px 8px;
+      cursor: pointer;
+    }
+    #settings-back:hover { background: rgba(255, 255, 255, 0.08); color: var(--text); }
     .panel.hidden { display: none; }
     .panel-title { font-weight: 700; font-size: 13px; margin-bottom: 4px; }
     .panel-hint {
@@ -336,6 +353,26 @@
       border-radius: 50%;
       background: var(--accent);
     }
+    .wsl-distro-field { margin: 10px 0 4px; }
+    .wsl-distro-field.hidden { display: none; }
+    .wsl-distro-label {
+      display: block;
+      color: var(--dim);
+      font-size: 10px;
+      margin-bottom: 4px;
+    }
+    #wsl-distro {
+      width: 100%;
+      height: 30px;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      outline: none;
+      background: #171b26;
+      color: var(--text);
+      padding: 0 8px;
+      font: 11px var(--font-ui);
+    }
+    #wsl-distro:focus { border-color: rgba(110, 168, 254, 0.55); }
     .key-field { margin-bottom: 10px; }
     .key-label {
       display: flex;
@@ -385,6 +422,29 @@
     }
     #settings-save:hover { background: rgba(110, 168, 254, 0.28); }
     #settings-save:disabled { opacity: 0.45; cursor: default; }
+    .login-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .login-row:last-of-type { border-bottom: 0; }
+    .login-info { flex: 1; min-width: 0; }
+    .login-name { color: var(--dim); font-size: 11px; }
+    .login-method { color: var(--faint); font-size: 9px; }
+    .login-btn {
+      border: 1px solid rgba(110, 168, 254, 0.4);
+      border-radius: 6px;
+      background: rgba(110, 168, 254, 0.16);
+      color: var(--accent);
+      font: 11px var(--font-ui);
+      padding: 5px 10px;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .login-btn:hover { background: rgba(110, 168, 254, 0.28); }
+    .login-btn:disabled { opacity: 0.45; cursor: default; }
     .plan {
       font-size: 10px;
       font-weight: 600;
@@ -533,15 +593,33 @@
   <div id="settings-view" class="hidden">
     <div class="settings-sidebar">
       <div class="side-item active" data-panel="display">Display</div>
+      <div class="side-item" data-panel="login">Login</div>
       <div class="side-item" data-panel="apikeys">API Keys</div>
       <div class="side-item hidden" data-panel="environment" id="side-environment">Environment</div>
       <div class="side-item" data-panel="about">About</div>
     </div>
     <div class="settings-main">
+      <div class="settings-header">
+        <button id="settings-back">&#x2190; Back</button>
+        <span class="settings-header-title">Settings</span>
+      </div>
       <div class="panel" id="panel-display">
         <div class="panel-title">Providers</div>
         <div class="panel-hint">Choose which models appear on the dashboard.</div>
         <div id="display-list"></div>
+      </div>
+      <div class="panel hidden" id="panel-login">
+        <div class="panel-title">Agent Login</div>
+        <div class="panel-hint">Start web authorization manually. The dashboard never opens a login page on its own.</div>
+        <div class="login-row">
+          <div class="login-info"><div class="login-name">Kimi Code</div><div class="login-method">Web authorization</div></div>
+          <button class="login-btn" data-agent="kimi">Log in</button>
+        </div>
+        <div class="login-row">
+          <div class="login-info"><div class="login-name">OpenAI Codex</div><div class="login-method">Web authorization</div></div>
+          <button class="login-btn" data-agent="codex">Log in</button>
+        </div>
+        <div class="settings-note" id="login-note"></div>
       </div>
       <div class="panel hidden" id="panel-apikeys">
         <div class="panel-title">API Keys</div>
@@ -563,6 +641,10 @@
         <div class="panel-title">Data Source</div>
         <div class="panel-hint">Agent versions and credentials may differ between WSL and Windows. The dashboard shows usage, versions and upgrades from the selected environment.</div>
         <div id="environment-list"></div>
+        <div class="wsl-distro-field hidden" id="wsl-distro-field">
+          <label class="wsl-distro-label" for="wsl-distro">WSL distribution</label>
+          <select id="wsl-distro"></select>
+        </div>
         <div class="settings-note" id="environment-note"></div>
       </div>
       <div class="panel hidden" id="panel-about">

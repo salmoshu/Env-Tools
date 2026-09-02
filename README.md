@@ -54,15 +54,15 @@ Linux（bash）：
 Linux 用 `./tools.sh`，Windows 用 `tools.ps1`，参数完全一致：
 
 ```bash
-./tools.sh ai-tools --usage              # 持续监控 Kimi / Codex / DeepSeek / GLM 余量（Ctrl+R 刷新）
+./tools.sh ai-tools --usage              # 持续监控余量（Ctrl+R 刷新，Ctrl+L 登录）
 ./tools.sh ai-tools --usage --json       # 单次输出 JSON，供其他脚本读取
 ./tools.sh openssh --status              # 查看 sshd 服务状态、监听端口与连接示例
 ./tools.sh                               # 查看完整用法
 ```
 
-余量监控的配置（凭证位置、Kimi 月度总量网页 token 等）见
+余量监控的配置（凭证位置、网页登录和 Kimi 月度总量网页 token 等）见
 [docs/usage-monitor.md](docs/usage-monitor.md)。Windows Electron 看板的齿轮按钮可直接
-配置 DeepSeek / GLM API Key，密钥保存在 WSL 私有凭证文件中。
+配置 API Key、手动启动 agent 网页授权和选择要显示的用量；筛选状态会在重启后保留。
 
 ## 指令智能补全
 

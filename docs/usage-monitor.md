@@ -56,7 +56,10 @@ Python 3 标准库。
 Windows Electron 看板可点击标题栏的齿轮按钮打开设置页（铺满窗口，左侧边栏
 分类，不再是弹框）：
 
-- **Display**：勾选要在看板上显示的模型（原标题栏筛选下拉框已迁入此处）。
+- **Display**：勾选要在看板上显示的模型（原标题栏筛选下拉框已迁入此处）；选择会
+  持久化，重启 Electron 后仍然保留。
+- **Login**：为 Kimi Code 或 OpenAI Codex 手动启动网页授权。看板启动和刷新时
+  不会自动打开登录页面；终端 watch 中也可按 `Ctrl+L` 选择 agent 登录。
 - **API Keys**：配置 DeepSeek 和 GLM API Key。输入框不会回显已保存的 Key；
   留空表示保留原值。保存时密钥只通过子进程的标准输入传给 WSL 后端，不会
   进入命令行、进程列表或日志，最终分别写入 `~/.deepseek/credentials.json`
@@ -68,7 +71,8 @@ Windows Electron 看板可点击标题栏的齿轮按钮打开设置页（铺满
   升级操作和 API Key 配置均作用于所选环境。选择持久化在
   `~/.config/ai-usage-monitor/settings.json`（可用 `AI_USAGE_SETTINGS_PATH`
   覆盖），终端 watch 同样跟随该设置，也可用 `--environment wsl|windows`
-  临时覆盖。注意网络请求始终由 WSL 后端发出，代理按 WSL 环境变量。
+  临时覆盖。选择 WSL 时还必须指定已安装的发行版（例如 `Ubuntu-22.04`）。
+  注意网络请求始终由 WSL 后端发出，代理按 WSL 环境变量。
 - **About**：仓库版本号、当前数据源环境与后端脚本路径。
 
 看板标题栏与终端头部显示仓库统一版本号（根目录 `VERSION` 文件，所有内部
@@ -92,6 +96,7 @@ monitor 本身跨平台）。中文 Windows 的 GBK 控制台无法编码 `░`/
 ./tools.sh ai-tools --usage
 
 # 持续监控时可按 Ctrl+R 立即刷新，按 Ctrl+C 退出
+# 持续监控时按 Ctrl+L，再按 K/C，手动启动 Kimi/Codex 网页授权
 
 # 每 60 秒只监控 Codex
 ./tools.sh ai-tools --usage --watch --interval 60 --provider codex
@@ -147,4 +152,5 @@ Electron 看板会并行查询 Kimi、Codex、DeepSeek 和 GLM，并按固定顺
 网络而产生假超时。
 
 Electron 后台没有交互终端，因此不会自动启动 `codex login`。Codex 凭证缺失或
-过期时会立即显示错误，请在 WSL 终端完成 `codex login` 后再刷新看板。
+过期时会立即显示错误；可在设置页 **Login** 中手动启动网页授权，也可以在 WSL
+终端按 `Ctrl+L` 登录后再刷新看板。
