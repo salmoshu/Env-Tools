@@ -498,7 +498,7 @@ function render(payload) {
       const pctTail = [];
       const resetText = fmtReset(w.reset_after_seconds);
       if (resetText) pctTail.push(`<span class="reset">${esc(resetText)}</span>`);
-      if (w.usage) pctTail.push(`<span class="usage">Usage ${esc(w.usage)}</span>`);
+      if (w.usage && account.provider !== "GLM") pctTail.push(`<span class="usage">Usage ${esc(w.usage)}</span>`);
       const tailHtml = pctTail.length ? ` · ${pctTail.join(" · ")}` : "";
       html += `<div class="quota">
         <div class="quota-row">

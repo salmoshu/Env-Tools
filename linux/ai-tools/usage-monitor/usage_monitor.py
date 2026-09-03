@@ -55,15 +55,10 @@ DEEPSEEK_BALANCE_URL = "https://api.deepseek.com/user/balance"
 # 假定每月额度上限为 50 元；余额超过时按 50 元截断后再算百分比。
 DEEPSEEK_MONTHLY_LIMIT = 50.0
 
-# 智谱 BigModel 通用 API 的余额查询。鉴权与模型 API 相同，使用 Bearer API Key。
-GLM_BALANCE_URL = "https://open.bigmodel.cn/api/paas/v4/balance"
-# BigModel 财务中心页面当前使用的账户报表接口，用于兼容未开放
-# /api/paas/v4/balance 的平台版本。
-GLM_FINANCE_URL = (
-    "https://open.bigmodel.cn/api/biz/account/query-customer-account-report"
-)
-# 与 DeepSeek 卡片保持同一展示口径，以 50 元为用量进度基准。
-GLM_MONTHLY_LIMIT = 50.0
+# GLM Coding Plan 配额查询：官方订阅管理页（bigmodel.cn/coding-plan/personal/overview）
+# 在用的接口，与开放平台 API 余额无关。返回 5 小时/每周 token 窗口的已用百分比与
+# 重置时间，以及工具（联网搜索等）月额度的绝对次数。鉴权用同一把 BigModel API Key。
+GLM_QUOTA_URL = "https://open.bigmodel.cn/api/monitor/usage/quota/limit"
 
 # 看板标题右侧的 CLI 版本标注：当前版本来自本机 `cmd --version`，最新版本按
 # VERSION_CHECK_INTERVAL 周期探测并缓存；有更新时追加黄色的 "→ 新版本号"
@@ -828,31 +823,20 @@ def glm_api_key(explicit: str | None = None, credentials_path: str | None = None
 
 def fetch_glm(key: str | None = None, credentials_path: str | None = None) -> dict[str, Any]:
     api_key = glm_api_key(key, credentials_path)
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Accept": "application/json",
-    }
-    override = os.environ.get("GLM_BALANCE_URL")
-    urls = [override] if override else [GLM_BALANCE_URL, GLM_FINANCE_URL]
-    last_error: Exception | None = None
-    for url in urls:
-        try:
-            result = request_json(
-                url,
-                headers=headers,
-                use_proxy=env_enabled("GLM_USE_PROXY", default=True),
-                timeout=int(os.environ.get("GLM_TIMEOUT", "30")),
-            )
-        except MonitorError as exc:
-            last_error = exc
-            continue
-        if result.get("balance_infos") is not None or isinstance(result.get("data"), dict):
-            return result
-        error = result.get("error") or result.get("msg") or result.get("message")
-        last_error = MonitorError(f"GLM balance query failed: {error or 'unexpected response'}")
-    if last_error:
-        raise last_error
-    raise MonitorError("GLM balance query failed: no endpoint configured")
+    result = request_json(
+        os.environ.get("GLM_QUOTA_URL", GLM_QUOTA_URL),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/json",
+        },
+        use_proxy=env_enabled("GLM_USE_PROXY", default=True),
+        timeout=int(os.environ.get("GLM_TIMEOUT", "30")),
+    )
+    data = result.get("data")
+    if not (result.get("success") and isinstance(data, dict) and isinstance(data.get("limits"), list)):
+        error = result.get("msg") or result.get("message") or "unexpected response"
+        raise MonitorError(f"GLM quota query failed: {error}")
+    return result
 
 
 def normalize_balance_provider(
@@ -918,7 +902,106 @@ def normalize_deepseek(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def normalize_glm(data: dict[str, Any]) -> dict[str, Any]:
-    return normalize_balance_provider(data, "GLM", GLM_MONTHLY_LIMIT)
+    """GLM Coding Plan 配额：5 小时/每周积分窗口 + 工具月额度。
+
+    响应结构（bigmodel.cn 订阅管理页同款接口）：
+      data.limits[] 中 CREDIT_LIMIT/TOKENS_LIMIT（unit=3,number=5 → 5 小时；
+      unit=6,number=1 → 每周）：percentage 为已用百分比，nextResetTime 为重置
+      时间（epoch 毫秒，滑动窗口未使用时可能缺省），CREDIT_LIMIT 另给绝对积分
+      usage/currentValue/remaining。TIME_LIMIT 为工具/联网搜索月额度。
+      data.level 为套餐档位（lite/pro/max）。
+    """
+    payload = data.get("data") if isinstance(data.get("data"), dict) else {}
+    limits = payload.get("limits") or []
+    level = str(payload.get("level") or "").strip()
+    windows: list[dict[str, Any]] = []
+    extra_lines: list[str] = []
+
+    def limit_percent(limit: dict[str, Any]) -> float | None:
+        try:
+            return max(0.0, min(100.0, float(limit.get("percentage"))))
+        except (TypeError, ValueError):
+            return None
+
+    token_limits = [
+        l
+        for l in limits
+        if isinstance(l, dict) and l.get("type") in ("CREDIT_LIMIT", "TOKENS_LIMIT")
+    ]
+
+    def pick_token_limit(unit: int, number: int) -> dict[str, Any] | None:
+        for l in token_limits:
+            if l.get("unit") == unit and l.get("number") == number:
+                return l
+        return None
+
+    five_hour = pick_token_limit(3, 5)
+    weekly = pick_token_limit(6, 1)
+    if five_hour is None or weekly is None:
+        # 兜底：unit/number 缺失时按重置时间排序，最近的视为 5 小时窗口
+        ordered = sorted(
+            (l for l in token_limits if l is not five_hour and l is not weekly),
+            key=lambda l: _num(l.get("nextResetTime")),
+        )
+        if five_hour is None and ordered:
+            five_hour = ordered.pop(0)
+        if weekly is None and ordered:
+            weekly = ordered.pop(0)
+
+    for limit, label, span in (
+        (five_hour, "5h Window", 5 * 3600),
+        (weekly, "7d Window", 7 * 86400),
+    ):
+        if limit is None:
+            continue
+        pct = limit_percent(limit)
+        if pct is None:
+            continue
+        window = {
+            "label": label,
+            "used_percent": pct,
+            "reset_after_seconds": seconds_until(limit.get("nextResetTime")),
+            "window_seconds": span,
+        }
+        total = _num(limit.get("usage"))
+        if total > 0:
+            # 积分窗口带绝对值：进度条上显示已用/总量，附行显示剩余
+            window["usage"] = f"{int(_num(limit.get('currentValue')))}/{int(total)}"
+            extra_lines.append(
+                f"{label} remaining: {int(_num(limit.get('remaining')))}/{int(total)}"
+            )
+        windows.append(window)
+
+    for l in limits:
+        if not isinstance(l, dict) or l.get("type") != "TIME_LIMIT":
+            continue
+        total = _num(l.get("usage"))
+        used = _num(l.get("currentValue"))
+        pct = limit_percent(l)
+        if pct is None and total > 0:
+            pct = max(0.0, min(100.0, used * 100 / total))
+        if pct is None:
+            continue
+        reset_at = parse_timestamp(l.get("nextResetTime"))
+        window: dict[str, Any] = {
+            "label": "Tools Quota",
+            "used_percent": pct,
+            "reset_after_seconds": seconds_until(l.get("nextResetTime")),
+            # 月窗口：有重置时间时按一个自然月估算窗口起点（供 | 时间标记定位）
+            "window_seconds": monthly_window_seconds(reset_at) if reset_at else None,
+        }
+        if total > 0:
+            window["usage"] = f"{int(used)}/{int(total)}"
+        windows.append(window)
+        extra_lines.append(f"Tools remaining: {int(_num(l.get('remaining')))}/{int(total)}")
+
+    return {
+        "provider": "GLM",
+        "plan": f"Coding {level.capitalize()}" if level else "Coding",
+        "windows": windows,
+        "extra_lines": extra_lines,
+        "fetched_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+    }
 
 
 API_KEY_SETTINGS = {

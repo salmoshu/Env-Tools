@@ -622,27 +622,103 @@ class EnvironmentTests(unittest.TestCase):
         self.assertAlmostEqual(result["windows"][0]["used_percent"], 100.0)
         self.assertTrue(any("Account unavailable" in line for line in result["extra_lines"]))
 
-    def test_glm_matches_deepseek_balance_display(self):
+    def test_glm_coding_plan_quota_display(self):
+        now_ms = int(time.time() * 1000)
         result = usage_monitor.normalize_glm(
             {
-                "is_available": True,
-                "balance_infos": [
-                    {
-                        "currency": "CNY",
-                        "total_balance": "12.50",
-                        "granted_balance": "2.50",
-                        "topped_up_balance": "10.00",
-                    }
-                ],
+                "code": 200,
+                "success": True,
+                "data": {
+                    "level": "pro",
+                    "limits": [
+                        {
+                            "type": "TIME_LIMIT",
+                            "percentage": 7,
+                            "usage": 1000,
+                            "currentValue": 72,
+                            "remaining": 928,
+                        },
+                        {
+                            "type": "CREDIT_LIMIT",
+                            "unit": 3,
+                            "number": 5,
+                            "percentage": 44,
+                            "usage": 2000,
+                            "currentValue": 880,
+                            "remaining": 1120,
+                            "nextResetTime": now_ms + 3600_000,
+                        },
+                        {
+                            "type": "CREDIT_LIMIT",
+                            "unit": 6,
+                            "number": 1,
+                            "percentage": 53,
+                            "usage": 10000,
+                            "currentValue": 5300,
+                            "remaining": 4700,
+                            "nextResetTime": now_ms + 3 * 86400_000,
+                        },
+                    ],
+                },
             }
         )
 
         self.assertEqual(result["provider"], "GLM")
-        self.assertEqual(result["plan"], "API")
-        self.assertAlmostEqual(result["windows"][0]["used_percent"], 75.0)
-        self.assertIn("Balance: ¥12.50 / ¥50.00", result["extra_lines"])
-        self.assertIn("Usage: ¥37.50 / ¥50.00", result["extra_lines"])
-        self.assertIn("Granted: ¥2.50   Topped-up: ¥10.00", result["extra_lines"])
+        self.assertEqual(result["plan"], "Coding Pro")
+        labels = [w["label"] for w in result["windows"]]
+        self.assertEqual(labels, ["5h Window", "7d Window", "Tools Quota"])
+        five_hour, weekly, tools = result["windows"]
+        self.assertAlmostEqual(five_hour["used_percent"], 44.0)
+        self.assertEqual(five_hour["window_seconds"], 5 * 3600)
+        self.assertAlmostEqual(five_hour["reset_after_seconds"], 3600, delta=5)
+        self.assertEqual(five_hour["usage"], "880/2000")
+        self.assertAlmostEqual(weekly["used_percent"], 53.0)
+        self.assertEqual(weekly["window_seconds"], 7 * 86400)
+        self.assertAlmostEqual(tools["used_percent"], 7.0)
+        self.assertEqual(tools["usage"], "72/1000")
+        self.assertIn("5h Window remaining: 1120/2000", result["extra_lines"])
+        self.assertIn("7d Window remaining: 4700/10000", result["extra_lines"])
+        self.assertIn("Tools remaining: 928/1000", result["extra_lines"])
+
+    def test_glm_token_limits_fallback_sorted_by_reset_time(self):
+        # unit/number 缺失时按重置时间排序：近的为 5 小时窗口
+        now_ms = int(time.time() * 1000)
+        result = usage_monitor.normalize_glm(
+            {
+                "data": {
+                    "limits": [
+                        {"type": "TOKENS_LIMIT", "percentage": 80, "nextResetTime": now_ms + 5 * 86400_000},
+                        {"type": "TOKENS_LIMIT", "percentage": 20, "nextResetTime": now_ms + 1800_000},
+                    ],
+                },
+            }
+        )
+
+        labels = [w["label"] for w in result["windows"]]
+        self.assertEqual(labels, ["5h Window", "7d Window"])
+        self.assertAlmostEqual(result["windows"][0]["used_percent"], 20.0)
+        self.assertAlmostEqual(result["windows"][1]["used_percent"], 80.0)
+
+    def test_glm_percentage_one_is_one_percent(self):
+        result = usage_monitor.normalize_glm(
+            {
+                "data": {
+                    "limits": [
+                        {
+                            "type": "CREDIT_LIMIT",
+                            "unit": 6,
+                            "number": 1,
+                            "percentage": 1,
+                            "usage": 10000,
+                            "currentValue": 130,
+                        }
+                    ],
+                },
+            }
+        )
+
+        self.assertAlmostEqual(result["windows"][0]["used_percent"], 1.0)
+        self.assertEqual(result["windows"][0]["usage"], "130/10000")
 
     def test_glm_api_key_supports_zhipu_environment_alias(self):
         with mock.patch.dict(
@@ -653,60 +729,28 @@ class EnvironmentTests(unittest.TestCase):
             self.assertEqual(usage_monitor.glm_api_key(), "test-zhipu-key")
 
     def test_fetch_glm_uses_bearer_authentication(self):
+        quota_response = {"success": True, "data": {"limits": []}}
         with mock.patch.object(
             usage_monitor,
             "request_json",
-            return_value={"balance_infos": []},
+            return_value=quota_response,
         ) as request_json:
             result = usage_monitor.fetch_glm("test-glm-key")
 
-        self.assertEqual(result, {"balance_infos": []})
+        self.assertEqual(result, quota_response)
         call = request_json.call_args
-        self.assertEqual(call.args[0], usage_monitor.GLM_BALANCE_URL)
+        self.assertEqual(call.args[0], usage_monitor.GLM_QUOTA_URL)
         self.assertEqual(call.kwargs["headers"]["Authorization"], "Bearer test-glm-key")
         self.assertTrue(call.kwargs["use_proxy"])
 
-    def test_fetch_glm_falls_back_to_finance_endpoint(self):
-        finance_response = {
-            "code": 200,
-            "data": {"balance": "8.00", "availableBalance": "7.50"},
-        }
+    def test_fetch_glm_rejects_unexpected_response(self):
         with mock.patch.object(
             usage_monitor,
             "request_json",
-            side_effect=[usage_monitor.MonitorError("HTTP 404"), finance_response],
-        ) as request_json:
-            result = usage_monitor.fetch_glm("test-glm-key")
-
-        self.assertEqual(result, finance_response)
-        self.assertEqual(request_json.call_count, 2)
-        self.assertEqual(
-            request_json.call_args_list[1].args[0],
-            usage_monitor.GLM_FINANCE_URL,
-        )
-
-    def test_glm_normalizes_finance_center_response(self):
-        result = usage_monitor.normalize_glm(
-            {
-                "code": 200,
-                "data": {
-                    "balance": "20.00",
-                    "availableBalance": "18.00",
-                    "giveAmount": "5.00",
-                    "rechargeAmount": "15.00",
-                    "frozenBalance": "2.00",
-                    "totalSpendAmount": "30.00",
-                },
-            }
-        )
-
-        self.assertAlmostEqual(result["windows"][0]["used_percent"], 60.0)
-        self.assertIn("Balance: ¥20.00 / ¥50.00", result["extra_lines"])
-        self.assertIn("Granted: ¥5.00   Topped-up: ¥15.00", result["extra_lines"])
-        self.assertIn(
-            "Available: ¥18.00   Frozen: ¥2.00   Total spent: ¥30.00",
-            result["extra_lines"],
-        )
+            return_value={"code": 401, "msg": "未授权"},
+        ):
+            with self.assertRaises(usage_monitor.MonitorError):
+                usage_monitor.fetch_glm("test-glm-key")
 
     def test_render_aligns_progress_bars_by_terminal_width(self):
         results = [

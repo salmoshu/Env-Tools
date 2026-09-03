@@ -35,19 +35,21 @@ Python 3 标准库。
   （`使用量 = 50 − 余额`，小于 0 时按 0 截断），与其它模型的进度条口径保持一致。
   可用 `DEEPSEEK_USE_PROXY`（默认走系统代理）与 `DEEPSEEK_TIMEOUT`（默认 30 秒）
   调整请求行为，用 `DEEPSEEK_BALANCE_URL` 覆盖接口地址。
-- GLM（智谱 BigModel）：使用 BigModel 平台的 API Key，与财务中心
-  `https://bigmodel.cn/finance-center/finance/overview` 对应同一账户余额。
+- GLM（智谱 BigModel）：面向 **GLM Coding Plan** 订阅用户，使用 BigModel 平台的
+  API Key 查询 Coding Plan 的套餐配额，与开放平台 API 余额无关。
   配置方式（按优先级）：
   1. `--glm-key` 命令行参数；
   2. 环境变量 `GLM_API_KEY`（也兼容 `ZHIPU_API_KEY` 和
      `ZHIPUAI_API_KEY`）；
   3. 凭证文件 `~/.glm/credentials.json`（`{"api_key": "..."}`，权限 0600），
      可用 `GLM_CREDENTIALS_PATH` 或 `--glm-credentials` 指定其他路径。
-  监控会用 Bearer 鉴权查询 `GET /api/paas/v4/balance`；若当前平台
-  未开放该路由，会自动回退到财务中心同款账户报表接口。展示与
-  DeepSeek 保持一致：显示余额、赠送金额和充值金额，以 **50 元为每月上限**
-  换算用量进度。可用 `GLM_USE_PROXY`（默认走系统代理）、
-  `GLM_TIMEOUT`（默认 30 秒）和 `GLM_BALANCE_URL` 调整请求。
+  监控会用 Bearer 鉴权查询 `GET /api/monitor/usage/quota/limit`（官方
+  [Coding Plan 订阅管理页](https://bigmodel.cn/coding-plan/personal/overview)
+  在用的接口），展示三个窗口：5 小时 token 额度、每周 token 额度（均为已用
+  百分比 + 重置倒计时），以及工具/联网搜索月额度（绝对次数 + 剩余量）。
+  可用 `GLM_USE_PROXY`（默认走系统代理）、`GLM_TIMEOUT`（默认 30 秒）和
+  `GLM_QUOTA_URL` 调整请求；国际版（z.ai）用户可将 `GLM_QUOTA_URL` 设为
+  `https://api.z.ai/api/monitor/usage/quota/limit`。
 
 程序不会复制或输出访问令牌。也可以通过
 `KIMI_CREDENTIALS_PATH`、`CODEX_AUTH_PATH`
