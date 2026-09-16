@@ -21,6 +21,16 @@ const wslDistroSelect = document.getElementById("wsl-distro");
 const apikeysEnvHint = document.getElementById("apikeys-env-hint");
 const settingsBack = document.getElementById("settings-back");
 const loginNote = document.getElementById("login-note");
+const membershipList = document.getElementById("membership-list");
+const membershipNote = document.getElementById("membership-note");
+const membershipSave = document.getElementById("membership-save");
+// 会员到期时间在设置页统一管理的 provider（与后端 config.json 小节同名）
+const MEMBERSHIP_PROVIDERS = [
+  ["kimi", "Kimi Code"],
+  ["openai", "OpenAI Codex"],
+  ["glm", "GLM"],
+  ["deepseek", "DeepSeek"],
+];
 const keyInputs = {
   deepseek: document.getElementById("deepseek-key"),
   glm: document.getElementById("glm-key"),
@@ -40,8 +50,52 @@ try {
   }
 } catch {}
 
+// --- 主题：system / dark / light，选择持久化在本机 localStorage --------------
+const THEME_KEY = "ai-usage-monitor.theme";
+const themeList = document.getElementById("theme-list");
+const THEME_OPTIONS = [
+  ["system", "System"],
+  ["dark", "Dark"],
+  ["light", "Light"],
+];
+const systemDark = window.matchMedia("(prefers-color-scheme: dark)");
+let themePreference = "system";
+try {
+  const storedTheme = localStorage.getItem(THEME_KEY);
+  if (THEME_OPTIONS.some(([value]) => value === storedTheme)) themePreference = storedTheme;
+} catch {}
+
+function resolvedTheme() {
+  if (themePreference === "light" || themePreference === "dark") return themePreference;
+  return systemDark.matches ? "dark" : "light";
+}
+
+function applyTheme() {
+  document.documentElement.dataset.theme = resolvedTheme();
+  themeList.querySelectorAll(".env-option").forEach((item) => {
+    item.classList.toggle("selected", item.dataset.theme === themePreference);
+  });
+}
+
+themeList.innerHTML = THEME_OPTIONS.map(([value, label]) =>
+  `<div class="env-option" data-theme="${value}"><span class="radio"></span>${label}</div>`
+).join("");
+themeList.querySelectorAll(".env-option").forEach((item) => {
+  item.addEventListener("click", () => {
+    themePreference = item.dataset.theme;
+    try { localStorage.setItem(THEME_KEY, themePreference); } catch {}
+    applyTheme();
+  });
+});
+systemDark.addEventListener("change", () => {
+  if (themePreference === "system") applyTheme();
+});
+applyTheme();
+
 document.getElementById("btn-min").addEventListener("click", () => api.minimize());
 document.getElementById("btn-close").addEventListener("click", () => api.close());
+// 打开全量模式（分析看板）窗口
+document.getElementById("btn-full").addEventListener("click", () => api.openFullDashboard());
 document.getElementById("btn-refresh").addEventListener("click", () => {
   // 已有内容时保留旧数据,不闪烁成"刷新中";仅首次无内容时显示占位
   if (!content.querySelector(".provider")) {
@@ -82,6 +136,9 @@ async function openSettings() {
   settingsNote.className = "settings-note";
   settingsNote.textContent = "Keys are sent to the backend through stdin only.";
   settingsSave.disabled = false;
+  membershipNote.className = "settings-note";
+  membershipNote.textContent = "";
+  membershipSave.disabled = false;
   fitWindow();
   loadSettingsInfo();
   loadApiKeyStatus();
@@ -122,6 +179,7 @@ async function loadSettingsInfo() {
     apikeysEnvHint.textContent = result.environment === "windows"
       ? "Keys are written to the Windows-side credential files (via WSL interop)."
       : "Keys are stored locally with private file permissions.";
+    buildMembershipPanel(result.membership || {});
   } catch (err) {
     environmentNote.className = "settings-note error";
     environmentNote.textContent = `Cannot read settings: ${err.message || err}`;
@@ -206,6 +264,77 @@ async function loadApiKeyStatus() {
   }
 }
 
+// --- 设置页 Membership 面板：各 provider 的会员购买/续费日期与时长 ----------
+
+// ISO 时间转 datetime-local 输入框值（本地时区，精确到分）
+function toLocalInputValue(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` +
+    `T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function membershipStateText(entry) {
+  if (!entry) return { text: "", ended: false, error: false };
+  if (entry.error) return { text: entry.error, ended: false, error: true };
+  if (!entry.ends_at) return { text: "", ended: false, error: false };
+  const status = membershipEndStatus(entry.ends_at, Boolean(entry.auto_renew));
+  return {
+    text: `${fmtDateTime(entry.ends_at)} · ${status.text}`,
+    ended: status.ended,
+    error: false,
+  };
+}
+
+function buildMembershipPanel(membership) {
+  membershipList.innerHTML = MEMBERSHIP_PROVIDERS.map(([key, label]) => {
+    const entry = membership[key];
+    const date = entry ? toLocalInputValue(entry.purchased_at) : "";
+    const months = entry && entry.duration_months ? String(entry.duration_months) : "";
+    const state = membershipStateText(entry);
+    const stateClass = state.error ? " error" : state.ended ? " ended" : "";
+    return `<div class="membership-row" data-provider="${esc(key)}">
+      <div class="membership-name"><span>${esc(label)}</span>` +
+      `<span class="membership-state${stateClass}">${esc(state.text)}</span></div>
+      <div class="membership-inputs">
+        <input type="datetime-local" class="membership-date" value="${esc(date)}" />
+        <input type="number" class="membership-months" min="1" max="120" step="1" placeholder="1" value="${esc(months)}" />
+        <span class="membership-unit">months</span>
+      </div>
+    </div>`;
+  }).join("");
+  fitWindow();
+}
+
+membershipSave.addEventListener("click", async () => {
+  const values = {};
+  membershipList.querySelectorAll(".membership-row").forEach((row) => {
+    const date = row.querySelector(".membership-date").value;
+    const months = parseInt(row.querySelector(".membership-months").value, 10);
+    // 日期留空 = 清除该 provider 的会员时间（GLM 清除后回退到订阅接口自动日期）
+    values[row.dataset.provider] = date
+      ? { purchased_at: date, duration_months: Number.isInteger(months) && months > 0 ? months : 1 }
+      : null;
+  });
+  membershipSave.disabled = true;
+  membershipNote.className = "settings-note";
+  membershipNote.textContent = "Saving…";
+  try {
+    const result = await api.setSettings({ membership: values });
+    if (!result || !result.ok) throw new Error((result && result.error) || "unknown error");
+    if (currentSettings && result.settings) Object.assign(currentSettings, result.settings);
+    buildMembershipPanel(result.membership || {});
+    membershipNote.className = "settings-note ok";
+    membershipNote.textContent = "Saved. Usage data is refreshing…";
+  } catch (err) {
+    membershipNote.className = "settings-note error";
+    membershipNote.textContent = `Save failed: ${err.message || err}`;
+  } finally {
+    membershipSave.disabled = false;
+  }
+});
+
 // 边栏切换面板
 settingsView.querySelectorAll(".side-item").forEach((item) => {
   item.addEventListener("click", () => {
@@ -219,6 +348,10 @@ settingsView.querySelectorAll(".side-item").forEach((item) => {
 
 settingsBack.addEventListener("click", closeSettings);
 btnSettings.addEventListener("click", () => (settingsOpen ? closeSettings() : openSettings()));
+// 全量模式窗口的设置按钮：打开本窗口并直接进入设置页
+api.onOpenSettings(() => {
+  if (!settingsOpen) openSettings();
+});
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && settingsOpen) closeSettings();
 });
@@ -403,12 +536,12 @@ function fmtCompactDuration(seconds) {
   return `${m}m`;
 }
 
-function membershipEndStatus(endsAt) {
+function membershipEndStatus(endsAt, autoRenew = false) {
   const endMs = new Date(endsAt).getTime();
   if (!Number.isFinite(endMs)) return { text: "", ended: false };
   const seconds = Math.floor((endMs - Date.now()) / 1000);
   return seconds >= 0
-    ? { text: `ends in ${fmtCompactDuration(seconds)}`, ended: false }
+    ? { text: `${autoRenew ? "renews" : "ends"} in ${fmtCompactDuration(seconds)}`, ended: false }
     : { text: `ended ${fmtCompactDuration(-seconds)} ago`, ended: true };
 }
 
@@ -481,11 +614,12 @@ function render(payload) {
     if (membership && membership.error) {
       html += `<div class="membership error">${esc(membership.error)}</div>`;
     } else if (membership && membership.purchased_at && membership.ends_at) {
-      // 单行精简显示:过期时间 + 剩余时间
-      const endStatus = membershipEndStatus(membership.ends_at);
+      // 单行精简显示:到期/续费时间 + 剩余时间；自动续费（GLM 订阅）用 renews 措辞
+      const autoRenew = Boolean(membership.auto_renew);
+      const endStatus = membershipEndStatus(membership.ends_at, autoRenew);
       const endClass = endStatus.ended ? " ended" : "";
       html += `<div class="membership">
-        <div class="membership-end${endClass}"><span>Ends</span><strong>${esc(fmtDateTime(membership.ends_at))}</strong><em>${esc(endStatus.text)}</em></div>
+        <div class="membership-end${endClass}"><span>${autoRenew ? "Renews" : "Ends"}</span><strong>${esc(fmtDateTime(membership.ends_at))}</strong><em>${esc(endStatus.text)}</em></div>
       </div>`;
     }
     for (const w of account.windows || []) {
@@ -581,6 +715,18 @@ api.onUsageUpdate((payload) => {
 
 // --- 点击版本徽章升级 ------------------------------------------------------
 let upgrading = false;
+// 升级期间浮层里的日志容器；主进程实时推送 setup 脚本输出（含下载心跳）
+let upgradeLogEl = null;
+
+api.onUpgradeProgress(({ line }) => {
+  if (!upgradeLogEl || !line) return;
+  const div = document.createElement("div");
+  div.textContent = line;
+  upgradeLogEl.appendChild(div);
+  while (upgradeLogEl.children.length > 4) {
+    upgradeLogEl.removeChild(upgradeLogEl.children[0]);
+  }
+});
 
 // 当前所有可升级的 provider
 function outdatedProviders() {
@@ -594,6 +740,7 @@ function outdatedProviders() {
 function closeUpgradeOverlay() {
   const el = document.getElementById("upgrade-overlay");
   if (el) el.remove();
+  upgradeLogEl = null;
 }
 
 // 升级确认浮层(无边框窗口没有原生 confirm);多个 agent 可升级时给出"全部升级"选项
@@ -618,7 +765,15 @@ function showUpgradeOverlay(provider) {
   document.body.appendChild(overlay);
   overlay.addEventListener("click", async (e) => {
     const btn = e.target.closest("button");
-    if (!btn || upgrading) return;
+    if (!btn) return;
+    // 升级中唯一的按钮是 Cancel：终止安装进程组，结果以 failed: cancelled 收尾
+    if (btn.dataset.act === "abort") {
+      btn.disabled = true;
+      btn.textContent = "Cancelling …";
+      try { await api.cancelUpgrade(); } catch { /* 进程可能已退出 */ }
+      return;
+    }
+    if (upgrading) return;
     if (btn.dataset.act === "cancel") {
       closeUpgradeOverlay();
       return;
@@ -626,20 +781,41 @@ function showUpgradeOverlay(provider) {
     const targets = btn.dataset.act === "all" ? outdated : [provider];
     upgrading = true;
     const msg = overlay.querySelector(".upgrade-msg");
-    overlay.querySelector(".upgrade-btns").innerHTML = "";
-    msg.textContent = `Upgrading ${targets.join(", ")} …`;
+    const btns = overlay.querySelector(".upgrade-btns");
+    btns.innerHTML = '<button data-act="abort" class="ghost">Cancel</button>';
+    const log = document.createElement("div");
+    log.className = "upgrade-log";
+    overlay.querySelector(".upgrade-card").insertBefore(log, btns);
+    upgradeLogEl = log;
+    // 标题行带耗时，进度细节在日志区滚动
+    const startedAt = Date.now();
+    const renderMsg = () => {
+      msg.textContent = `Upgrading ${targets.join(", ")} … (${Math.round((Date.now() - startedAt) / 1000)}s)`;
+    };
+    renderMsg();
+    const elapsedTimer = setInterval(renderMsg, 1000);
     try {
       const data = (lastPayload && lastPayload.data) || {};
       // 升级目标跟随当前数据源环境（WSL 或 Windows 侧的 agent）
       const res = await api.upgrade(targets, data.environment, data.windows_setup_script);
-      msg.textContent = res && res.ok
-        ? "Upgrade finished"
-        : `Upgrade failed: ${(res && res.error) || "unknown error"}`;
+      clearInterval(elapsedTimer);
+      if (res && res.ok) {
+        msg.textContent = "Upgrade finished";
+        btns.innerHTML = "";
+        upgrading = false;
+        setTimeout(closeUpgradeOverlay, 1600);
+      } else {
+        // 失败（含超时/停滞/取消）不自动关闭：日志留在浮层里供排查
+        msg.textContent = `Upgrade failed: ${(res && res.error) || "unknown error"}`;
+        btns.innerHTML = '<button data-act="cancel" class="ghost">Close</button>';
+        upgrading = false;
+      }
     } catch (err) {
+      clearInterval(elapsedTimer);
       msg.textContent = `Upgrade failed: ${err}`;
+      btns.innerHTML = '<button data-act="cancel" class="ghost">Close</button>';
+      upgrading = false;
     }
-    upgrading = false;
-    setTimeout(closeUpgradeOverlay, 1600);
     // 主进程升级完成后会推送 usage-update,这里无需手动重绘
   });
 }

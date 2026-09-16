@@ -6,8 +6,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$windowTitle = "AI Usage Monitor"
-$runtimeDir = Join-Path $env:LOCALAPPDATA "AIUsageMonitor"
+$windowTitle = "Env-Tools"
+$runtimeDir = Join-Path $env:LOCALAPPDATA "EnvToolsApp"
 $appDir = Join-Path $runtimeDir "app"
 $logPath = Join-Path $runtimeDir "launcher.log"
 $launcherDir = $PSScriptRoot
@@ -79,7 +79,7 @@ function Get-WslSourceInfo([string]$Path) {
     $plainPath = $Path -replace '^Microsoft\.PowerShell\.Core\\FileSystem::', ''
     $match = [regex]::Match(
         $plainPath,
-        '^\\\\(?:wsl\.localhost|wsl\$)\\(?<distro>[^\\]+)\\(?<path>.*)$',
+        '^\\(?:wsl\.localhost|wsl\$)\\(?<distro>[^\\]+)\\(?<path>.*)$',
         [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
     )
     if (-not $match.Success) {
@@ -109,8 +109,13 @@ function Install-StartMenuShortcut(
         "-Distro `"$DistroName`" -MonitorScript `"$LinuxMonitorScript`""
     )
     $shortcut.WorkingDirectory = $env:USERPROFILE
-    $shortcut.IconLocation = "$ElectronPath,0"
-    $shortcut.Description = "Native Windows dashboard backed by ai-tools in WSL"
+    $iconPath = Join-Path $appDir "electron\assets\logo.ico"
+    if (Test-Path -LiteralPath $iconPath -PathType Leaf) {
+        $shortcut.IconLocation = "$iconPath,0"
+    } else {
+        $shortcut.IconLocation = "$ElectronPath,0"
+    }
+    $shortcut.Description = "Env-Tools desktop app (usage analytics, quotas and component management)"
     $shortcut.Save()
     Write-LauncherLog "Installed Start Menu shortcut: $shortcutPath"
 }
@@ -118,7 +123,7 @@ function Install-StartMenuShortcut(
 try {
     New-Item -ItemType Directory -Force -Path $runtimeDir | Out-Null
     $createdNew = $false
-    $mutex = New-Object System.Threading.Mutex($true, "Local\AIUsageMonitorLauncher", [ref]$createdNew)
+    $mutex = New-Object System.Threading.Mutex($true, "Local\EnvToolsAppLauncher", [ref]$createdNew)
     if (-not $createdNew) {
         if (-not $mutex.WaitOne(120000)) {
             throw "Timed out waiting for another launcher process."
@@ -126,7 +131,7 @@ try {
     }
 
     if (-not (Get-Command wsl.exe -ErrorAction SilentlyContinue)) {
-        throw "WSL is not installed. This dashboard currently requires the ai-tools backend in WSL."
+        throw "WSL is not installed. This app currently requires the Env-Tools backend in WSL."
     }
 
     $sourceInfo = Get-WslSourceInfo $SourceDir
@@ -134,8 +139,7 @@ try {
         $Distro = $sourceInfo.Distro
     }
     if (-not $MonitorScript) {
-        $monitorDir = Split-Path -Parent $sourceInfo.LinuxPath
-        $MonitorScript = "$monitorDir/usage_monitor.py"
+        $MonitorScript = "$($sourceInfo.LinuxPath -replace '/app$', '')/linux/ai-tools/usage-monitor/usage_monitor.py"
     }
 
     $installedDistros = @(wsl.exe --list --quiet 2>$null) -replace "`0", "" | ForEach-Object { $_.Trim() } | Where-Object { $_ }
@@ -144,15 +148,25 @@ try {
     }
 
     New-Item -ItemType Directory -Force -Path $appDir | Out-Null
+
+    # 同步应用文件：Electron 主进程 + React 构建产物（dist/ 随仓库提交，无需
+    # Windows 侧再构建）+ 静态资源
     $appFiles = @(
-        "index.html",
-        "main.js",
-        "package.json",
-        "preload.js",
-        "renderer.js"
+        "electron\main.js",
+        "electron\preload.js",
+        "electron\set-topmost.ps1",
+        "electron\assets\logo.svg",
+        "electron\assets\logo.png",
+        "electron\assets\logo.ico",
+        "dist\index.html",
+        "dist\assets\app.js",
+        "dist\assets\index.css",
+        "package.json"
     )
     foreach ($file in $appFiles) {
-        Copy-Item -LiteralPath (Join-Path $SourceDir $file) -Destination (Join-Path $appDir $file) -Force
+        $destination = Join-Path $appDir $file
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination) | Out-Null
+        Copy-Item -LiteralPath (Join-Path $SourceDir $file) -Destination $destination -Force
     }
 
     $sourcePackage = Join-Path $SourceDir "package.json"
@@ -189,7 +203,7 @@ try {
             Pop-Location
         }
 
-        # Electron 43+ exposes an explicit installer instead of relying on an
+        # Electron 37+ exposes an explicit installer instead of relying on an
         # npm postinstall hook. The npm package alone does not contain electron.exe.
         if (-not (Test-ElectronRuntime $electronPath)) {
             $node = Get-Command node.exe -ErrorAction SilentlyContinue

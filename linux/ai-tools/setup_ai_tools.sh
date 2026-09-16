@@ -348,8 +348,28 @@ npm_install_broadcast() {
     return "${PIPESTATUS[0]}"
 }
 
+# kimi 官方脚本升级。install.sh 在非 TTY 下用 curl --silent 下载 ~64MB
+# tarball，既无超时也无进度输出，网络被限速时对外表现为"卡住"。这里把
+# install.sh 的 TMPDIR 指到已知目录，轮询下载文件大小输出心跳；持续
+# KIMI_STALL_SECS 秒无进展判定停滞，杀掉整个进程组；失败时翻转代理设置
+# （直连 ↔ 系统代理）自动重试一次。
+KIMI_STALL_SECS=60
+
+# 从累积缓冲取出完整行转发到线程日志（去 \r 与 ANSI 颜色）；不完整末行留在缓冲里
+kimi_emit_lines() {
+    local -n _buf=$1
+    local line
+    while [[ "$_buf" == *$'\n'* ]]; do
+        line=${_buf%%$'\n'*}
+        _buf=${_buf#*$'\n'}
+        line="$(printf '%s' "$line" | tr -d '\r' | sed 's/\x1b\[[0-9;]*m//g')"
+        [ -n "${line//[[:space:]]/}" ] && emit kimi "$line"
+    done
+}
+
 kimi_worker() {
-    local before after latest local_ver line rc
+    local before after after_ver latest local_ver rc attempt
+    local KIMI_TMP="$RESULT_DIR/kimi-tmp" OUTF
     before="$(version_of kimi)"
     # 官方脚本安装的二进制没有 npm 元数据，用 registry 最新版与 --version 输出对比
     emit kimi '查询最新版本 (code.kimi.com) ...'
@@ -366,17 +386,151 @@ kimi_worker() {
         write_result kimi FAIL "${before:-未安装}"
         return 1
     fi
-    emit kimi "安装/更新中: 官方安装脚本 ($KIMI_INSTALL_URL)，当前 ${before:-未安装}"
-    curl -fsSL "$KIMI_INSTALL_URL" | bash 2>&1 | while IFS= read -r line; do
-        line="$(printf '%s' "$line" | tr -d '\r' | sed 's/\x1b\[[0-9;]*m//g')"
-        [ -n "$line" ] && emit kimi "$line"
+
+    # tarball 总大小（HEAD 请求，best-effort，用于心跳里的百分比）
+    local arch="" total_bytes=""
+    case "$(uname -m)" in
+        x86_64|amd64)  arch=x64 ;;
+        arm64|aarch64) arch=arm64 ;;
+    esac
+    if [ -n "$arch" ] && [ -n "$latest" ]; then
+        # -L 跟随重定向，取最终响应的 content-length（中间跳转而的长度是错误页大小）
+        total_bytes="$(curl -fsSIL --max-time 10 \
+            "${KIMI_INSTALL_URL%/install.sh}/binaries/${latest}/kimi-code-linux-${arch}.tar.gz" \
+            2>/dev/null | tr -d '\r' | awk 'tolower($1) == "content-length:" {v=$2} END {print v}')"
+        [[ "$total_bytes" =~ ^[0-9]+$ ]] || total_bytes=""
+    fi
+
+    # 代理豁免状态决定重试方向：no_proxy 已豁免 kimi.com → 重试走代理；
+    # 未豁免（已在走代理）→ 重试直连。完全没有代理环境变量时只能单次尝试。
+    local have_proxy="" bypassed="" attempts=1
+    [ -n "${http_proxy:-}${https_proxy:-}${HTTP_PROXY:-}${HTTPS_PROXY:-}" ] && have_proxy=1
+    case ",${no_proxy:-},${NO_PROXY:-}," in *kimi.com*) bypassed=1 ;; esac
+    [ -n "$have_proxy" ] && attempts=2
+
+    local use_setsid=false
+    command -v setsid >/dev/null 2>&1 && use_setsid=true
+
+    rc=1
+    for ((attempt = 1; attempt <= attempts; attempt++)); do
+        rm -rf "$KIMI_TMP"; mkdir -p "$KIMI_TMP"
+        OUTF="$KIMI_TMP/install.out"
+        local -a run_env=()
+        if ((attempt == 2)); then
+            if [ -n "$bypassed" ]; then
+                emit kimi '重试：本次取消 no_proxy 对 kimi.com 的豁免，改经系统代理下载'
+                run_env=(env no_proxy= NO_PROXY=)
+            else
+                emit kimi '重试：本次绕过系统代理，直连下载 (no_proxy 豁免 kimi.com)'
+                run_env=(env no_proxy=kimi.com,.kimi.com NO_PROXY=kimi.com,.kimi.com)
+            fi
+        fi
+        emit kimi "安装/更新中: 官方安装脚本 ($KIMI_INSTALL_URL)，当前 ${before:-未安装}"
+        if $use_setsid; then
+            setsid "${run_env[@]}" bash -c '
+                curl -fsSL --max-time 60 "$1" | TMPDIR="$2" bash
+                st=("${PIPESTATUS[@]}")
+                exit $(( st[0] != 0 || st[1] != 0 ))
+            ' _ "$KIMI_INSTALL_URL" "$KIMI_TMP" >"$OUTF" 2>&1 &
+        else
+            "${run_env[@]}" bash -c '
+                curl -fsSL --max-time 60 "$1" | TMPDIR="$2" bash
+                st=("${PIPESTATUS[@]}")
+                exit $(( st[0] != 0 || st[1] != 0 ))
+            ' _ "$KIMI_INSTALL_URL" "$KIMI_TMP" >"$OUTF" 2>&1 &
+        fi
+        local job=$!
+        # worker 被主脚本 INT/TERM  trap 杀掉时，连带杀掉安装进程组，
+        # 避免 setsid 独立进程组泄漏成孤儿继续占网
+        # shellcheck disable=SC2064
+        trap "kill -- -$job 2>/dev/null; kill $job 2>/dev/null; exit 130" INT TERM
+
+        local off=0 sz buf="" f last_size=-1 since_progress=$SECONDS last1
+        local next_beat=0 beat_ts="" beat_sz=0 mib tmib pct dt speed_txt size_txt
+        while kill -0 "$job" 2>/dev/null; do
+            # 增量转发 install.sh 输出；任何字节增长都视为存活证据
+            if [ -f "$OUTF" ]; then
+                sz=$(stat -c %s "$OUTF" 2>/dev/null || echo 0)
+                if ((sz > off)); then
+                    since_progress=$SECONDS
+                    # 命令替换会吃掉结尾换行：文件以换行结尾则补回，
+                    # 否则末行不完整，留在 buf 里等下次拼齐
+                    last1=$(tail -c 1 -- "$OUTF" 2>/dev/null)
+                    buf+=$(tail -c +$((off + 1)) -- "$OUTF")
+                    [ -z "$last1" ] && buf+=$'\n'
+                    off=$sz
+                    kimi_emit_lines buf
+                fi
+            fi
+            # 下载心跳：tarball（或裸二进制回退）的大小与速度
+            f=$(ls -t "$KIMI_TMP"/tmp.*/kimi-code* 2>/dev/null | head -1)
+            if [ -n "$f" ]; then
+                sz=$(stat -c %s "$f" 2>/dev/null || echo 0)
+                if ((sz != last_size)); then
+                    since_progress=$SECONDS
+                    if ((SECONDS >= next_beat)); then
+                        mib=$(awk -v b="$sz" 'BEGIN{printf "%.1f", b/1048576}')
+                        if [ -n "$total_bytes" ] && ((total_bytes > 0)); then
+                            tmib=$(awk -v b="$total_bytes" 'BEGIN{printf "%.1f", b/1048576}')
+                            pct=$((sz * 100 / total_bytes))
+                            size_txt="$mib / $tmib MiB ($pct%)"
+                        else
+                            size_txt="$mib MiB"
+                        fi
+                        speed_txt=""
+                        if [ -n "$beat_ts" ]; then
+                            dt=$((SECONDS - beat_ts))
+                            ((dt > 0)) && speed_txt=", $(( (sz - beat_sz) / dt / 1024 )) KiB/s"
+                        fi
+                        emit kimi "下载中: $size_txt$speed_txt"
+                        beat_ts=$SECONDS; beat_sz=$sz; next_beat=$((SECONDS + 5))
+                    fi
+                    last_size=$sz
+                fi
+            fi
+            if ((SECONDS - since_progress >= KIMI_STALL_SECS)); then
+                emit kimi "下载 ${KIMI_STALL_SECS}s 无进展，判定停滞，中止本次尝试"
+                kill -- -"$job" 2>/dev/null; kill "$job" 2>/dev/null
+                break
+            fi
+            sleep 2
+        done
+        wait "$job" 2>/dev/null; rc=$?
+        trap - INT TERM
+        # 收尾：转发剩余输出（含不完整末行）
+        if [ -f "$OUTF" ]; then
+            sz=$(stat -c %s "$OUTF" 2>/dev/null || echo 0)
+            if ((sz > off)); then
+                last1=$(tail -c 1 -- "$OUTF" 2>/dev/null)
+                buf+=$(tail -c +$((off + 1)) -- "$OUTF")
+                [ -z "$last1" ] && buf+=$'\n'
+            fi
+            kimi_emit_lines buf
+            [ -n "${buf//[[:space:]]/}" ] && emit kimi "$(printf '%s' "$buf" | tr -d '\r' | sed 's/\x1b\[[0-9;]*m//g')"
+        fi
+        [ "$rc" -eq 0 ] && break
     done
-    rc=${PIPESTATUS[1]}
+
     if [ "$rc" -eq 0 ]; then
         hash -r 2>/dev/null || true
         after="$(version_of kimi)"
-        emit kimi "完成: ${before:-未安装} -> ${after:-未知}"
-        write_result kimi OK "${before:-未安装}" "${after:-未知}"
+        # 非终端启动的环境（如桌面图标拉起的 Electron）PATH 可能缺 kimi bin
+        # 目录，回退到官方脚本默认安装位置探测，避免误报失败
+        if [ -z "$(printf '%s' "$after" | extract_semver)" ] && [ -x "$HOME/.kimi-code/bin/kimi" ]; then
+            after="$("$HOME/.kimi-code/bin/kimi" --version 2>/dev/null | head -1)"
+        fi
+        after_ver="$(printf '%s' "$after" | extract_semver)"
+        if [ -z "$after_ver" ]; then
+            emit kimi 'ERROR: 安装脚本返回成功，但升级后 PATH 中找不到 kimi'
+            write_result kimi FAIL "${before:-未安装}"
+            return 1
+        elif [ -n "$latest" ] && [ "$after_ver" != "$latest" ]; then
+            emit kimi "ERROR: 版本校验失败 ($after_ver != $latest)"
+            write_result kimi FAIL "${before:-未安装}" "$after"
+            return 1
+        fi
+        emit kimi "完成: ${before:-未安装} -> $after"
+        write_result kimi OK "${before:-未安装}" "$after"
     else
         emit kimi "ERROR: 安装/更新失败 (install.sh exit=$rc)"
         write_result kimi FAIL "${before:-未安装}"

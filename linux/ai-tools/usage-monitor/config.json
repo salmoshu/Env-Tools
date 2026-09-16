@@ -1,5 +1,5 @@
 {
-  "_comment": "Edit membership_purchased_at after buying or renewing OpenAI membership. A timestamp without a timezone uses the computer's local timezone.",
+  "_comment": "Membership end dates per provider (kimi, openai, glm, deepseek), editable in the dashboard Settings > Membership panel. Set membership_purchased_at after buying or renewing a membership; membership_duration_months defaults to 1. A timestamp without a timezone uses the computer's local timezone. Kimi (with web credentials) and GLM fall back to their subscription API renewal dates when left unconfigured.",
   "openai": {
     "membership_purchased_at": "2026-08-23 23:00:15",
     "membership_duration_months": 1

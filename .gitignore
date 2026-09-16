@@ -20,3 +20,8 @@ windows/kdesk/①官方安装版kdesk_33_1.exe
 # Electron 窗口依赖（首次 Ctrl+E 前 npm install 生成）
 node_modules/
 package-lock.json
+
+# 桌面应用构建产物（release 压缩包与 Rust 编译输出不入库，发布时作为 release 资产）
+app/release/
+app/release-staging/
+app/backend-rs/target/

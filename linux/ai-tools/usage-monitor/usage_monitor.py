@@ -21,7 +21,7 @@ import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +39,11 @@ KIMI_USAGE_URL = "https://api.kimi.com/coding/v1/usages"
 KIMI_WEB_REFRESH_URL = "https://auth.kimi.com/api/account.gateway.v1.AuthService/RefreshToken"
 KIMI_WEB_STATS_URL = (
     "https://www.kimi.com/apiv2/kimi.gateway.membership.v2.MembershipService/GetSubscriptionStats"
+)
+# 同一网页网关的订阅详情：会员名称（goods.title，如 Allegro）与当前周期终止时间；
+# CLI 的 /coding/v1/usages 已不再返回会员等级字段，只能从这里取。
+KIMI_WEB_SUBSCRIPTION_URL = (
+    "https://www.kimi.com/apiv2/kimi.gateway.membership.v2.MembershipService/GetSubscription"
 )
 CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 # Legacy CodeBuddy support is intentionally retained for possible reuse, but it is
@@ -59,6 +64,9 @@ DEEPSEEK_MONTHLY_LIMIT = 50.0
 # 在用的接口，与开放平台 API 余额无关。返回 5 小时/每周 token 窗口的已用百分比与
 # 重置时间，以及工具（联网搜索等）月额度的绝对次数。鉴权用同一把 BigModel API Key。
 GLM_QUOTA_URL = "https://open.bigmodel.cn/api/monitor/usage/quota/limit"
+# 同一管理页的订阅列表接口：返回套餐名与续费（重置）日期，作为 GLM 会员到期时间。
+GLM_SUBSCRIPTION_PATH = "/api/biz/subscription/list"
+GLM_BILLING_CYCLE_MONTHS = {"monthly": 1, "quarterly": 3, "semi-annually": 6, "yearly": 12}
 
 # 看板标题右侧的 CLI 版本标注：当前版本来自本机 `cmd --version`，最新版本按
 # VERSION_CHECK_INTERVAL 周期探测并缓存；有更新时追加黄色的 "→ 新版本号"
@@ -67,6 +75,8 @@ NPM_LATEST_VERSION_URL = "https://registry.npmjs.org/{package}/latest"
 VERSION_CHECK_INTERVAL = 3600
 VERSION_CACHE_PATH = Path.home() / ".cache" / "ai-usage-monitor" / "versions.json"
 MONITOR_CONFIG_PATH = Path(__file__).resolve().with_name("config.json")
+# 会员到期时间可配置的 provider（config.json 同名小节），由设置页统一管理
+MEMBERSHIP_PROVIDERS = ("kimi", "openai", "glm", "deepseek")
 VERSION_TOOLS = {
     "Kimi Code": {"command": "kimi", "source": "kimi"},
     "OpenAI Codex": {"command": "codex", "source": "npm", "package": "@openai/codex"},
@@ -494,9 +504,9 @@ def refresh_kimi_web_credentials(path: Path, credentials: dict[str, Any]) -> dic
     return credentials
 
 
-def _fetch_kimi_web_stats(access_token: str) -> dict[str, Any]:
+def _fetch_kimi_web_api(url: str, access_token: str) -> dict[str, Any]:
     return request_json(
-        os.environ.get("KIMI_WEB_STATS_URL", KIMI_WEB_STATS_URL),
+        url,
         headers={
             "Authorization": f"Bearer {access_token}",
             "Content-Type": "application/json",
@@ -509,8 +519,9 @@ def _fetch_kimi_web_stats(access_token: str) -> dict[str, Any]:
     )
 
 
-def fetch_kimi_web(path: Path) -> dict[str, Any]:
-    """网页版会员统计（月总量），走 kimi.com 网关，需要网页登录态。"""
+def fetch_kimi_web(path: Path, url: str | None = None) -> dict[str, Any]:
+    """网页版会员网关接口（月总量统计、订阅详情），走 kimi.com 网关，需要网页登录态。"""
+    url = url or os.environ.get("KIMI_WEB_STATS_URL", KIMI_WEB_STATS_URL)
     credentials = read_json(path)
     access_token = str(credentials.get("access_token") or "")
     if _jwt_expires_at(access_token) - time.time() < TOKEN_REFRESH_THRESHOLD:
@@ -519,12 +530,19 @@ def fetch_kimi_web(path: Path) -> dict[str, Any]:
     if not access_token:
         raise MonitorError("access_token missing in Kimi web credentials; configure kimi-web.json (see docs/usage-monitor.md)")
     try:
-        return _fetch_kimi_web_stats(access_token)
+        return _fetch_kimi_web_api(url, access_token)
     except MonitorError as exc:
         if "HTTP 401" in str(exc):
             credentials = refresh_kimi_web_credentials(path, credentials)
-            return _fetch_kimi_web_stats(str(credentials["access_token"]))
+            return _fetch_kimi_web_api(url, str(credentials["access_token"]))
         raise
+
+
+def fetch_kimi_web_subscription(path: Path) -> dict[str, Any]:
+    """GetSubscription：会员名称与当前周期终止/续费时间。"""
+    return fetch_kimi_web(
+        path, os.environ.get("KIMI_WEB_SUBSCRIPTION_URL", KIMI_WEB_SUBSCRIPTION_URL)
+    )
 
 
 def fetch_codex(path: Path) -> dict[str, Any]:
@@ -839,6 +857,86 @@ def fetch_glm(key: str | None = None, credentials_path: str | None = None) -> di
     return result
 
 
+def glm_subscription_url() -> str:
+    """订阅列表接口地址：从配额接口同源推导（GLM_QUOTA_URL 切到 z.ai 时自动跟随）。"""
+    quota_url = os.environ.get("GLM_QUOTA_URL", GLM_QUOTA_URL)
+    base = quota_url.split("/api/", 1)[0].rstrip("/")
+    return base + GLM_SUBSCRIPTION_PATH
+
+
+def fetch_glm_subscription(key: str | None = None, credentials_path: str | None = None) -> dict[str, Any]:
+    api_key = glm_api_key(key, credentials_path)
+    result = request_json(
+        os.environ.get("GLM_SUBSCRIPTION_URL") or glm_subscription_url(),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/json",
+        },
+        use_proxy=env_enabled("GLM_USE_PROXY", default=True),
+        timeout=int(os.environ.get("GLM_TIMEOUT", "30")),
+    )
+    data = result.get("data")
+    if not (result.get("success") and isinstance(data, list)):
+        error = result.get("msg") or result.get("message") or "unexpected response"
+        raise MonitorError(f"GLM subscription query failed: {error}")
+    return result
+
+
+def _glm_subscription_end(item: dict[str, Any]) -> datetime | None:
+    """订阅的下次续费（重置）时刻；valid 下周期起点比 date 型的 nextRenewTime 更精确。"""
+    # valid 形如 "2026-12-03 10:00:00-2027-03-03 10:00:00"，起点即下次续费时刻
+    match = re.match(r"(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})", str(item.get("valid") or ""))
+    if match:
+        parsed = _parse_local_datetime(f"{match.group(1)} {match.group(2)}")
+        if parsed is not None:
+            return parsed
+    renew = str(item.get("nextRenewTime") or "").strip()
+    if renew:
+        # nextRenewTime 可能只有日期（"2026-12-03"），按本机时区零点计
+        return _parse_local_datetime(renew if ":" in renew else f"{renew} 00:00:00")
+    return None
+
+
+def normalize_glm_subscription(
+    result: dict[str, Any],
+    now: datetime | None = None,
+) -> dict[str, Any] | None:
+    """GLM 订阅列表 → 通用 membership 结构；无有效订阅时返回 None。"""
+    data = result.get("data") if isinstance(result, dict) else None
+    if not isinstance(data, list):
+        return None
+    candidates = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        end = _glm_subscription_end(item)
+        if end is not None:
+            candidates.append((item, end))
+    if not candidates:
+        return None
+    current = [
+        candidate
+        for candidate in candidates
+        if candidate[0].get("inCurrentPeriod")
+        and str(candidate[0].get("status") or "").upper() == "VALID"
+    ]
+    item, ends_at = (current or candidates)[0]
+    current_moment = (now or datetime.now().astimezone()).astimezone()
+    purchased_at = _parse_local_datetime(item.get("purchaseTime")) or _parse_local_datetime(
+        item.get("currentRenewTime")
+    )
+    return {
+        "purchased_at": (purchased_at or ends_at).isoformat(timespec="seconds"),
+        "ends_at": ends_at.isoformat(timespec="seconds"),
+        "end_after_seconds": int((ends_at - current_moment).total_seconds()),
+        "duration_months": GLM_BILLING_CYCLE_MONTHS.get(
+            str(item.get("billingCycle") or "").lower()
+        ),
+        # 自动续费的套餐显示 renews 而非 ends，避免误读为到期停用
+        "auto_renew": bool(item.get("autoRenew")),
+    }
+
+
 def normalize_balance_provider(
     data: dict[str, Any],
     provider: str,
@@ -1091,17 +1189,22 @@ def get_settings_payload() -> dict[str, Any]:
         "available_environments": available,
         "wsl_distros": wsl_distros,
         "wsl_distro": wsl_distro,
+        "membership": membership_settings(),
         "script": str(Path(__file__).resolve()),
     }
 
 
 def update_settings(payload: Any) -> dict[str, Any]:
-    """保存 Electron 设置页改动（目前只有数据源环境）。"""
+    """保存 Electron 设置页改动（数据源环境、各 provider 会员时间）。"""
     if not isinstance(payload, dict):
         raise MonitorError("Settings must be a JSON object")
-    unknown = sorted(set(payload) - {"environment", "wsl_distro"})
+    unknown = sorted(set(payload) - {"environment", "wsl_distro", "membership"})
     if unknown:
         raise MonitorError(f"Unsupported setting: {', '.join(unknown)}")
+    membership = None
+    if "membership" in payload:
+        # 先写 config.json：会员时间校验失败时 settings.json 保持不动
+        membership = update_membership_config(payload["membership"])
     available = available_environments()
     settings = load_settings()
     wsl_distros = available_wsl_distros() if "wsl" in available else []
@@ -1127,7 +1230,10 @@ def update_settings(payload: Any) -> dict[str, Any]:
     path = settings_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     write_private_json(path, settings)
-    return {"ok": True, "settings": settings}
+    result: dict[str, Any] = {"ok": True, "settings": settings}
+    if membership is not None:
+        result["membership"] = membership
+    return result
 
 
 def percent(
@@ -1307,10 +1413,55 @@ def normalize_kimi_monthly(stats: dict[str, Any]) -> dict[str, Any] | None:
     return {"window": window, "extra_lines": extra_lines}
 
 
-def normalize_openai_membership(
+def normalize_kimi_subscription(
+    data: dict[str, Any],
+    now: datetime | None = None,
+) -> dict[str, Any] | None:
+    """GetSubscription 响应 → {"plan": 会员名称, "membership": {...}}；无订阅返回 None。
+
+    会员名称取 subscription.goods.title（如 Allegro）；会员终止时间取
+    currentEndTime；存在 nextBillingTime 且订阅活跃视为自动续费（展示 renews）。
+    """
+    subscription = data.get("subscription") or data.get("purchaseSubscription") or {}
+    if not isinstance(subscription, dict) or not subscription:
+        return None
+    goods = subscription.get("goods") or {}
+    result: dict[str, Any] = {}
+    plan = str(goods.get("title") or "").strip()
+    if plan:
+        result["plan"] = plan
+    ends_at = parse_timestamp(subscription.get("currentEndTime"))
+    if ends_at is not None:
+        current = (now or datetime.now().astimezone()).astimezone()
+        purchased_at = parse_timestamp(
+            subscription.get("currentStartTime") or subscription.get("subscriptionTime")
+        )
+        membership: dict[str, Any] = {
+            "purchased_at": (purchased_at or ends_at).isoformat(timespec="seconds"),
+            "ends_at": ends_at.isoformat(timespec="seconds"),
+            "end_after_seconds": int((ends_at - current).total_seconds()),
+        }
+        cycle = goods.get("billingCycle") or {}
+        try:
+            cycle_count = int(cycle.get("duration") or 0)
+        except (TypeError, ValueError):
+            cycle_count = 0
+        cycle_unit = str(cycle.get("timeUnit") or "").upper()
+        cycle_months = cycle_count * 12 if "YEAR" in cycle_unit else cycle_count
+        if "MONTH" in cycle_unit or "YEAR" in cycle_unit:
+            if cycle_months > 0:
+                membership["duration_months"] = cycle_months
+        if subscription.get("nextBillingTime") and subscription.get("active", True):
+            membership["auto_renew"] = True
+        result["membership"] = membership
+    return result or None
+
+
+def normalize_membership(
     config: Any,
     now: datetime | None = None,
 ) -> dict[str, Any] | None:
+    """config.json 中某个 provider 小节的会员购买与终止时间（各 provider 通用）。"""
     if not isinstance(config, dict):
         return None
     purchased_value = config.get("membership_purchased_at")
@@ -1318,19 +1469,15 @@ def normalize_openai_membership(
         return None
     purchased_at = parse_timestamp(purchased_value)
     if purchased_at is None:
-        return {"error": "Invalid membership_purchased_at in config.json"}
-    if purchased_at.tzinfo is None:
-        purchased_at = purchased_at.astimezone()
-    else:
-        purchased_at = purchased_at.astimezone()
+        return {"error": f"Invalid membership_purchased_at in config.json: {purchased_value}"}
+    # 无时区的时间按本机时区解释
+    purchased_at = purchased_at.astimezone()
     try:
         duration_months = max(1, int(config.get("membership_duration_months", 1)))
     except (TypeError, ValueError):
         return {"error": "Invalid membership_duration_months in config.json"}
     ends_at = add_calendar_months(purchased_at, duration_months)
-    current = now or datetime.now().astimezone()
-    if current.tzinfo is None:
-        current = current.astimezone()
+    current = (now or datetime.now().astimezone()).astimezone()
     return {
         "purchased_at": purchased_at.isoformat(timespec="seconds"),
         "ends_at": ends_at.isoformat(timespec="seconds"),
@@ -1339,10 +1486,112 @@ def normalize_openai_membership(
     }
 
 
-def normalize_codex(
-    data: dict[str, Any],
-    config: dict[str, Any] | None = None,
-) -> dict[str, Any]:
+def attach_membership(result: dict[str, Any], config: Any) -> bool:
+    """把 config.json 中某 provider 小节的会员时间挂到 normalized 结果上。"""
+    membership = normalize_membership(config)
+    if membership:
+        result["membership"] = membership
+        return True
+    return False
+
+
+def _parse_membership_input(value: Any) -> datetime | None:
+    """解析设置页/config.json 的会员购买时间；无时区按本机时区，失败返回 None。"""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    # datetime-local 输入为 "YYYY-MM-DDTHH:MM"（无秒），config.json 惯例为本地时刻
+    for fmt in (
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%dT%H:%M",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%d",
+    ):
+        try:
+            return datetime.strptime(text, fmt).astimezone()
+        except ValueError:
+            continue
+    parsed = parse_timestamp(text)
+    if parsed is not None and parsed.tzinfo is None:
+        parsed = parsed.astimezone()
+    return parsed
+
+
+def membership_settings() -> dict[str, Any]:
+    """各 provider 的会员时间配置（含计算出的终止时间），供设置页展示与保存回显。"""
+    try:
+        config = read_monitor_config()
+    except MonitorError:
+        config = {}
+    result: dict[str, Any] = {}
+    for provider in MEMBERSHIP_PROVIDERS:
+        section = config.get(provider)
+        if not isinstance(section, dict) or not section.get("membership_purchased_at"):
+            result[provider] = None
+            continue
+        entry: dict[str, Any] = {
+            "purchased_at": str(section.get("membership_purchased_at")),
+            "duration_months": section.get("membership_duration_months", 1),
+        }
+        membership = normalize_membership(section)
+        if membership and "error" in membership:
+            entry["error"] = membership["error"]
+        elif membership:
+            entry.update(
+                purchased_at=membership["purchased_at"],
+                duration_months=membership["duration_months"],
+                ends_at=membership["ends_at"],
+                end_after_seconds=membership["end_after_seconds"],
+            )
+        result[provider] = entry
+    return result
+
+
+def update_membership_config(payload: Any) -> dict[str, Any]:
+    """把设置页的会员时间写入 monitor config.json，返回规范化后的会员设置。"""
+    if not isinstance(payload, dict):
+        raise MonitorError("Membership settings must be a JSON object")
+    unknown = sorted(set(payload) - set(MEMBERSHIP_PROVIDERS))
+    if unknown:
+        raise MonitorError(f"Unsupported membership provider: {', '.join(unknown)}")
+    path = monitor_config_path()
+    config = read_monitor_config() if path.is_file() else {}
+    for provider, value in payload.items():
+        section = config.get(provider)
+        section = dict(section) if isinstance(section, dict) else {}
+        if value is None:
+            # 清空该 provider 的会员时间
+            section.pop("membership_purchased_at", None)
+            section.pop("membership_duration_months", None)
+        else:
+            if not isinstance(value, dict):
+                raise MonitorError(f"{provider} membership must be an object or null")
+            purchased = _parse_membership_input(value.get("purchased_at"))
+            if purchased is None:
+                raise MonitorError(
+                    f"Invalid membership purchased_at for {provider}: {value.get('purchased_at')!r}"
+                )
+            raw_months = value.get("duration_months")
+            if raw_months in (None, ""):
+                raw_months = 1
+            try:
+                months = int(raw_months)
+            except (TypeError, ValueError):
+                months = 0
+            if months < 1:
+                raise MonitorError(f"Invalid membership duration_months for {provider}")
+            section["membership_purchased_at"] = purchased.strftime("%Y-%m-%d %H:%M:%S")
+            section["membership_duration_months"] = months
+        if section:
+            config[provider] = section
+        else:
+            config.pop(provider, None)
+    write_private_json(path, config)
+    return membership_settings()
+
+
+def normalize_codex(data: dict[str, Any]) -> dict[str, Any]:
     rate_limit = data.get("rate_limit") or data.get("rateLimit") or {}
     primary = rate_limit.get("primary_window") or rate_limit.get("primaryWindow") or {}
     secondary = rate_limit.get("secondary_window") or rate_limit.get("secondaryWindow") or {}
@@ -1384,9 +1633,6 @@ def normalize_codex(
                 pass
         if normalized_reset_credits:
             result["rate_limit_reset_credits"] = normalized_reset_credits
-    membership = normalize_openai_membership(config)
-    if membership:
-        result["membership"] = membership
     return result
 
 
@@ -1559,12 +1805,11 @@ def compact_duration(seconds: int) -> str:
     return f"{minutes}m"
 
 
-def membership_end_text(seconds: int) -> str:
-    return (
-        f"ends in {compact_duration(seconds)}"
-        if seconds >= 0
-        else f"ended {compact_duration(-seconds)} ago"
-    )
+def membership_end_text(seconds: int, auto_renew: bool = False) -> str:
+    if seconds >= 0:
+        verb = "renews" if auto_renew else "ends"
+        return f"{verb} in {compact_duration(seconds)}"
+    return f"ended {compact_duration(-seconds)} ago"
 
 
 def bar(value: float, width: int = 28, color: bool = True, time_fraction: float | None = None) -> str:
@@ -1792,10 +2037,14 @@ def render(results: list[dict[str, Any]], errors: list[dict[str, str]], color: b
                 purchased = display_timestamp(membership["purchased_at"])
                 ends = display_timestamp(membership["ends_at"])
                 end_after = int(membership.get("end_after_seconds") or 0)
-                status = membership_end_text(end_after)
+                auto_renew = bool(membership.get("auto_renew"))
+                status = membership_end_text(end_after, auto_renew=auto_renew)
                 tone = RED if color and end_after < 0 else (YELLOW if color else "")
                 lines.append(f"  Membership purchased: {purchased}")
-                lines.append(f"  {tone}Membership ends: {ends} ({status}){RESET if tone else ''}")
+                lines.append(
+                    f"  {tone}Membership {'renews' if auto_renew else 'ends'}: "
+                    f"{ends} ({status}){RESET if tone else ''}"
+                )
         credits = result.get("credits")
         if isinstance(credits, dict) and credits:
             balance = credits.get("balance")
@@ -1825,6 +2074,7 @@ def _collect_provider(
         try:
             kimi_result = normalize_kimi(fetch_kimi(kimi_credentials_path(args.kimi_credentials)))
             web_path = kimi_web_credentials_path(args.kimi_web_credentials)
+            subscription = None
             if web_path.is_file():
                 try:
                     monthly = normalize_kimi_monthly(fetch_kimi_web(web_path))
@@ -1833,33 +2083,55 @@ def _collect_provider(
                         kimi_result.setdefault("extra_lines", []).extend(monthly["extra_lines"])
                 except Exception as exc:
                     provider_errors.append({"provider": "Kimi Monthly Total", "error": str(exc)})
+                # 会员名称/到期：同一网页网关的 GetSubscription；属增强项，
+                # 失败时保持 plan=unknown，不额外报错（月总量的错误已提示网页凭证问题）
+                try:
+                    subscription = normalize_kimi_subscription(
+                        fetch_kimi_web_subscription(web_path)
+                    )
+                except Exception:
+                    subscription = None
+            if subscription and subscription.get("plan"):
+                kimi_result["plan"] = subscription["plan"]
+            # 会员到期：设置页手动配置优先，未配置时用订阅的当前周期终止时间
+            if not attach_membership(kimi_result, monitor_config.get("kimi")):
+                if subscription and subscription.get("membership"):
+                    kimi_result["membership"] = subscription["membership"]
             return kimi_result, provider_errors
         except Exception as exc:
             return None, [{"provider": "Kimi Code", "error": str(exc)}]
     if provider == "codex":
         try:
-            return (
-                normalize_codex(
-                    fetch_codex(codex_credentials_path(args.codex_credentials)),
-                    monitor_config.get("openai") or {},
-                ),
-                [],
+            codex_result = normalize_codex(
+                fetch_codex(codex_credentials_path(args.codex_credentials))
             )
+            attach_membership(codex_result, monitor_config.get("openai"))
+            return codex_result, []
         except Exception as exc:
             return None, [{"provider": "OpenAI Codex", "error": str(exc)}]
     if provider == "deepseek":
         try:
-            return (
-                normalize_deepseek(
-                    fetch_deepseek(args.deepseek_key, args.deepseek_credentials)
-                ),
-                [],
+            deepseek_result = normalize_deepseek(
+                fetch_deepseek(args.deepseek_key, args.deepseek_credentials)
             )
+            attach_membership(deepseek_result, monitor_config.get("deepseek"))
+            return deepseek_result, []
         except Exception as exc:
             return None, [{"provider": "DeepSeek", "error": str(exc)}]
     if provider == "glm":
         try:
-            return normalize_glm(fetch_glm(args.glm_key, args.glm_credentials)), []
+            glm_result = normalize_glm(fetch_glm(args.glm_key, args.glm_credentials))
+            # 会员到期：设置页手动配置优先；未配置时用订阅接口的续费（重置）日期
+            if not attach_membership(glm_result, monitor_config.get("glm")):
+                try:
+                    membership = normalize_glm_subscription(
+                        fetch_glm_subscription(args.glm_key, args.glm_credentials)
+                    )
+                except Exception:
+                    membership = None
+                if membership:
+                    glm_result["membership"] = membership
+            return glm_result, []
         except Exception as exc:
             return None, [{"provider": "GLM", "error": str(exc)}]
     return None, [{"provider": provider, "error": "Unsupported provider"}]
@@ -1872,7 +2144,7 @@ def collect(args: argparse.Namespace) -> tuple[list[dict[str, Any]], list[dict[s
         monitor_config = read_monitor_config(getattr(args, "config", None))
     except MonitorError as exc:
         monitor_config = {}
-        errors.append({"provider": "OpenAI Codex", "error": f"Config: {exc}"})
+        errors.append({"provider": "Config", "error": str(exc)})
     order = ["kimi", "codex", "deepseek", "glm"]
     providers = order if args.provider == "all" else [args.provider]
     if (getattr(args, "dashboard", False) or getattr(args, "watch", False)) and len(providers) > 1:
@@ -1895,6 +2167,674 @@ def collect(args: argparse.Namespace) -> tuple[list[dict[str, Any]], list[dict[s
             results.append(result)
         errors.extend(provider_errors)
     return results, errors
+
+
+# --- 会话用量分析（全量模式数据源：Kimi + Codex，GLM/DeepSeek 按模型归因） ----
+# 参考 kimi-usage-dashboard（github.com/coconilu/kimi-usage-dashboard）的聚合
+# 口径：扫描各 agent CLI 的本地会话日志——Kimi Code 的
+# ~/.kimi-code/sessions/**/wire.jsonl（turn 级 usage.record）与 Codex CLI 的
+# ~/.codex/sessions/**/rollout-*.jsonl（token_count 事件，取 last_token_usage
+# 作为单轮用量）——聚合出每日/每小时 token 趋势、模型细分、缓存命中率、项目
+# 排行、年度活动日历与会话明细。GLM / DeepSeek 通常没有独立 CLI 日志，其用量
+# 出现在其它 agent 的会话中（通过自定义模型接入），按模型名归因到对应 API。
+# 全程只读本地文件，不发起任何网络请求；数据源跟随 --environment 设置（WSL 或
+# Windows 侧各自的用户目录）。解析位置按文件增量缓存，重复请求只读取新增字节。
+
+ANALYTICS_CACHE_VERSION = 2
+# 记录保留窗口：覆盖年度日历的 365 天并留余量
+ANALYTICS_RECORD_RETENTION_DAYS = 400
+# 返回给前端的会话明细条数上限（前端仍可自行排序，展示时再截断）
+ANALYTICS_SESSION_CAP = 500
+# 归因到的 agent（--agent 筛选的可选值）
+ANALYTICS_AGENTS = ("all", "kimi", "codex", "glm", "deepseek")
+
+
+def kimi_sessions_home() -> Path:
+    """Kimi Code 数据根目录：KIMI_CODE_HOME 优先，否则当前数据源环境的用户目录。"""
+    override = os.environ.get("KIMI_CODE_HOME")
+    if override:
+        return Path(override).expanduser()
+    return env_home() / ".kimi-code"
+
+
+def codex_sessions_home() -> Path:
+    """Codex CLI 数据根目录：CODEX_HOME 优先，否则当前数据源环境的用户目录。"""
+    override = os.environ.get("CODEX_HOME")
+    if override:
+        return Path(override).expanduser()
+    return env_home() / ".codex"
+
+
+def analytics_cache_path() -> Path:
+    override = os.environ.get("AI_USAGE_ANALYTICS_CACHE")
+    if override:
+        return Path(override).expanduser()
+    return env_home() / ".cache" / "ai-usage-monitor" / "kimi-usage-cache.json"
+
+
+def _analytics_agent_of(source: str, model: str) -> str:
+    """把一条 turn 记录归因到 agent/API：GLM、DeepSeek 以自定义模型接入
+    其它 CLI（模型名可识别），Codex 用量来自 codex 会话，其余归 kimi。"""
+    lowered = (model or "").lower()
+    if "glm" in lowered or "zhipu" in lowered or lowered.startswith("zai/"):
+        return "glm"
+    if "deepseek" in lowered:
+        return "deepseek"
+    if source == "codex":
+        return "codex"
+    return source
+
+
+def _analytics_normalize_ts(value: int) -> int | None:
+    """规整时间戳：毫秒值按秒解释（Kimi 日志两种单位都出现过），
+    超出 2000~2200 年合理范围的记录视为脏数据丢弃。"""
+    if value > 1e11:
+        value //= 1000
+    if not (946684800 <= value <= 7258118400):
+        return None
+    return value
+
+
+def _analytics_parse_line(line: str) -> tuple[int, str, int, int, int, int] | None:
+    """解析一行 wire.jsonl，返回 (时间, 模型, 输入, 输出, 缓存读, 缓存写) 或 None。"""
+    if '"usage.record"' not in line:
+        return None
+    try:
+        rec = json.loads(line)
+    except ValueError:
+        return None
+    if not isinstance(rec, dict) or rec.get("type") != "usage.record":
+        return None
+    if rec.get("usageScope") != "turn" or not isinstance(rec.get("time"), (int, float)):
+        return None
+    ts = _analytics_normalize_ts(int(rec["time"]))
+    if ts is None:
+        return None
+    usage = rec.get("usage")
+    if not isinstance(usage, dict):
+        usage = {}
+
+    def count(key: str) -> int:
+        value = usage.get(key)
+        return int(value) if isinstance(value, (int, float)) and value > 0 else 0
+
+    return (
+        ts,
+        str(rec.get("model") or "(unknown)"),
+        count("inputOther"),
+        count("output"),
+        count("inputCacheRead"),
+        count("inputCacheCreation"),
+    )
+
+
+_CODEX_MODEL_RE = re.compile(r'"model":\s*"([^"]+)"')
+_CODEX_TIMESTAMP_RE = re.compile(r'"timestamp":\s*"([^"]+)"')
+
+
+def _codex_parse_timestamp(text: str) -> int | None:
+    """Codex 日志的 ISO8601 时间（如 2026-07-30T14:44:44.726Z）转 epoch 秒。"""
+    match = _CODEX_TIMESTAMP_RE.search(text)
+    if not match:
+        return None
+    raw = match.group(1).strip()
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        moment = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return int(moment.timestamp())
+
+
+def _codex_parse_token_line(
+    line: str, model: str | None, session_id: str
+) -> list | None:
+    """解析 Codex rollout 的 token_count 事件行，返回 turn 记录或 None。
+
+    info.last_token_usage 是该事件的增量用量；total_token_usage 是会话累计值，
+    不能按轮累加。输入里含缓存部分（OpenAI 口径），需要拆成非缓存输入与缓存读。
+    """
+    if '"token_count"' not in line:
+        return None
+    try:
+        rec = json.loads(line)
+    except ValueError:
+        return None
+    payload = rec.get("payload")
+    if not isinstance(payload, dict) or payload.get("type") != "token_count":
+        return None
+    info = payload.get("info")
+    if not isinstance(info, dict):
+        return None
+    usage = info.get("last_token_usage")
+    if not isinstance(usage, dict):
+        return None
+
+    def count(key: str) -> int:
+        value = usage.get(key)
+        return int(value) if isinstance(value, (int, float)) and value > 0 else 0
+
+    cached = count("cached_input_tokens")
+    input_total = count("input_tokens")
+    ts = _codex_parse_timestamp(line)
+    if ts is None:
+        return None
+    return [
+        ts,
+        model or "(unknown)",
+        max(0, input_total - cached),
+        count("output_tokens"),
+        cached,
+        count("cache_write_input_tokens"),
+        session_id,
+    ]
+
+
+def _codex_parse_meta_cwd(line: str) -> tuple[str, str] | None:
+    """从 session_meta 行取 (session_id, cwd)，用作项目目录映射。"""
+    if '"session_meta"' not in line:
+        return None
+    try:
+        rec = json.loads(line)
+    except ValueError:
+        return None
+    payload = rec.get("payload")
+    if not isinstance(payload, dict) or payload.get("type") != "session_meta":
+        return None
+    cwd = payload.get("cwd")
+    session_id = payload.get("session_id") or payload.get("id")
+    if isinstance(cwd, str) and cwd and isinstance(session_id, str) and session_id:
+        return session_id, cwd
+    return None
+
+
+def _analytics_read_new_lines(path: Path, offset: int) -> tuple[list[str], int, bool]:
+    """从 offset 起读取完整行，返回 (行列表, 新 offset, 是否从头重读)。
+
+    只处理到最后一个换行符为止，不完整的行尾留给下一次；文件被截断
+    （size < offset，例如日志轮转）时从头读取，调用方需先丢弃该文件
+    的旧记录以免重复统计。
+    """
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return [], offset, False
+    restarted = size < offset
+    start = 0 if restarted else offset
+    if size == start:
+        return [], start, False
+    try:
+        with path.open("rb") as handle:
+            handle.seek(start)
+            data = handle.read(size - start)
+    except OSError:
+        return [], start, False
+    last_newline = data.rfind(b"\n")
+    if last_newline < 0:
+        return [], start, False
+    lines = data[:last_newline].decode("utf-8", errors="replace").split("\n")
+    return lines, start + last_newline + 1, restarted
+
+
+def _analytics_session_id(path: Path) -> str:
+    for part in path.parts:
+        if part.startswith("session_"):
+            return part
+    return "(unknown)"
+
+
+def _codex_default_session_id(path: Path) -> str:
+    """Codex rollout 文件名形如 rollout-<ts>-<uuid>.jsonl，取 uuid 当会话标识。"""
+    stem = path.stem
+    return "codex-" + (stem.rsplit("-", 1)[-1] or stem)
+
+
+def _analytics_wire_files(sessions_root: Path, selector) -> list[Path]:
+    if not sessions_root.is_dir():
+        return []
+    files: list[Path] = []
+    stack = [sessions_root]
+    while stack:
+        current = stack.pop()
+        try:
+            entries = sorted(current.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                if entry.is_dir():
+                    stack.append(entry)
+                elif selector(entry.name):
+                    files.append(entry)
+            except OSError:
+                continue
+    return files
+
+
+def _analytics_load_cache(cache_path: Path) -> dict[str, dict[str, Any]]:
+    try:
+        data = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict) or data.get("version") != ANALYTICS_CACHE_VERSION:
+        return {}
+    files = data.get("files")
+    if not isinstance(files, dict):
+        return {}
+    state: dict[str, dict[str, Any]] = {}
+    for raw_path, entry in files.items():
+        if not (isinstance(entry, dict) and isinstance(entry.get("offset"), int)):
+            continue
+        records = entry.get("records")
+        if not isinstance(records, list):
+            continue
+        source = entry.get("source")
+        cwds = entry.get("cwds")
+        state[str(raw_path)] = {
+            "offset": entry["offset"],
+            "records": records,
+            "source": source if source in ("kimi", "codex") else "kimi",
+            "cwds": cwds if isinstance(cwds, dict) else {},
+        }
+    return state
+
+
+def _analytics_scan_home(
+    sessions_root: Path,
+    source: str,
+    selector,
+    default_session_id,
+    files_state: dict[str, dict[str, Any]],
+    cutoff: int,
+) -> bool:
+    """增量扫描一个 agent 的会话目录，把状态合并进 files_state。
+
+    返回是否有变化（需要写缓存）。文件消失（日志被清理）时保留其已解析的
+    历史记录，只把 offset 置为 -1；同路径文件再次出现时当作重新读取，替换
+    旧记录避免重复统计。
+    """
+    dirty = False
+    wire_files = _analytics_wire_files(sessions_root, selector)
+    live = {str(wire) for wire in wire_files}
+    for key in files_state:
+        if files_state[key].get("source") == source and key not in live \
+                and files_state[key]["offset"] != -1:
+            files_state[key]["offset"] = -1
+            dirty = True
+    for wire in wire_files:
+        key = str(wire)
+        state = files_state.get(key)
+        if state is None:
+            state = {"offset": 0, "records": [], "source": source, "cwds": {}}
+            files_state[key] = state
+            dirty = True
+        if state["offset"] == -1:
+            state["offset"] = 0
+            state["records"] = []
+            state["cwds"] = {}
+            dirty = True
+        lines, new_offset, restarted = _analytics_read_new_lines(wire, state["offset"])
+        state["offset"] = new_offset
+        if restarted:
+            # 文件被截断（轮转/重写）：旧记录作废，从头统计该文件
+            state["records"] = []
+            state["cwds"] = {}
+            dirty = True
+        cwds: dict[str, str] = state.setdefault("cwds", {})
+        if source == "codex":
+            # 模型名出现在 thread_settings 等事件行里，逐行跟踪最近一次取值
+            session_model: str | None = None
+            session_id = default_session_id(wire)
+        else:
+            session_id = default_session_id(wire)
+        for line in lines:
+            if source == "kimi":
+                parsed = _analytics_parse_line(line)
+                if parsed:
+                    state["records"].append([*parsed, session_id])
+                    dirty = True
+                continue
+            if '"model":"' in line:
+                match = _CODEX_MODEL_RE.search(line)
+                if match:
+                    session_model = match.group(1)
+            meta = _codex_parse_meta_cwd(line)
+            if meta:
+                # rollout 文件与会话一一对应，统一用文件级会话 ID 存项目目录
+                cwds[session_id] = meta[1]
+                dirty = True
+            parsed = _codex_parse_token_line(line, session_model, session_id)
+            if parsed:
+                state["records"].append(parsed)
+                dirty = True
+        before = len(state["records"])
+        cleaned = []
+        for record in state["records"]:
+            ts = _analytics_normalize_ts(record[0])
+            if ts is None or ts < cutoff:
+                continue
+            record[0] = ts
+            cleaned.append(record)
+        if len(cleaned) != before:
+            state["records"] = cleaned
+            dirty = True
+    return dirty
+
+
+def _analytics_scan(
+    kimi_home: Path | None,
+    codex_home: Path | None,
+    cache_path: Path,
+    cutoff: int,
+) -> dict[str, dict[str, Any]]:
+    """增量扫描全部 agent 的会话日志，返回 {文件路径: 文件状态}（含缓存旧记录）。"""
+    files_state = _analytics_load_cache(cache_path)
+    dirty = False
+    if kimi_home is not None:
+        if _analytics_scan_home(
+            kimi_home / "sessions",
+            "kimi",
+            lambda name: name == "wire.jsonl",
+            _analytics_session_id,
+            files_state,
+            cutoff,
+        ):
+            dirty = True
+    if codex_home is not None:
+        if _analytics_scan_home(
+            codex_home / "sessions",
+            "codex",
+            lambda name: name.startswith("rollout-") and name.endswith(".jsonl"),
+            _codex_default_session_id,
+            files_state,
+            cutoff,
+        ):
+            dirty = True
+    if not dirty:
+        return files_state
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        write_private_json(
+            cache_path,
+            {"version": ANALYTICS_CACHE_VERSION, "files": files_state},
+        )
+    except OSError:
+        pass  # 缓存写失败只影响下次扫描速度，不影响本次结果
+    return files_state
+
+
+def _analytics_session_index(home: Path) -> dict[str, str]:
+    index: dict[str, str] = {}
+    try:
+        text = (home / "session_index.jsonl").read_text(encoding="utf-8")
+    except OSError:
+        return index
+    for line in text.split("\n"):
+        if not line.strip():
+            continue
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(rec, dict) and rec.get("sessionId") and rec.get("workDir"):
+            index[str(rec["sessionId"])] = str(rec["workDir"])
+    return index
+
+
+def _analytics_date(moment: datetime) -> str:
+    return f"{moment.year:04d}-{moment.month:02d}-{moment.day:02d}"
+
+
+def _analytics_project_name(work_dir: str) -> str:
+    if not work_dir or work_dir == "(unknown)":
+        return "(unknown)"
+    base = re.split(r"[\\/]+", work_dir.rstrip("/\\"))[-1]
+    return base or work_dir
+
+
+def build_session_analytics(
+    kimi_home: Path | None,
+    codex_home: Path | None = None,
+    days: int = 30,
+    cache_path: Path | None = None,
+    now: datetime | None = None,
+    agent: str = "all",
+) -> dict[str, Any]:
+    """把增量扫描到的 turn 级记录聚合成全量模式看板所需的一份数据。
+
+    agent="all" 聚合全部来源；指定单个 agent（kimi/codex/glm/deepseek）时，
+    仅统计按模型归因后属于该 agent 的记录。
+    """
+    days = max(1, min(365, int(days)))
+    agent = agent if agent in ANALYTICS_AGENTS else "all"
+    moment = now or datetime.now().astimezone()
+    cutoff = int(moment.timestamp()) - ANALYTICS_RECORD_RETENTION_DAYS * 86400
+    files_state = _analytics_scan(
+        kimi_home, codex_home, cache_path or analytics_cache_path(), cutoff
+    )
+    session_index = (
+        _analytics_session_index(kimi_home) if kimi_home is not None else {}
+    )
+
+    today = moment.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_list = [_analytics_date(today - timedelta(offset)) for offset in range(days - 1, -1, -1)]
+    day_set = set(day_list)
+    today_str = day_list[-1]
+
+    daily = {
+        day: {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0, "requests": 0}
+        for day in day_list
+    }
+    hourly = [
+        {"hour": hour, "input": 0, "output": 0, "cache_read": 0, "cache_creation": 0, "requests": 0}
+        for hour in range(24)
+    ]
+    daily_model: dict[str, dict[str, int]] = {}
+    daily_agent: dict[str, dict[str, int]] = {}
+    model_total: dict[str, int] = {}
+    model_agent: dict[str, str] = {}
+    project_total: dict[tuple[str, str], int] = {}
+    sessions: dict[str, dict[str, Any]] = {}
+    calendar_days: dict[str, list[Any]] = {}
+    agents_seen: set[str] = set()
+    agent_requests: dict[str, int] = {}
+
+    for state in files_state.values():
+        source = state.get("source", "kimi")
+        cwds = state.get("cwds") or {}
+        for ts, model, inp, out, cache_read, cache_creation, session_id in state["records"]:
+            record_agent = _analytics_agent_of(source, model)
+            if agent != "all" and record_agent != agent:
+                continue
+            if source == "codex":
+                work_dir = cwds.get(session_id, "(unknown)")
+            else:
+                work_dir = session_index.get(session_id, "(unknown)")
+            local = datetime.fromtimestamp(ts)
+            date = _analytics_date(local)
+            total = inp + out + cache_read + cache_creation
+            agents_seen.add(record_agent)
+            cell = calendar_days.setdefault(date, [date, 0, 0])
+            cell[1] += total
+            cell[2] += 1
+            if date not in day_set:
+                continue
+            bucket = daily[date]
+            bucket["input"] += inp
+            bucket["output"] += out
+            bucket["cache_read"] += cache_read
+            bucket["cache_creation"] += cache_creation
+            bucket["requests"] += 1
+            agent_requests[record_agent] = agent_requests.get(record_agent, 0) + 1
+            agents_of_day = daily_agent.setdefault(date, {})
+            agents_of_day[record_agent] = agents_of_day.get(record_agent, 0) + total
+            if date == today_str:
+                hour_bucket = hourly[local.hour]
+                hour_bucket["input"] += inp
+                hour_bucket["output"] += out
+                hour_bucket["cache_read"] += cache_read
+                hour_bucket["cache_creation"] += cache_creation
+                hour_bucket["requests"] += 1
+            models_of_day = daily_model.setdefault(date, {})
+            models_of_day[model] = models_of_day.get(model, 0) + total
+            model_total[model] = model_total.get(model, 0) + total
+            model_agent.setdefault(model, record_agent)
+            project_key = (_analytics_project_name(work_dir), work_dir)
+            project_total[project_key] = project_total.get(project_key, 0) + total
+
+            session = sessions.get(session_id)
+            if session is None:
+                session = {
+                    "session_id": session_id,
+                    "project": project_key[0],
+                    "work_dir": work_dir,
+                    "agent": record_agent,
+                    "_agent_totals": {record_agent: total},
+                    "models": set(),
+                    "input": 0,
+                    "output": 0,
+                    "cache_read": 0,
+                    "cache_creation": 0,
+                    "requests": 0,
+                    "first": ts,
+                    "last": ts,
+                    "total": 0,
+                }
+                sessions[session_id] = session
+            session["models"].add(model)
+            session["_agent_totals"][record_agent] = (
+                session["_agent_totals"].get(record_agent, 0) + total
+            )
+            session["input"] += inp
+            session["output"] += out
+            session["cache_read"] += cache_read
+            session["cache_creation"] += cache_creation
+            session["requests"] += 1
+            session["first"] = min(session["first"], ts)
+            session["last"] = max(session["last"], ts)
+            session["total"] += total
+
+    daily_out = []
+    for day in day_list:
+        bucket = daily[day]
+        input_total = bucket["input"] + bucket["cache_read"] + bucket["cache_creation"]
+        daily_out.append({
+            "date": day,
+            "input": bucket["input"],
+            "output": bucket["output"],
+            "cache_read": bucket["cache_read"],
+            "cache_creation": bucket["cache_creation"],
+            "total": bucket["input"] + bucket["output"] + bucket["cache_read"] + bucket["cache_creation"],
+            "requests": bucket["requests"],
+            "cache_hit_rate": round(bucket["cache_read"] / input_total, 4) if input_total else 0,
+        })
+    models = sorted(model_total, key=lambda name: model_total[name], reverse=True)
+    agent_totals: dict[str, int] = {}
+    for day, agents_of_day in daily_agent.items():
+        for name, total in agents_of_day.items():
+            agent_totals[name] = agent_totals.get(name, 0) + total
+    week_total = sum(entry["total"] for entry in daily_out[-7:])
+    prev_week_total = (
+        sum(entry["total"] for entry in daily_out[-14:-7]) if days >= 14 else 0
+    )
+    denominator = sum(
+        entry["input"] + entry["cache_read"] + entry["cache_creation"] for entry in daily_out
+    )
+    session_rows = sorted(
+        sessions.values(), key=lambda item: item["total"], reverse=True
+    )[:ANALYTICS_SESSION_CAP]
+    for session in session_rows:
+        session["models"] = sorted(session["models"])
+        # 会话归属：按该会话内累计 token 最多的 agent 标注
+        session["agent"] = max(
+            session["_agent_totals"].items(), key=lambda item: item[1]
+        )[0]
+        del session["_agent_totals"]
+    agent_rank = [
+        {"agent": name, "total": total, "requests": agent_requests.get(name, 0)}
+        for name, total in sorted(agent_totals.items(), key=lambda item: item[1], reverse=True)
+    ]
+    return {
+        "generated_at": moment.strftime("%Y-%m-%d %H:%M:%S"),
+        "days": days,
+        "agent": agent,
+        "agents": sorted(agents_seen),
+        "date_range": [day_list[0], day_list[-1]],
+        "day_list": day_list,
+        "daily": daily_out,
+        "daily_agent": {day: daily_agent.get(day, {}) for day in day_list},
+        "today_hourly": hourly,
+        "models": models,
+        "daily_model": {
+            day: [daily_model.get(day, {}).get(model, 0) for model in models]
+            for day in day_list
+        },
+        "model_rank": [
+            {"model": model, "total": model_total[model], "agent": model_agent.get(model, "")}
+            for model in models
+        ],
+        "agent_rank": agent_rank,
+        "project_rank": [
+            {"name": name, "path": path, "total": total}
+            for (name, path), total in sorted(
+                project_total.items(), key=lambda item: item[1], reverse=True
+            )
+        ],
+        "calendar": {
+            "range": [_analytics_date(today - timedelta(days=364)), today_str],
+            "days": sorted(calendar_days.values(), key=lambda cell: cell[0]),
+        },
+        "sessions": session_rows,
+        "kpi": {
+            "week_total": week_total,
+            "prev_week_total": prev_week_total,
+            "week_over_week": (
+                round((week_total - prev_week_total) / prev_week_total, 4)
+                if prev_week_total
+                else None
+            ),
+            "today_total": daily_out[-1]["total"],
+            "cache_hit_rate": (
+                round(
+                    sum(entry["cache_read"] for entry in daily_out) / denominator, 4
+                )
+                if denominator
+                else 0
+            ),
+            "active_sessions": len(sessions),
+        },
+    }
+
+
+def analytics_payload(days: int, agent: str = "all") -> dict[str, Any]:
+    kimi_home = kimi_sessions_home()
+    codex_home = codex_sessions_home()
+    if not kimi_home.is_dir() and not codex_home.is_dir():
+        return {
+            "ok": False,
+            "error": f"No agent data directory found (kimi: {kimi_home}, codex: {codex_home})",
+        }
+    try:
+        analytics = build_session_analytics(
+            kimi_home if kimi_home.is_dir() else None,
+            codex_home if codex_home.is_dir() else None,
+            days=days,
+            agent=agent,
+        )
+    except MonitorError as exc:
+        return {"ok": False, "error": str(exc)}
+    except (OSError, ValueError, TypeError) as exc:
+        return {"ok": False, "error": f"Analytics failed: {exc}"}
+    sources = []
+    if kimi_home.is_dir():
+        sources.append(str(kimi_home))
+    if codex_home.is_dir():
+        sources.append(str(codex_home))
+    analytics["source"] = " · ".join(sources)
+    return {"ok": True, "analytics": analytics}
 
 
 @contextmanager
@@ -2073,7 +3013,9 @@ def launch_usage_window() -> None:
     按 Ctrl+E 重新打开。
     """
     global launched_window_proc
-    app_dir = Path(__file__).resolve().parent / "electron-app"
+    # v0.3.0 起桌面应用统一在仓库 app/ 目录（React + Rust 后端）；旧的纯 JS
+    # 看板已归档到 archive/electron-app-plain。
+    app_dir = REPO_ROOT / "app"
 
     if running_in_wsl():
         try:
@@ -2277,6 +3219,13 @@ def main() -> int:
     parser.add_argument("--glm-credentials", help="Path to GLM credentials JSON file")
     parser.add_argument("--json", action="store_true", help="Output JSON")
     parser.add_argument("--no-color", action="store_true", help="Disable ANSI colors")
+    parser.add_argument("--days", type=int, default=30, help="Analytics window in days (default: 30)")
+    parser.add_argument(
+        "--agent",
+        choices=ANALYTICS_AGENTS,
+        default="all",
+        help="Analytics agent filter: all/kimi/codex/glm/deepseek (default: all)",
+    )
     parser.add_argument("--dashboard", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
         "--environment",
@@ -2288,6 +3237,7 @@ def main() -> int:
     maintenance.add_argument("--configure-api-keys", action="store_true", help=argparse.SUPPRESS)
     maintenance.add_argument("--get-settings", action="store_true", help=argparse.SUPPRESS)
     maintenance.add_argument("--set-settings", action="store_true", help=argparse.SUPPRESS)
+    maintenance.add_argument("--analytics", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.dashboard:
         # 快速失败策略只适用于 Electron 后台；终端 watch 保留完整超时与重试，
@@ -2328,6 +3278,11 @@ def main() -> int:
         except (MonitorError, ValueError) as exc:
             print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
             return 1
+    if args.analytics:
+        # 全量模式看板数据：只读本地会话日志，不联网；在 resolve_environment
+        # 之后执行，保证 env=windows 时扫的是 Windows 侧的会话目录
+        print(json.dumps(analytics_payload(args.days, args.agent), ensure_ascii=False))
+        return 0
     if args.watch:
         stop_previous_watch_instances()
         if sys.stdout.isatty():

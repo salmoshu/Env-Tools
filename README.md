@@ -2,6 +2,8 @@
 
 一套 Windows / Linux 双平台的环境一键部署与日常运维脚本集。根目录两个入口脚本
 负责部署，`tools.sh` 负责已部署应用的日常操作，维护经验文档集中在 `docs/`。
+v0.3.0 起提供统一的桌面应用（`app/`，Electron + React + Rust 本地后端）：
+用量分析、套餐配额监控与组件管理全部通过 GUI 完成。
 
 ## 目录结构
 
@@ -12,6 +14,8 @@ tools.sh             已部署应用的统一操作入口（Linux；Git Bash 下
 tools.ps1            已部署应用的统一操作入口（Windows，功能与 tools.sh 一致）
 windows/             Windows 侧组件（kdesk / nodejs / ai-tools / openssh）
 linux/               Linux 侧组件（nodejs / ai-tools / openssh）
+app/                 桌面应用（Electron + React + Rust 本地 API 后端）
+archive/             已被 GUI 取代的历史入口归档（如旧纯 JS 用量看板）
 completion/          tools.sh / tools.ps1（含 setup 入口）的 Tab 智能补全脚本
 docs/                部署与维护文档（见下方索引）
 ```

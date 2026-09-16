@@ -3,12 +3,40 @@
 完全独立于 Sub2API、PostgreSQL、Docker 和 Web 服务的本地终端应用，仅使用
 Python 3 标准库。
 
+## 桌面应用（v0.3.0 起）
+
+Env-Tools 自 v0.3.0 起收敛为统一的 Electron 桌面应用（仓库 `app/`，React +
+Rust 本地后端），包含三块：
+
+- **Usage Analytics**（全量窗口默认页）：多 agent 会话用量分析 + 套餐配额
+  总览。数据来自本地会话日志（Kimi Code 与 Codex CLI 的会话记录；GLM /
+  DeepSeek 以自定义模型接入其它 CLI，按模型名归因），顶部 Agent 下拉可查看
+  整体或单独某个 agent / API（Kimi / Codex / GLM / DeepSeek）的用量。图表、
+  KPI、会话明细的口径与 v0.2.0 一致，另新增按 agent 的占比条与每个模型的
+  归属标注。
+- **Board**（用量看板小悬浮窗）：v0.2.0 的全部能力保留——紧凑配额卡、模型
+  筛选、版本徽章点击升级（浮层实时日志、可取消）、设置页（Display / Theme /
+  Membership / Login / API Keys / Environment / About）。全量窗口的齿轮按钮
+  会打开看板并直达设置页。
+- **Tools**：Env-Tools 其它组件（ai-tools / nodejs / kdesk / openssh）的图形
+  化安装与升级入口，动作统一运行仓库根的 setup 脚本并实时滚动输出；
+  openssh 支持状态查看。此前需要脚本操作的内容（安装、升级、状态查询）全部
+  改由 GUI 完成；被取代的旧纯 JS 看板归档在 `archive/electron-app-plain`。
+
+技术栈：渲染层 React 18 + Vite；外壳 Electron；本地 API 网关为 Rust + axum
+（`app/backend-rs`，WSL 内监听 127.0.0.1，带单飞缓存；缺席时自动回退为
+Electron 直连 python 数据引擎，契约一致）。数据解析仍在 `usage_monitor.py`。
+终端入口（`tools.sh ai-tools --usage`、`--watch` 的 Ctrl+E 拉窗）继续可用，
+watch 自动拉起的窗口即本应用。
+
 ## 凭证
 
 - Kimi：默认读取 `~/.kimi-code/credentials/kimi-code.json`，并在即将过期时
   自动刷新。首次使用前请在 Kimi Code CLI 中登录。
-- Kimi 月度总量（可选）：官网订阅页的「总使用量」（月总量，跨 Kimi 网页版与
-  Kimi Code 共享）只由网页版网关提供，CLI 凭证无法访问。配置方式：浏览器登录
+- Kimi 月度总量与会员信息（可选）：官网订阅页的「总使用量」（月总量，跨 Kimi
+  网页版与 Kimi Code 共享）、会员名称（如 Allegro）与当前周期终止/续费时间，
+  只由网页版网关提供，CLI 凭证无法访问（`/coding/v1/usages` 已不再返回会员
+  等级字段）。配置方式：浏览器登录
   `kimi.com` 后，在开发者工具 Application → Local Storage → `https://www.kimi.com`
   中复制 `refresh_token` 的值，写入 `~/.kimi-code/credentials/kimi-web.json`：
 
@@ -18,13 +46,10 @@ Python 3 标准库。
 
   之后脚本会用官网同款接口自动刷新该凭证（写回同文件，权限 0600），无需重复
   复制；网页端退出登录后需重新复制。可用 `KIMI_WEB_CREDENTIALS_PATH` 或
-  `--kimi-web-credentials` 指定其他路径。未配置时自动跳过，不影响其它窗口。
+  `--kimi-web-credentials` 指定其他路径，`KIMI_WEB_SUBSCRIPTION_URL` /
+  `KIMI_WEB_STATS_URL` 可覆盖接口地址。未配置时自动跳过，不影响其它窗口；
+  此时会员名称保持 unknown，到期时间可用设置页 Membership 手动配置。
 - Codex：默认读取 `~/.codex/auth.json`。首次使用前执行 `codex login`。
-  会员购买时间记录在 monitor 同目录的 `config.json`。默认按一个自然月计算终止
-  时间，并在终端和 Electron 同时显示购买时间、终止时间及剩余时长。购买或续费后
-  直接修改 `openai.membership_purchased_at` 即可；无时区的时间按本机时区解释。
-  `membership_duration_months` 可调整会员时长。也可通过 `--config` 或环境变量
-  `AI_USAGE_CONFIG_PATH` 使用其他配置文件。
 - DeepSeek：使用 API Key（platform.deepseek.com 的 API keys 页面生成，与
   `/usage` 网页看到的余额是同一套账户数据）。三种配置方式（按优先级）：
   1. `--deepseek-key` 命令行参数；
@@ -50,16 +75,64 @@ Python 3 标准库。
   可用 `GLM_USE_PROXY`（默认走系统代理）、`GLM_TIMEOUT`（默认 30 秒）和
   `GLM_QUOTA_URL` 调整请求；国际版（z.ai）用户可将 `GLM_QUOTA_URL` 设为
   `https://api.z.ai/api/monitor/usage/quota/limit`。
+  未在 config.json 手动配置会员时间时，还会查询同一管理页的
+  `GET /api/biz/subscription/list`（可用 `GLM_SUBSCRIPTION_URL` 覆盖，
+  默认从 `GLM_QUOTA_URL` 同源推导），把订阅的续费（重置）日期作为会员到期
+  时间显示；自动续费的套餐以 renews 措辞展示。
+
+## 会员到期时间
+
+每个模型都可以显示会员到期时间（终止日期 + 剩余时长，终端与 Electron 同步
+展示）。配置写入 monitor 同目录的 `config.json`，可在 Electron 设置页
+**Membership** 中统一管理（购买/续费日期 + 时长月数，留空即隐藏），也可直接
+编辑文件：`kimi` / `openai` / `glm` / `deepseek` 各小节的
+`membership_purchased_at`（无时区按本机时区解释）与
+`membership_duration_months`（默认 1 个月）。Kimi（需网页凭证）与 GLM 未手动
+配置时会自动使用订阅接口返回的周期终止/续费日期。也可通过 `--config` 或环境
+变量 `AI_USAGE_CONFIG_PATH` 使用其他配置文件。
 
 程序不会复制或输出访问令牌。也可以通过
 `KIMI_CREDENTIALS_PATH`、`CODEX_AUTH_PATH`
 或命令行参数指定文件。
 
-Windows Electron 看板可点击标题栏的齿轮按钮打开设置页（铺满窗口，左侧边栏
-分类，不再是弹框）：
+Windows Electron 看板自 v0.2.0 起默认打开**全量模式**窗口（Usage Analytics），
+标题栏的 `Board` 按钮可打开原来的小悬浮**用量看板**窗口（用量看板标题栏的
+展开按钮也可回到全量模式；两个窗口可同时开启，配额数据 60 秒同步刷新到两
+个窗口）。设置页仍然住在用量看板窗口里：全量模式标题栏的齿轮按钮会打开用
+量看板并直接进入设置页。
+
+全量模式参考 [kimi-usage-dashboard](https://github.com/coconilu/kimi-usage-dashboard)
+集成了本地会话用量分析（数据源为 Kimi Code CLI 的会话日志
+`~/.kimi-code/sessions/**/wire.jsonl`，只读取 turn 级 `usage.record`，全程不
+联网）：
+
+- KPI 卡片：近 7 天 tokens、今日 tokens、总缓存命中率、活跃会话数、上周同期
+  （含周环比涨跌）。
+- 图表：每日 token 趋势（input/output/cacheRead/cacheCreation 堆叠）、今日按
+  小时趋势、模型占比（Top 8 + 其他）、每日 × 模型堆叠、缓存命中率折线、项目
+  排行 Top 15（按会话工作目录聚合）、GitHub 风格近一年活动日历。
+- 会话明细：按 token 总量排序，点击 Start / End / Total 表头可切换排序。
+- 顶部 Range 下拉切换统计窗口（7/14/30/90 天）；数据每 5 分钟自动重扫，也可
+  点击标题栏刷新按钮立即重扫。解析位置按文件增量缓存在
+  `~/.cache/ai-usage-monitor/kimi-usage-cache.json`，重复请求只读取日志新增
+  字节。数据根目录可用 `KIMI_CODE_HOME` 环境变量覆盖。
+- 全量模式同时以紧凑卡片展示各套餐配额（与用量看板同源），含 5h/周/月窗口
+  进度、重置倒计时与会员到期时间。
+- 数据源环境（WSL / Windows）跟随设置页 Environment 的选择：扫描的是所选环
+  境用户目录下的会话日志。
+
+WSL 终端里也可以直接输出同一份分析 JSON：
+`usage_monitor.py --json --analytics --days 30`。
+
+小悬浮用量看板窗口标题栏的齿轮按钮打开设置页（铺满窗口，左侧边栏分类，返
+回按钮在边栏顶部）：
 
 - **Display**：勾选要在看板上显示的模型（原标题栏筛选下拉框已迁入此处）；选择会
   持久化，重启 Electron 后仍然保留。
+- **Theme**：亮 / 暗主题切换，默认跟随系统（System）；选择持久化在本机。
+- **Membership**：统一管理各模型的会员购买/续费日期与时长（见上文「会员到期
+  时间」）；保存后看板立即刷新。Kimi（需网页凭证）与 GLM 留空时自动显示订阅
+  接口返回的续费日期。
 - **Login**：为 Kimi Code 或 OpenAI Codex 手动启动网页授权。看板启动和刷新时
   不会自动打开登录页面；终端 watch 中也可按 `Ctrl+L` 选择 agent 登录。
 - **API Keys**：配置 DeepSeek 和 GLM API Key。输入框不会回显已保存的 Key；
@@ -138,6 +211,14 @@ OpenAI 返回 usage limit reset 机会时，终端和 Electron 看板会额外�
 `code.kimi.com/kimi-code/latest`，Codex 查 npm registry。仅最新版本的
 远程探测结果缓存于 `~/.cache/ai-usage-monitor/versions.json`，每小时
 （`VERSION_CHECK_INTERVAL`）最多探测一次；探测失败沿用旧值并做小时级退避。
+
+点击黄色版本徽章弹出升级浮层，确认后原地升级。升级期间浮层实时滚动安装
+脚本的输出（kimi 官方脚本路线的 tarball 下载含 MiB/百分比/速率心跳，
+每 5 秒一拍）并显示已用时长；可随时 Cancel 整组中止安装进程。下载持续
+60 秒无任何进展判定为停滞：自动杀掉安装进程组，并翻转代理设置
+（直连 ↔ 系统代理，需存在 `http_proxy` 等环境变量）重试一次；整体超过
+20 分钟未完成按超时失败。失败（含停滞/超时/取消）时浮层不自动关闭，
+末尾日志保留在浮层里供排查，完整过程见 `ai-tools/log/setup.log`。
 
 Codex 的登录令牌由 Codex CLI 管理；如果终端提示登录失效，请执行
 `codex login`。可以用 `CODEX_USAGE_URL` 覆盖额度接口地址，以适配后续官方

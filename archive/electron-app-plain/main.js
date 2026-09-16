@@ -8,7 +8,12 @@ const REFRESH_INTERVAL_MS = 60 * 1000;
 // 最坏约 41s），其余 provider 为 10s×2；留少量余量给进程启动与版本检测。
 const FETCH_TIMEOUT_MS = 45 * 1000;
 const SETTINGS_TIMEOUT_MS = 10 * 1000;
+// 全量模式分析需要扫描本地会话日志；首次全量扫描大日志可能较慢，放宽超时
+const ANALYTICS_TIMEOUT_MS = 120 * 1000;
 const WINDOW_TITLE = "AI Usage Monitor";
+// 全量窗口标题必须与用量看板不同：WSLg 置顶通过 powershell 按标题匹配窗口，
+// 标题相同会把另一个窗口也一起置顶
+const DASHBOARD_TITLE = "AI Usage Dashboard";
 const MIN_CONTENT_HEIGHT = 140;
 // WSLg 下 Electron 的 alwaysOnTop 不会穿透到 Windows 窗口管理器,
 // 需要通过 powershell.exe 调 SetWindowPos 在 Windows 侧置顶
@@ -21,9 +26,24 @@ if (process.platform === "win32") {
   app.setAppUserModelId("AIUsageMonitor");
 }
 
-let win = null;
+let mainWin = null;
+let boardWin = null;
 let refreshTimer = null;
 let usageFetchPromise = null;
+// 单实例:再次启动(Ctrl+E)时聚焦已有窗口而不是开新窗口
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    const window = mainWin || boardWin;
+    if (window) {
+      if (window.isMinimized()) window.restore();
+      window.show();
+      window.focus();
+    }
+  });
+}
 // 置顶期间周期性补挂 WS_EX_TOPMOST 的巡检定时器：
 // WSLg 的 RAIL 窗口在焦点切换、尺寸变化等场景下可能重建或重排 Z 序，
 // 导致之前用 SetWindowPos 设置的置顶样式丢失（表现：切应用后看板被盖住，
@@ -33,13 +53,13 @@ let pinWatchdog = null;
 let manualHeight = false;
 let programmaticResize = false;
 
-function applyWindowsTopmost(topmost, attemptsLeft = 5) {
+function applyWindowsTopmost(topmost, attemptsLeft = 5, title = WINDOW_TITLE) {
   if (!IS_WSL) return;
   const script = path.join(__dirname, "set-topmost.ps1");
   const child = spawn(
     "powershell.exe",
     ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script,
-     "-Title", WINDOW_TITLE, "-Topmost", topmost ? "1" : "0"],
+     "-Title", title, "-Topmost", topmost ? "1" : "0"],
     { stdio: ["ignore", "pipe", "ignore"] },
   );
   let out = "";
@@ -53,9 +73,17 @@ function applyWindowsTopmost(topmost, attemptsLeft = 5) {
     );
     // 窗口刚创建时 Windows 侧可能尚未出现;置顶/取消未生效时稍后重试
     if (!ok && attemptsLeft > 0) {
-      setTimeout(() => applyWindowsTopmost(topmost, attemptsLeft - 1), 800);
+      setTimeout(() => applyWindowsTopmost(topmost, attemptsLeft - 1, title), 800);
     }
   });
+}
+
+function liveWindows() {
+  return [mainWin, boardWin].filter((w) => w && !w.isDestroyed());
+}
+
+function anyPinned() {
+  return liveWindows().some((w) => w.isAlwaysOnTop());
 }
 
 function startPinWatchdog() {
@@ -63,7 +91,9 @@ function startPinWatchdog() {
   // 置顶样式丢失无法从 Linux 侧感知，只能周期性补挂；
   // set-topmost.ps1 对已置顶的窗口跳过 SetWindowPos，不会抢焦点。
   pinWatchdog = setInterval(() => {
-    if (win && win.isAlwaysOnTop()) applyWindowsTopmost(true, 1);
+    for (const w of liveWindows()) {
+      if (w.isAlwaysOnTop()) applyWindowsTopmost(true, 1, w.getTitle());
+    }
   }, 5000);
 }
 
@@ -72,20 +102,6 @@ function stopPinWatchdog() {
     clearInterval(pinWatchdog);
     pinWatchdog = null;
   }
-}
-
-// 单实例:再次启动(Ctrl+E)时聚焦已有窗口而不是开新窗口
-const gotLock = app.requestSingleInstanceLock();
-if (!gotLock) {
-  app.quit();
-} else {
-  app.on("second-instance", () => {
-    if (win) {
-      if (win.isMinimized()) win.restore();
-      win.show();
-      win.focus();
-    }
-  });
 }
 
 function monitorSpec(extraArgs) {
@@ -172,13 +188,13 @@ async function runMonitorJson(args, input = "") {
 }
 
 async function pushUsage() {
-  if (!win) return null;
+  if (liveWindows().length === 0) return null;
   // 定时刷新、手动刷新和升级后刷新可能同时到达；复用同一
   // 个在途请求，避免重复后端进程互相抢网络导致假超时。
   if (usageFetchPromise) return usageFetchPromise;
   usageFetchPromise = (async () => {
     const result = await fetchUsage();
-    if (win) win.webContents.send("usage-update", result);
+    for (const w of liveWindows()) w.webContents.send("usage-update", result);
     return result;
   })();
   try {
@@ -188,8 +204,44 @@ async function pushUsage() {
   }
 }
 
-function createWindow() {
-  win = new BrowserWindow({
+function createWindow(options, htmlFile, title) {
+  const window = new BrowserWindow(options);
+  window.loadFile(path.join(__dirname, htmlFile));
+  window.setTitle(title);
+  return window;
+}
+
+// 全量模式（默认主窗口）：用量分析看板 + 配额总览
+function createDashboardWindow() {
+  mainWin = createWindow({
+    width: 1160,
+    height: 800,
+    minWidth: 720,
+    minHeight: 480,
+    useContentSize: true,
+    frame: false,
+    alwaysOnTop: false,
+    resizable: true,
+    skipTaskbar: false,
+    backgroundColor: "#10131a",
+    icon: path.join(__dirname, "assets", process.platform === "win32" ? "logo.ico" : "logo.png"),
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  }, "dashboard.html", DASHBOARD_TITLE);
+  mainWin.on("closed", () => (mainWin = null));
+  // 页面加载完成（含刷新）后立即推一次数据；定时广播最快 60s 后才有下一轮
+  mainWin.webContents.on("did-finish-load", () => pushUsage());
+  mainWin.on("blur", () => {
+    if (mainWin && mainWin.isAlwaysOnTop()) applyWindowsTopmost(true, 1, DASHBOARD_TITLE);
+  });
+}
+
+// 用量看板（小悬浮窗）：按需从全量模式打开，可置顶
+function createBoardWindow() {
+  boardWin = createWindow({
     width: 400,
     height: 460,
     minWidth: 320,
@@ -200,47 +252,116 @@ function createWindow() {
     resizable: true,
     skipTaskbar: false,
     backgroundColor: "#16181d",
+    icon: path.join(__dirname, "assets", process.platform === "win32" ? "logo.ico" : "logo.png"),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
     },
-  });
-
-  win.loadFile(path.join(__dirname, "index.html"));
-  win.setTitle(WINDOW_TITLE);
-  win.on("closed", () => {
-    win = null;
-    if (refreshTimer) clearInterval(refreshTimer);
-    stopPinWatchdog();
-  });
+  }, "index.html", WINDOW_TITLE);
+  boardWin.on("closed", () => (boardWin = null));
+  // 与全量窗口相同：加载完成（含刷新）后立即补推一次数据
+  boardWin.webContents.on("did-finish-load", () => pushUsage());
   // 窗口失焦(用户切到其它应用)时立即补挂一次置顶;
   // 已置顶时脚本侧直接跳过,不会把窗口抢回前台
-  win.on("blur", () => {
-    if (win && win.isAlwaysOnTop()) applyWindowsTopmost(true, 1);
+  boardWin.on("blur", () => {
+    if (boardWin && boardWin.isAlwaysOnTop()) applyWindowsTopmost(true, 1, WINDOW_TITLE);
   });
   // 用户手动调整高度后,暂停数据刷新带来的自动贴合;
   // WSLg 不一定遵守 minHeight,程序强制最小高度(防止拉成一条线)
-  win.on("resize", () => {
-    if (!win) return;
-    const [width, height] = win.getContentSize();
+  boardWin.on("resize", () => {
+    if (!boardWin) return;
+    const [width, height] = boardWin.getContentSize();
     if (height < MIN_CONTENT_HEIGHT) {
       programmaticResize = true;
-      win.setContentSize(width, MIN_CONTENT_HEIGHT);
+      boardWin.setContentSize(width, MIN_CONTENT_HEIGHT);
       setTimeout(() => (programmaticResize = false), 150);
       manualHeight = true;
       return;
     }
     if (!programmaticResize) manualHeight = true;
   });
-
-  pushUsage();
-  refreshTimer = setInterval(pushUsage, REFRESH_INTERVAL_MS);
 }
 
-ipcMain.on("window-minimize", () => win && win.minimize());
-ipcMain.on("window-close", () => win && win.close());
+async function focusWindow(getter, creator) {
+  const existing = getter();
+  if (existing && !existing.isDestroyed()) {
+    if (existing.isMinimized()) existing.restore();
+    existing.show();
+    existing.focus();
+    return existing;
+  }
+  creator();
+  const created = getter();
+  if (!created) return null;
+  // 新窗口首屏数据由 did-finish-load 里的 pushUsage 补推
+  await new Promise((resolve) => {
+    if (created.webContents.isLoading()) {
+      created.webContents.once("did-finish-load", resolve);
+    } else {
+      resolve();
+    }
+  });
+  return created;
+}
+
+// 最小化/关闭/置顶都作用于发起调用的窗口（全量窗口与用量看板各有标题栏）
+function senderWindow(event) {
+  const window = BrowserWindow.fromWebContents(event.sender);
+  return window && !window.isDestroyed() ? window : null;
+}
+
+ipcMain.on("window-minimize", (event) => {
+  const window = senderWindow(event);
+  if (window) window.minimize();
+});
+ipcMain.on("window-close", (event) => {
+  const window = senderWindow(event);
+  if (window) window.close();
+});
 ipcMain.on("refresh", () => pushUsage());
+// 全量模式 ⇄ 用量看板：互相打开对方窗口；设置页统一住在用量看板窗口里
+ipcMain.handle("open-usage-board", async () => {
+  await focusWindow(() => boardWin, createBoardWindow);
+});
+ipcMain.handle("open-full-dashboard", async () => {
+  await focusWindow(() => mainWin, createDashboardWindow);
+});
+ipcMain.handle("open-board-settings", async () => {
+  const window = await focusWindow(() => boardWin, createBoardWindow);
+  if (window) window.webContents.send("open-settings");
+});
+// 全量模式分析数据：扫描本地会话日志（无网络请求），按天窗口取数
+let analyticsFetchPromise = null;
+ipcMain.handle("get-analytics", async (_event, days) => {
+  // 复用在途请求：开窗、定时器与手动刷新同时到达时只扫一次
+  if (analyticsFetchPromise) return analyticsFetchPromise;
+  const windowDays = Math.max(1, Math.min(365, Number(days) || 30));
+  const request = (async () => {
+    const run = await runMonitor(
+      ["--json", "--analytics", "--days", String(windowDays)],
+      { timeoutMs: ANALYTICS_TIMEOUT_MS },
+    );
+    if (run.error) return { ok: false, error: run.error };
+    if (run.timedOut) {
+      return { ok: false, error: `Analytics timed out after ${ANALYTICS_TIMEOUT_MS / 1000}s` };
+    }
+    try {
+      return JSON.parse(run.stdout);
+    } catch {
+      return {
+        ok: false,
+        error: `Analytics failed (exit ${run.code}): ${(run.stderr || run.stdout).trim().slice(-300)}`,
+      };
+    }
+  })();
+  analyticsFetchPromise = request;
+  try {
+    return await request;
+  } finally {
+    if (analyticsFetchPromise === request) analyticsFetchPromise = null;
+  }
+});
 ipcMain.handle("api-key-status", () => runMonitorJson(["--api-key-status"]));
 // 设置页：读取/保存后端设置（数据源环境等）；保存成功后立即刷新看板
 ipcMain.handle("get-settings", () => runMonitorJson(["--get-settings"]));
@@ -327,16 +448,20 @@ ipcMain.handle("login-agent", (_event, agent, environment) => new Promise((resol
 ipcMain.on("reset-fit", () => {
   manualHeight = false;
 });
-// 悬浮(置顶)开关:标题栏 pin 按钮切换
-ipcMain.handle("toggle-pin", () => {
-  if (!win) return false;
-  const next = !win.isAlwaysOnTop();
-  win.setAlwaysOnTop(next);
-  applyWindowsTopmost(next);
-  if (next) startPinWatchdog(); else stopPinWatchdog();
+// 悬浮(置顶)开关：标题栏 pin 按钮切换，作用于发起调用的窗口
+ipcMain.handle("toggle-pin", (event) => {
+  const window = senderWindow(event);
+  if (!window) return false;
+  const next = !window.isAlwaysOnTop();
+  window.setAlwaysOnTop(next);
+  applyWindowsTopmost(next, 5, window.getTitle());
+  if (next) startPinWatchdog(); else if (!anyPinned()) stopPinWatchdog();
   return next;
 });
-ipcMain.handle("get-pin-state", () => (win ? win.isAlwaysOnTop() : false));
+ipcMain.handle("get-pin-state", (event) => {
+  const window = senderWindow(event);
+  return window ? window.isAlwaysOnTop() : false;
+});
 
 // --- 看板内点击版本徽章触发升级 ---------------------------------------------
 // 直接调组件安装脚本(不经 setup.ps1 入口,避免 UAC 自提权弹窗与交互)
@@ -344,7 +469,26 @@ const UPGRADE_FLAGS = {
   "Kimi Code": "--kimi",
   "OpenAI Codex": "--codex",
 };
-const UPGRADE_TIMEOUT_MS = 10 * 60 * 1000;
+// 下载速度不可控（code.kimi.com 可能被限速到几十 KB/s），给足 20min；
+// 完全停滞由 setup 脚本自检（60s 无进展）提前中止，不会真等满超时
+const UPGRADE_TIMEOUT_MS = 20 * 60 * 1000;
+// 当前在跑的升级子进程，供"取消升级"终止；一次只允许一个升级
+let upgradeChild = null;
+let upgradeCancelled = false;
+
+// POSIX 下子进程独立进程组（detached），整组 SIGTERM 才能清理到
+// install.sh 内部的 curl 等孙子进程；Windows/WSL 路径保持杀直接子进程
+function killUpgradeTree(child) {
+  if (process.platform === "win32") {
+    try { child.kill(); } catch { /* 已退出 */ }
+    return;
+  }
+  try {
+    process.kill(-child.pid, "SIGTERM");
+  } catch {
+    try { child.kill(); } catch { /* 已退出 */ }
+  }
+}
 
 function upgradeSpec(providers, environment, windowsSetupScript) {
   const flags = (Array.isArray(providers) ? providers : [])
@@ -394,29 +538,60 @@ ipcMain.handle("upgrade-agents", (_event, providers, environment, windowsSetupSc
     resolve({ ok: false, error: "no upgradable target" });
     return;
   }
+  if (upgradeChild) {
+    resolve({ ok: false, error: "another upgrade is already running" });
+    return;
+  }
   const child = spawn(spec.command, spec.args, {
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
+    detached: process.platform !== "win32",
   });
+  upgradeChild = child;
+  upgradeCancelled = false;
   let output = "";
+  let lineBuf = "";
   let settled = false;
   const finish = (result) => {
     if (settled) return;
     settled = true;
     clearTimeout(timer);
+    upgradeChild = null;
     resolve(result);
   };
   const timer = setTimeout(() => {
-    child.kill();
+    killUpgradeTree(child);
     finish({ ok: false, error: `upgrade timed out after ${UPGRADE_TIMEOUT_MS / 60000}min` });
   }, UPGRADE_TIMEOUT_MS);
-  child.stdout.on("data", (d) => (output += d));
-  child.stderr.on("data", (d) => (output += d));
+  // 安装脚本输出按行实时推给升级浮层（脚本在非 TTY 下逐行流式输出，
+  // 含下载进度心跳），同时累积尾部供失败时诊断
+  const feedLines = (chunk) => {
+    output += chunk;
+    lineBuf += chunk;
+    let idx;
+    while ((idx = lineBuf.indexOf("\n")) >= 0) {
+      const line = lineBuf.slice(0, idx).replace(/\r$/, "");
+      lineBuf = lineBuf.slice(idx + 1);
+      if (line.trim()) {
+        for (const w of liveWindows()) w.webContents.send("upgrade-progress", { line });
+      }
+    }
+  };
+  child.stdout.on("data", (d) => feedLines(String(d)));
+  child.stderr.on("data", (d) => feedLines(String(d)));
   child.on("error", (err) => finish({ ok: false, error: err.message }));
   child.on("close", async (code) => {
     if (settled) return;
+    if (lineBuf.trim()) {
+      for (const w of liveWindows()) {
+        w.webContents.send("upgrade-progress", { line: lineBuf.trim() });
+      }
+    }
     if (code !== 0) {
-      finish({ ok: false, error: `exit ${code}: ${output.trim().slice(-300)}` });
+      finish({
+        ok: false,
+        error: upgradeCancelled ? "cancelled" : `exit ${code}: ${output.trim().slice(-300)}`,
+      });
       return;
     }
     // 等到后端重新探测 CLI 版本并推送到渲染层后再报成功，
@@ -425,19 +600,28 @@ ipcMain.handle("upgrade-agents", (_event, providers, environment, windowsSetupSc
     finish({ ok: true });
   });
 }));
+
+// 浮层 Cancel：终止在跑的升级进程组，close 事件以 cancelled 收尾
+ipcMain.handle("upgrade-cancel", () => {
+  if (!upgradeChild) return false;
+  upgradeCancelled = true;
+  killUpgradeTree(upgradeChild);
+  return true;
+});
 // 渲染层根据内容高度请求自适应窗口(保持小巧,不出现大片空白);
-// 用户手动拖过高度则暂停自动贴合,拖回接近自然高度时恢复
+// 用户手动拖过高度则暂停自动贴合,拖回接近自然高度时恢复。
+// 只有用量看板窗口使用高度贴合。
 ipcMain.on("fit-height", (_event, height) => {
-  if (!win) return;
+  if (!boardWin || boardWin.isDestroyed()) return;
   const clamped = Math.max(MIN_CONTENT_HEIGHT, Math.min(800, Math.ceil(height)));
-  const [width, current] = win.getContentSize();
+  const [width, current] = boardWin.getContentSize();
   if (Math.abs(current - clamped) <= 6) {
     manualHeight = false;
     return;
   }
   if (manualHeight) return;
   programmaticResize = true;
-  win.setContentSize(width, clamped);
+  boardWin.setContentSize(width, clamped);
   setTimeout(() => (programmaticResize = false), 150);
 });
 
@@ -449,7 +633,10 @@ if (gotLock) {
         WSL_DISTRO = settings.wsl_distro;
       }
     }
-    createWindow();
+    // v0.2.0 起默认打开全量模式；用量看板通过全量模式里的按钮打开
+    createDashboardWindow();
+    pushUsage();
+    refreshTimer = setInterval(pushUsage, REFRESH_INTERVAL_MS);
   });
 }
 

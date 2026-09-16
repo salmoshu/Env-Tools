@@ -1,0 +1,594 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'unsafe-inline'; script-src 'self'" />
+  <title>AI Usage Dashboard</title>
+  <style>
+    :root {
+      --bg: #10131a;
+      --card: #171b26;
+      --elevated: #1a1f2c;
+      --border: rgba(255, 255, 255, 0.07);
+      --titlebar: rgba(20, 24, 36, 0.9);
+      --text: #eceff5;
+      --dim: #9aa3b5;
+      --faint: #6b7385;
+      --accent: #6ea8fe;
+      --green: #34d399;
+      --yellow: #fbbf24;
+      --red: #fb7185;
+      --hover: rgba(255, 255, 255, 0.08);
+      --hover-soft: rgba(255, 255, 255, 0.06);
+      --inset: rgba(255, 255, 255, 0.045);
+      --track: rgba(255, 255, 255, 0.06);
+      --marker: rgba(255, 255, 255, 0.95);
+      --on-accent: #10131a;
+      --scrollbar: #2a3140;
+      --warn: var(--yellow);
+      --shadow: rgba(0, 0, 0, 0.25);
+      /* 图表配色（两个主题共用，取自 kimi-usage-dashboard） */
+      --c-input: #5b8def;
+      --c-output: #4cc38a;
+      --c-cache-read: #9b7ede;
+      --c-cache-creation: #e5a545;
+      /* 年度日历热力色的 5 档 */
+      --cal-0: #181d28;
+      --cal-1: #1f3a5f;
+      --cal-2: #2f6bc4;
+      --cal-3: #5b8def;
+      --cal-4: #9db9f5;
+      color-scheme: dark;
+      --font-ui: "Ubuntu Sans", "Ubuntu", "DejaVu Sans", "Droid Sans Fallback", sans-serif;
+      --font-num: "Ubuntu Sans", "Ubuntu", "DejaVu Sans", sans-serif;
+    }
+    :root[data-theme="light"] {
+      --bg: #eef1f6;
+      --card: #ffffff;
+      --elevated: #ffffff;
+      --border: rgba(15, 23, 42, 0.1);
+      --titlebar: rgba(248, 250, 253, 0.9);
+      --text: #1d2433;
+      --dim: #4d5769;
+      --faint: #7d8698;
+      --accent: #2f6fe0;
+      --green: #0e9f6e;
+      --yellow: #f59e0b;
+      --red: #e11d48;
+      --hover: rgba(15, 23, 42, 0.07);
+      --hover-soft: rgba(15, 23, 42, 0.05);
+      --inset: rgba(15, 23, 42, 0.045);
+      --track: rgba(15, 23, 42, 0.09);
+      --marker: rgba(15, 23, 42, 0.7);
+      --on-accent: #ffffff;
+      --scrollbar: #c3c9d6;
+      --warn: #b45309;
+      --shadow: rgba(15, 23, 42, 0.12);
+      --cal-0: #ebeef4;
+      --cal-1: #c4d7f5;
+      --cal-2: #8db4ec;
+      --cal-3: #5b8def;
+      --cal-4: #2f5fbf;
+      color-scheme: light;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font: 13px/1.55 var(--font-ui);
+      letter-spacing: 0.15px;
+      overflow-x: hidden;
+      user-select: none;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* 标题栏（可拖动），页面超高滚动时保持吸附顶部 */
+    .titlebar {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      -webkit-app-region: drag;
+      display: flex;
+      align-items: center;
+      height: 38px;
+      padding: 0 8px 0 14px;
+      background: var(--titlebar);
+      backdrop-filter: blur(8px);
+      border-bottom: 1px solid var(--border);
+    }
+    .titlebar .logo {
+      width: 16px;
+      height: 16px;
+      margin-right: 8px;
+      border-radius: 4px;
+      -webkit-user-drag: none;
+    }
+    .titlebar .title {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 1.6px;
+      text-transform: uppercase;
+      color: var(--dim);
+    }
+    .titlebar .btn {
+      -webkit-app-region: no-drag;
+      height: 26px;
+      min-width: 30px;
+      border: none;
+      background: transparent;
+      color: var(--faint);
+      font-size: 13px;
+      border-radius: 6px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.15s ease, color 0.15s ease;
+    }
+    .titlebar .btn:hover { background: var(--hover); color: var(--text); }
+    .titlebar .btn.close:hover { background: #e11d48; color: #fff; }
+    .titlebar .btn.btn-label {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 0 10px;
+      letter-spacing: 0.3px;
+    }
+    .titlebar .btn svg { display: block; }
+    #btn-refresh.spin svg { animation: spin 0.8s linear infinite; }
+    #btn-refresh.spin { color: var(--accent); }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .title-version {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      white-space: nowrap;
+      font-size: 9px;
+      color: var(--faint);
+      font-family: var(--font-num);
+      margin: 0 4px 0 6px;
+    }
+    .env-badge {
+      font-size: 9px;
+      font-weight: 600;
+      color: var(--warn);
+      background: rgba(251, 191, 36, 0.12);
+      border: 1px solid rgba(251, 191, 36, 0.35);
+      border-radius: 999px;
+      padding: 0 7px;
+      margin-right: 4px;
+      -webkit-app-region: no-drag;
+    }
+    .env-badge.hidden { display: none; }
+
+    .page { padding: 18px 24px 40px; }
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+
+    .page-head {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+    .page-head h1 { font-size: 19px; font-weight: 700; }
+    .page-head .meta {
+      margin-top: 4px;
+      font-size: 11px;
+      color: var(--faint);
+      font-variant-numeric: tabular-nums;
+    }
+    .days-field {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      font-size: 11px;
+      color: var(--dim);
+      white-space: nowrap;
+    }
+    #days-select {
+      height: 28px;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      outline: none;
+      background: var(--card);
+      color: var(--text);
+      padding: 0 6px;
+      font: 11px var(--font-ui);
+    }
+
+    /* KPI 卡片行 */
+    .kpi-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    .kpi-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px 14px;
+      box-shadow: 0 2px 10px var(--shadow);
+    }
+    .kpi-label { font-size: 11px; color: var(--faint); margin-bottom: 6px; }
+    .kpi-value {
+      font-size: 22px;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+    }
+    .kpi-sub { font-size: 11px; margin-top: 4px; color: var(--faint); }
+    .kpi-sub .up { color: var(--green); }
+    .kpi-sub .down { color: var(--red); }
+
+    /* 通用卡片与栅格 */
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px 18px;
+      margin-bottom: 14px;
+      box-shadow: 0 2px 10px var(--shadow);
+      min-width: 0;
+    }
+    .card h2, .block > h2 {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--dim);
+      margin-bottom: 10px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+    .grid .card { margin-bottom: 0; }
+    .grid { margin-bottom: 14px; }
+    @media (max-width: 980px) { .grid { grid-template-columns: 1fr; } }
+
+    .block { margin-bottom: 14px; }
+    .block > h2 { margin-left: 2px; }
+
+    /* 图表容器 */
+    .chart { position: relative; height: 300px; }
+    .chart.tall { height: 360px; }
+    .chart svg { display: block; }
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px 14px;
+      font-size: 11px;
+      color: var(--dim);
+      margin-bottom: 6px;
+    }
+    .legend .item { display: inline-flex; align-items: center; gap: 6px; }
+    .legend .swatch {
+      width: 9px;
+      height: 9px;
+      border-radius: 2px;
+      flex-shrink: 0;
+    }
+
+    /* 饼图：svg + 图例 */
+    .pie-wrap { display: flex; align-items: center; gap: 18px; }
+    .pie-legend { flex: 1; min-width: 0; display: grid; gap: 4px; }
+    .pie-legend .row {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      font-size: 11px;
+      color: var(--dim);
+      white-space: nowrap;
+    }
+    .pie-legend .swatch { width: 9px; height: 9px; border-radius: 2px; flex-shrink: 0; }
+    .pie-legend .name { overflow: hidden; text-overflow: ellipsis; }
+    .pie-legend .val {
+      margin-left: auto;
+      font-variant-numeric: tabular-nums;
+      color: var(--faint);
+      flex-shrink: 0;
+    }
+
+    /* 项目排行（横向条） */
+    .projects { display: grid; gap: 7px; padding-top: 4px; }
+    .proj-row { display: flex; align-items: center; gap: 10px; font-size: 11px; }
+    .proj-name {
+      width: 130px;
+      flex-shrink: 0;
+      color: var(--dim);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      text-align: right;
+    }
+    .proj-track {
+      flex: 1;
+      height: 12px;
+      background: var(--track);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    .proj-fill {
+      height: 100%;
+      border-radius: 4px;
+      background: var(--c-input);
+      min-width: 2px;
+    }
+    .proj-val {
+      width: 52px;
+      flex-shrink: 0;
+      color: var(--faint);
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* 年度活动日历 */
+    .calendar-scroll { overflow-x: auto; padding-bottom: 4px; }
+    .cal-months { display: flex; font-size: 10px; color: var(--faint); margin-left: 34px; }
+    .cal-months span { flex-shrink: 0; overflow: visible; white-space: nowrap; }
+    .cal-body { display: flex; gap: 4px; margin-top: 3px; }
+    .cal-weekdays {
+      display: grid;
+      grid-template-rows: repeat(7, 13px);
+      gap: 3px;
+      font-size: 9px;
+      color: var(--faint);
+      width: 30px;
+      flex-shrink: 0;
+    }
+    .cal-days {
+      display: grid;
+      grid-auto-flow: column;
+      grid-template-rows: repeat(7, 13px);
+      grid-auto-columns: 13px;
+      gap: 3px;
+    }
+    .cal-cell { border-radius: 3px; background: var(--cal-0); }
+    .cal-cell.l1 { background: var(--cal-1); }
+    .cal-cell.l2 { background: var(--cal-2); }
+    .cal-cell.l3 { background: var(--cal-3); }
+    .cal-cell.l4 { background: var(--cal-4); }
+
+    /* 会话明细表 */
+    .table-hint { font-size: 10px; color: var(--faint); margin: -4px 0 8px; }
+    .table-wrap { max-height: 480px; overflow-y: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+    th, td { padding: 6px 10px; text-align: right; border-bottom: 1px solid var(--border); white-space: nowrap; }
+    th { color: var(--faint); font-weight: 500; position: sticky; top: 0; background: var(--card); }
+    th.sortable { cursor: pointer; user-select: none; }
+    th.sortable:hover { color: var(--text); }
+    td.l, th.l { text-align: left; }
+    tbody tr:hover { background: var(--hover-soft); }
+    .mono { font-family: var(--font-num); font-size: 11px; color: var(--faint); }
+    td b { font-weight: 600; }
+
+    /* 套餐配额卡片（来自额度接口的紧凑卡片） */
+    .quota-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 12px;
+    }
+    .qcard {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px 14px 10px;
+      box-shadow: 0 2px 10px var(--shadow);
+    }
+    .qcard-head { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; }
+    .qname { font-weight: 700; font-size: 13px; white-space: nowrap; }
+    .plan {
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--accent);
+      background: rgba(110, 168, 254, 0.1);
+      border: 1px solid rgba(110, 168, 254, 0.3);
+      padding: 1px 8px;
+      border-radius: 999px;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .qupdated {
+      margin-left: auto;
+      font-size: 10px;
+      color: var(--faint);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .qquota { margin-bottom: 8px; }
+    .qrow {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      font-size: 11px;
+      color: var(--dim);
+      margin-bottom: 3px;
+      gap: 8px;
+    }
+    .qrow .pct {
+      color: var(--text);
+      font-weight: 600;
+      font-family: var(--font-num);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    .qrow .reset { color: var(--faint); font-weight: 400; }
+    .qmembership {
+      margin: 0 0 8px;
+      padding: 4px 8px;
+      border-radius: 7px;
+      background: var(--inset);
+      color: var(--faint);
+      font-size: 10px;
+      font-variant-numeric: tabular-nums;
+      display: flex;
+      align-items: baseline;
+      gap: 7px;
+    }
+    .qmembership strong { color: var(--dim); font-weight: 500; white-space: nowrap; }
+    .qmembership em { margin-left: auto; color: var(--warn); font-style: normal; white-space: nowrap; }
+    .qmembership em.ended { color: var(--red); }
+    .bar {
+      position: relative;
+      height: 8px;
+      background: var(--track);
+      border-radius: 999px;
+      overflow: visible;
+    }
+    .bar > .fill { height: 100%; border-radius: 999px; transition: width 0.5s ease; }
+    .fill.low { background: var(--green); }
+    .fill.mid { background: var(--yellow); }
+    .fill.high { background: var(--red); }
+    .bar > .marker {
+      position: absolute;
+      top: -3px;
+      bottom: -3px;
+      width: 2px;
+      margin-left: -1px;
+      background: var(--marker);
+      border-radius: 1px;
+    }
+    .error-card {
+      font-size: 11px;
+      color: var(--red);
+      background: rgba(225, 29, 72, 0.08);
+      border: 1px solid rgba(225, 29, 72, 0.3);
+      border-radius: 10px;
+      padding: 8px 10px;
+      margin-top: 8px;
+      word-break: break-all;
+    }
+    .error-card.hidden { display: none; }
+    .status {
+      text-align: center;
+      color: var(--faint);
+      font-size: 12px;
+      padding: 26px 0;
+      letter-spacing: 1px;
+      grid-column: 1 / -1;
+    }
+
+    /* 悬浮提示框 */
+    #tooltip {
+      position: fixed;
+      z-index: 50;
+      display: none;
+      pointer-events: none;
+      background: var(--elevated);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 7px 10px;
+      font-size: 11px;
+      line-height: 1.6;
+      color: var(--dim);
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+      max-width: 340px;
+    }
+    #tooltip b { color: var(--text); }
+    #tooltip .tt-row { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+    #tooltip .swatch { width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0; }
+    #tooltip .tt-val { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--text); padding-left: 12px; }
+  </style>
+</head>
+<body>
+  <div class="titlebar">
+    <img class="logo" src="assets/logo.svg" alt="" />
+    <span class="title">AI Usage Monitor</span>
+    <span class="title-version" id="title-version"></span>
+    <span class="env-badge hidden" id="env-badge">Windows</span>
+    <button class="btn btn-label" id="btn-board" title="Open the compact usage board window">Board</button>
+    <button class="btn" id="btn-settings" title="Settings">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M19.43 12.98c.04-.32.07-.64.07-.98s-.03-.66-.07-.98l2.11-1.65c.19-.15.24-.42.12-.64l-2-3.46c-.12-.22-.39-.3-.61-.22l-2.49 1c-.52-.4-1.08-.73-1.69-.98l-.38-2.65C14.46 2.18 14.25 2 14 2h-4c-.25 0-.46.18-.49.42l-.38 2.65c-.61.25-1.17.59-1.69.98l-2.49-1c-.23-.09-.49 0-.61.22l-2 3.46c-.13.22-.07.49.12.64l2.11 1.65c-.04.32-.07.65-.07.98s.03.66.07.98l-2.11 1.65c-.19.15-.24.42-.12.64l2 3.46c.12.22.39.3.61.22l2.49-1c.52.4 1.08.73 1.69.98l.38 2.65c.03.24.24.42.49.42h4c.25 0 .46-.18.49-.42l.38-2.65c.61-.25 1.17-.59 1.69-.98l2.49 1c.23.09.49 0 .61-.22l2-3.46c.12-.22.07-.49-.12-.64l-2.11-1.65zM12 15.5c-1.93 0-3.5-1.57-3.5-3.5s1.57-3.5 3.5-3.5 3.5 1.57 3.5 3.5-1.57 3.5-3.5 3.5z"/>
+      </svg>
+    </button>
+    <button class="btn" id="btn-refresh" title="Refresh">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
+      </svg>
+    </button>
+    <button class="btn" id="btn-min" title="Minimize">&#x2013;</button>
+    <button class="btn close" id="btn-close" title="Close">&#x2715;</button>
+  </div>
+
+  <div class="page">
+    <header class="page-head">
+      <div>
+        <h1>Usage Analytics</h1>
+        <div class="meta" id="meta">Loading…</div>
+      </div>
+      <label class="days-field">Range
+        <select id="days-select">
+          <option value="7">Last 7 days</option>
+          <option value="14">Last 14 days</option>
+          <option value="30" selected>Last 30 days</option>
+          <option value="90">Last 90 days</option>
+        </select>
+      </label>
+    </header>
+
+    <div class="error-card hidden" id="analytics-error" style="margin: 0 0 12px;"></div>
+
+    <div class="kpi-row" id="kpi-row"></div>
+
+    <section class="block">
+      <h2>Plan quotas</h2>
+      <div class="quota-grid" id="quota-cards">
+        <div class="status">Loading…</div>
+      </div>
+      <div id="quota-errors"></div>
+    </section>
+
+    <section class="card">
+      <h2>Daily tokens</h2>
+      <div class="legend" id="legend-daily"></div>
+      <div class="chart tall" id="chart-daily"></div>
+    </section>
+
+    <section class="card">
+      <h2>Today by hour</h2>
+      <div class="legend" id="legend-hourly"></div>
+      <div class="chart" id="chart-hourly"></div>
+    </section>
+
+    <div class="grid">
+      <section class="card">
+        <h2>Model share</h2>
+        <div class="pie-wrap" id="chart-pie"></div>
+      </section>
+      <section class="card">
+        <h2>Daily × model</h2>
+        <div class="legend" id="legend-model"></div>
+        <div class="chart" id="chart-model"></div>
+      </section>
+      <section class="card">
+        <h2>Cache hit rate (daily)</h2>
+        <div class="chart" id="chart-hitrate"></div>
+      </section>
+      <section class="card">
+        <h2>Top projects</h2>
+        <div class="projects" id="chart-projects"></div>
+      </section>
+    </div>
+
+    <section class="card">
+      <h2>Yearly activity</h2>
+      <div class="calendar-scroll" id="chart-calendar"></div>
+    </section>
+
+    <section class="card">
+      <h2>Sessions</h2>
+      <div class="table-hint">Click Start / End / Total headers to sort · showing up to 200 rows.</div>
+      <div class="table-wrap">
+        <table id="session-table"></table>
+      </div>
+    </section>
+  </div>
+
+  <div id="tooltip"></div>
+
+  <script src="dashboard.js"></script>
+</body>
+</html>
