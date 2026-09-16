@@ -1,9 +1,20 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
+// 订阅类 API 统一返回取消函数：渲染层 effect cleanup 直接调用即可
+// （ipcRenderer.on 本身返回 EventEmitter，不是 off，曾导致切换页面时
+// “off is not a function” 把 React 树打崩白屏）。
+function subscribe(channel, callback) {
+  const listener = (_event, payload) => callback(payload);
+  ipcRenderer.on(channel, listener);
+  return () => ipcRenderer.removeListener(channel, listener);
+}
+
 contextBridge.exposeInMainWorld("api", {
   // 数据与刷新
-  onUsageUpdate: (callback) =>
-    ipcRenderer.on("usage-update", (_event, payload) => callback(payload)),
+  onUsageUpdate: (callback) => subscribe("usage-update", callback),
+  onNavigate: (callback) => subscribe("navigate", (_payload, route) => callback(route)),
+  onOpenSettings: (callback) => subscribe("open-settings", () => callback()),
+  onInstallProgress: (callback) => subscribe("install-progress", (payload) => callback(payload)),
   refresh: () => ipcRenderer.send("refresh"),
   getAnalytics: (days, agent, target) => ipcRenderer.invoke("get-analytics", days, agent, target),
   getBackendStatus: () => ipcRenderer.invoke("get-backend-status"),
@@ -24,8 +35,6 @@ contextBridge.exposeInMainWorld("api", {
   openFullDashboard: () => ipcRenderer.invoke("open-full-dashboard"),
   openTools: () => ipcRenderer.invoke("open-tools"),
   openBoardSettings: () => ipcRenderer.invoke("open-board-settings"),
-  onOpenSettings: (callback) => ipcRenderer.on("open-settings", () => callback()),
-  onNavigate: (callback) => ipcRenderer.on("navigate", (_event, route) => callback(route)),
   settingsOpen: (open) => ipcRenderer.send("settings-open", open),
   // 设置
   getSettings: () => ipcRenderer.invoke("get-settings"),
@@ -39,8 +48,6 @@ contextBridge.exposeInMainWorld("api", {
   runComponent: (component, environment, windowsSetupScript) =>
     ipcRenderer.invoke("run-component", component, environment, windowsSetupScript),
   cancelInstall: () => ipcRenderer.invoke("install-cancel"),
-  onInstallProgress: (callback) =>
-    ipcRenderer.on("install-progress", (_event, payload) => callback(payload)),
   componentStatus: (component, environment) =>
     ipcRenderer.invoke("component-status", component, environment),
 });

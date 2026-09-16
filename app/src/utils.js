@@ -117,16 +117,17 @@ export function writeThemePreference(preference) {
 
 export function watchExternalTheme(onChange) {
   const media = window.matchMedia("(prefers-color-scheme: dark)");
+  const onMedia = () => {
+    if (readThemePreference() === "system") onChange("system");
+  };
   const onStorage = (event) => {
     if (event.key && event.key !== THEME_KEY) return;
     onChange(readThemePreference());
   };
-  media.addEventListener("change", () => {
-    if (readThemePreference() === "system") onChange("system");
-  });
+  media.addEventListener("change", onMedia);
   window.addEventListener("storage", onStorage);
   return () => {
-    media.removeEventListener("change", () => {});
+    media.removeEventListener("change", onMedia);
     window.removeEventListener("storage", onStorage);
   };
 }
