@@ -1,0 +1,75 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04, platform: linux, backend: env-tools-api }
+          - { os: windows-2022, platform: win32, backend: env-tools-api.exe }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/backend-rs
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Build Rust agent (native backend)
+        working-directory: app/backend-rs
+        run: cargo build --release
+
+      - name: Build renderer
+        working-directory: app
+        run: |
+          npm install --no-audit --no-fund
+          npx vite build
+
+      - name: Package (linux)
+        if: matrix.platform == 'linux'
+        working-directory: app
+        shell: bash
+        run: node scripts/package.mjs --platform linux --out release
+
+      - name: Package (windows)
+        if: matrix.platform == 'win32'
+        working-directory: app
+        shell: pwsh
+        run: node scripts/package.mjs --platform win32 --out release
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pkg-${{ matrix.platform }}
+          path: |
+            app/release/*.tar.gz
+            app/release/*.zip
+
+  release:
+    needs: [build]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true

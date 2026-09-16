@@ -91,7 +91,11 @@ async fn run_monitor(
     stdin_text: Option<&str>,
     timeout: Duration,
 ) -> Value {
-    let mut command = tokio::process::Command::new("python3");
+    // Windows 上通常只有 `python`；Linux/WSL 用 `python3`，可用 AI_USAGE_PYTHON 覆盖
+    let python = std::env::var("AI_USAGE_PYTHON").unwrap_or_else(|_| {
+        if cfg!(windows) { "python".into() } else { "python3".into() }
+    });
+    let mut command = tokio::process::Command::new(python);
     command.arg(monitor).args(args);
     command.stdin(std::process::Stdio::piped());
     command.stdout(std::process::Stdio::piped());
