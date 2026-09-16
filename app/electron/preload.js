@@ -12,6 +12,11 @@ function subscribe(channel, callback) {
 contextBridge.exposeInMainWorld("api", {
   // 数据与刷新
   onUsageUpdate: (callback) => subscribe("usage-update", callback),
+  getUsage: (target) => ipcRenderer.invoke("get-usage", target),
+  updateCheck: () => ipcRenderer.invoke("update-check"),
+  updateInstall: () => ipcRenderer.invoke("update-install"),
+  updateSetToken: (token) => ipcRenderer.invoke("update-set-token", token),
+  onUpdateProgress: (callback) => subscribe("update-progress", (payload) => callback(payload)),
   onNavigate: (callback) => subscribe("navigate", (_payload, route) => callback(route)),
   onOpenSettings: (callback) => subscribe("open-settings", () => callback()),
   onInstallProgress: (callback) => subscribe("install-progress", (payload) => callback(payload)),

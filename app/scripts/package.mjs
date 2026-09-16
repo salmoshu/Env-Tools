@@ -61,6 +61,17 @@ if (platformArg === "win32" && linuxAgent && fs.existsSync(linuxAgent)) {
   console.log("[package] embedded linux agent for WSL bootstrap");
 }
 
+// Windows 包内嵌独立 Python（python-build-standalone 的 install_only 解压目录）：
+// 配额引擎零依赖运行。CI 下载后经 --python-dir 传入。
+const pythonDirIndex = args.indexOf("--python-dir");
+const pythonDir = pythonDirIndex >= 0 ? args[pythonDirIndex + 1] : "";
+if (platformArg === "win32" && pythonDir && fs.existsSync(pythonDir)) {
+  fs.cpSync(pythonDir, path.join(staging, "backend", "python"), { recursive: true });
+  console.log("[package] embedded python runtime for native quota engine");
+} else if (platformArg === "win32") {
+  console.warn("[package] WARNING: no python dir provided — native quota needs user-installed python");
+}
+
 // 2. electron-packager
 const appName = "Env-Tools";
 execSync(
@@ -69,10 +80,10 @@ execSync(
   { cwd: staging, stdio: "inherit", env: process.env },
 );
 
-// 3. Windows 包根补启动脚本；linux 包恢复可执行位
+// 3. 启动脚本放到 exe 旁边（packager 只会把 staging 内容复制进 resources/app）
 const pkgDir = path.join(outDir, `${appName}-${platformArg}-x64`);
 if (platformArg === "win32") {
-  // 启动脚本已在 staging 根，packager 会复制；无需额外动作
+  fs.copyFileSync(path.join(staging, "Start-EnvTools.ps1"), path.join(pkgDir, "Start-EnvTools.ps1"));
 } else {
   const backend = path.join(pkgDir, "resources", "app", "backend-rs", "target", "release", "env-tools-api");
   fs.chmodSync(backend, 0o755);

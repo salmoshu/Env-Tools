@@ -342,6 +342,96 @@ function EnvironmentPanel({ settings, onSaved }) {
   );
 }
 
+function UpdateSection() {
+  const [status, setStatus] = useState({ text: "Not checked", available: false });
+  const [progress, setProgress] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [tokenInput, setTokenInput] = useState("");
+  const [tokenNote, setTokenNote] = useState("");
+
+  useEffect(() => window.api.onUpdateProgress(({ phase, percent }) => {
+    setProgress(`${phase} ${percent == null ? "" : percent + "%"}`);
+  }), []);
+
+  const check = async () => {
+    setBusy(true);
+    setStatus({ text: "Checking…", available: false });
+    try {
+      const result = await window.api.updateCheck();
+      if (!result || !result.ok) {
+        const failed = `Check failed: ${(result && result.error) || "unknown"}`;
+        setStatus({
+          text: /404|private/i.test(failed)
+            ? failed + " — paste a GitHub token below if the repo is private"
+            : failed,
+          available: false,
+        });
+      } else if (result.available) {
+        setStatus({ text: `Update available: v${result.latest} (current v${result.current})`, available: true });
+      } else {
+        setStatus({ text: `Up to date (v${result.current})`, available: false });
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const install = async () => {
+    setBusy(true);
+    setStatus({ text: progress ? `Upgrading — ${progress}` : "Preparing upgrade…", available: true });
+    try {
+      const result = await window.api.updateInstall();
+      if (!result || !result.ok) {
+        setStatus({ text: `Upgrade failed: ${(result && result.error) || "unknown"}`, available: true });
+        setBusy(false);
+      } else {
+        setStatus({ text: "Upgraded — restarting…", available: false });
+      }
+    } catch (err) {
+      setStatus({ text: `Upgrade failed: ${err.message || err}`, available: true });
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ marginTop: 10 }}>
+      <div className="about-row"><span>Update</span><strong>{status.text}</strong></div>
+      <div className="settings-actions" style={{ justifyContent: "flex-start" }}>
+        <button className="settings-save" disabled={busy} onClick={check}>Check for updates</button>
+        {status.available && (
+          <button className="settings-save" disabled={busy} onClick={install}>
+            {progress ? `Upgrading ${progress}` : "Download & install"}
+          </button>
+        )}
+      </div>
+      <details style={{ marginTop: 8 }}>
+        <summary style={{ fontSize: 10, color: "var(--faint)", cursor: "pointer" }}>
+          GitHub token (private repo)
+        </summary>
+        <div className="membership-inputs" style={{ marginTop: 6 }}>
+          <input
+            className="key-input" type="password" placeholder="ghp_… / github_pat_…"
+            value={tokenInput}
+            onChange={(e) => setTokenInput(e.target.value)}
+          />
+          <button
+            className="login-btn"
+            disabled={!tokenInput.trim()}
+            onClick={async () => {
+              const result = await window.api.updateSetToken(tokenInput.trim());
+              setTokenNote(result && result.ok ? "Saved." : `Failed: ${(result && result.error) || "?"}`);
+              setTokenInput("");
+            }}
+          >
+            Save
+          </button>
+        </div>
+        {tokenNote ? <div className="settings-note">{tokenNote}</div> : null}
+      </details>
+    </div>
+  );
+}
+
 function AboutPanel({ settings, backend }) {
   return (
     <div className="panel" id="panel-about">
@@ -350,6 +440,7 @@ function AboutPanel({ settings, backend }) {
       <div className="about-row"><span>Data source</span><strong>{settings ? (settings.environment === "wsl" && settings.wsl_distro ? `WSL (${settings.wsl_distro})` : settings.environment) : "—"}</strong></div>
       <div className="about-row"><span>Backend</span><strong className="about-path">{settings ? settings.script : "—"}</strong></div>
       <div className="about-row"><span>API</span><strong>{backend ? backend.engine : "—"}</strong></div>
+      <UpdateSection />
     </div>
   );
 }

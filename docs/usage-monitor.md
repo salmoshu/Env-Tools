@@ -42,6 +42,22 @@ watch 自动拉起的窗口即本应用。
 首次约 1 秒、后续毫秒级），聚合口径与 `--json --analytics` 完全一致；Plan
 配额、设置、API Key、升级等功能仍由 python 数据引擎承载。
 
+Windows 原生模式 + 自动升级（v0.6.0 起）：
+
+- **Native-first**：Windows 启动脚本默认不再走 WSL——配额引擎脚本与分析
+  agent 都随包分发（包内内嵌独立 Python，用户无需安装 Python），解压即可用。
+  WSL 降级为可选目标：`Start-EnvTools.ps1 -UseWsl` 或在 Target 选择器里连接
+  （自举链路不变）。
+- **配额按目标路由**：配额查询与分析统一跟随 Target 选择器——本机目标走本
+  机 agent，WSL/SSH 目标走对应 agent 的 `/api/usage`。选哪个目标，分析和配
+  额就都是那个目标的。
+- **自动升级**：设置页 About 面板可检查更新并一键升级。流程：读取 Release
+  的 `latest.json`（版本号 + 资产名 + sha256）→ 下载并校验 → 解压到临时目
+  录 → 两阶段目录交换（等进程退出 → 旧目录改名 .old → 新目录就位 → 重启，
+  启动失败自动回滚）。私有仓库需在 About 面板粘贴 GitHub token（或配置
+  `AI_USAGE_GH_TOKEN` 环境变量 / 本机 `gh auth login`），token 只存本机
+  userData。
+
 SSH 远端目标（v0.5.0 起）：Tools 页可登记 SSH 主机（host/port/user，需密钥
 认证）并一键连接——应用把 Linux agent 上传到远端
 `~/.local/share/env-tools/`、以随机 token 启动（端口 19100），并通过本地

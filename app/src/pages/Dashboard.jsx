@@ -103,8 +103,29 @@ export default function Dashboard({ lastPayload }) {
   const [target, setTarget] = useState(() => {
     try { return localStorage.getItem(TARGET_KEY) || "local"; } catch { return "local"; }
   });
+  const [usage, setUsage] = useState(null);
   const [sessionsSort, setSessionsSort] = useState({ key: "total", dir: -1 });
   const analyticsBusy = useRef(false);
+
+  // 配额按目标路由：本地目标吃 60s 广播（lastPayload），远端目标走 get-usage
+  const refreshUsage = useCallback(async (nextTarget) => {
+    if (nextTarget === "local") return;
+    try {
+      const result = await window.api.getUsage(nextTarget);
+      if (result && (result.data || result.error)) setUsage(result);
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    if (target !== "local") refreshUsage(target);
+  }, [target, refreshUsage]);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (target !== "local") refreshUsage(target);
+    }, 60000);
+    return () => clearInterval(timer);
+  }, [target, refreshUsage]);
 
   const requestAnalytics = useCallback(async (nextDays, nextAgent, nextTarget) => {
     if (analyticsBusy.current) return;
@@ -138,7 +159,10 @@ export default function Dashboard({ lastPayload }) {
     return () => clearInterval(timer);
   }, [days, agent, target, requestAnalytics]);
 
-  const data = lastPayload && lastPayload.data;
+  const usagePayload = target === "local"
+    ? lastPayload
+    : (usage || { data: null });
+  const data = usagePayload && usagePayload.data;
   const accounts = (data && data.accounts) || [];
   const errors = (data && data.errors) || [];
   const versions = (data && data.versions) || {};
@@ -308,23 +332,23 @@ export default function Dashboard({ lastPayload }) {
 
       <section className="block">
         <h2>Plan quotas</h2>
-        {lastPayload && lastPayload.error ? (
+        {usagePayload && usagePayload.error ? (
           <div className="error-card" style={{ marginTop: 0 }}>
-            Quota data unavailable — {lastPayload.error}
+            Quota data unavailable — {usagePayload.error}
             <div style={{ opacity: 0.75, marginTop: 4 }}>
               Quotas come from the data engine of the selected target. Check the
               target's WSL/python setup, or press refresh to retry.
             </div>
           </div>
         ) : null}
-        <div className="quota-grid" style={{ marginTop: (lastPayload && lastPayload.error) ? 10 : 0 }}>
+        <div className="quota-grid" style={{ marginTop: (usagePayload && usagePayload.error) ? 10 : 0 }}>
           {accounts.length
             ? accounts.map((account) => (
               <QuotaCard key={account.provider} account={account} versions={versions} />
             ))
-            : (lastPayload && !lastPayload.error
+            : (usagePayload && !usagePayload.error
               ? <div className="status">No data</div>
-              : null)}
+              : <div className="status">Loading…</div>)}
         </div>
         <div>
           {errors.map((err) => (

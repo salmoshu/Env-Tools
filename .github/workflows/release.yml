@@ -57,6 +57,16 @@ jobs:
           name: agent-linux
           path: agent-linux
 
+      - name: Download embedded Python (windows)
+        if: matrix.platform == 'win32'
+        shell: pwsh
+        run: |
+          $url = "https://github.com/astral-sh/python-build-standalone/releases/download/20241016/cpython-3.12.7+20241016-x86_64-pc-windows-msvc-shared-install_only.tar.gz"
+          Invoke-WebRequest -Uri $url -OutFile python.tar.gz
+          New-Item -ItemType Directory -Force -Path python | Out-Null
+          tar xzf python.tar.gz -C python
+          if (-not (Test-Path "python/python.exe")) { throw "python.exe missing after extract" }
+
       - name: Build renderer
         working-directory: app
         run: |
@@ -73,7 +83,7 @@ jobs:
         if: matrix.platform == 'win32'
         working-directory: app
         shell: pwsh
-        run: node scripts/package.mjs --platform win32 --out release --linux-agent (Resolve-Path ../agent-linux/env-tools-api).Path
+        run: node scripts/package.mjs --platform win32 --out release --linux-agent (Resolve-Path ../agent-linux/env-tools-api).Path --python-dir (Resolve-Path ../python).Path
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -90,8 +100,29 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+      - name: Generate latest.json (auto-update feed)
+        working-directory: artifacts
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          WIN_FILE=$(ls pkg-win32/*.zip | xargs -n1 basename)
+          LIN_FILE=$(ls pkg-linux/*.tar.gz | xargs -n1 basename)
+          WIN_SHA=$(sha256sum "pkg-win32/$WIN_FILE" | cut -d' ' -f1)
+          LIN_SHA=$(sha256sum "pkg-linux/$LIN_FILE" | cut -d' ' -f1)
+          cat > latest.json <<EOF
+          {
+            "version": "$VERSION",
+            "files": {
+              "win32": { "name": "$WIN_FILE", "sha256": "$WIN_SHA" },
+              "linux": { "name": "$LIN_FILE", "sha256": "$LIN_SHA" }
+            }
+          }
+          EOF
+          cat latest.json
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/**/*
+          files: |
+            artifacts/**/*
+            artifacts/latest.json
           generate_release_notes: true

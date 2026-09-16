@@ -1,22 +1,36 @@
 # Env-Tools 桌面应用（Windows）启动脚本
 #
-# 用量数据与凭证都在 WSL 里（usage_monitor.py 经 wsl.exe 运行），本脚本负责
-# 探测 WSL 发行版与仓库路径后拉起同目录的 Env-Tools.exe。
+# v0.6.0 起 Windows 原生模式开箱即用：配额引擎脚本与分析 agent 都随包分发
+# （包内内嵌独立 Python，无需安装）。WSL 变为可选目标——Target 选择器里连接
+# 即可自举；若希望配额数据直接由 WSL 侧引擎承载，加 -UseWsl。
 #
 # 用法：
-#   .\Start-EnvTools.ps1                              # 自动探测发行版与仓库
-#   .\Start-EnvTools.ps1 -Distro Ubuntu-22.04         # 指定发行版
-#   .\Start-EnvTools.ps1 -WslRepo "~/my/Env-Tools"    # 指定 WSL 内仓库路径
+#   .\Start-EnvTools.ps1                      # 原生模式（推荐）
+#   .\Start-EnvTools.ps1 -UseWsl              # 配额数据由 WSL 侧引擎读取
+#   .\Start-EnvTools.ps1 -UseWsl -Distro Ubuntu-22.04 -WslRepo "~/my/Env-Tools"
 
 param(
+    [switch]$UseWsl,
     [string]$Distro = "",
     [string]$WslRepo = "~/Env-Tools"
 )
 
 $ErrorActionPreference = "Stop"
 
+$exe = Join-Path $PSScriptRoot "Env-Tools.exe"
+if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+    Write-Error "Env-Tools.exe not found next to this script."
+    exit 1
+}
+
+if (-not $UseWsl) {
+    Write-Host "Starting Env-Tools (native mode: bundled python + local agent)"
+    Start-Process -FilePath $exe -WorkingDirectory $PSScriptRoot
+    exit 0
+}
+
 if (-not (Get-Command wsl.exe -ErrorAction SilentlyContinue)) {
-    Write-Error "WSL is not installed. Env-Tools needs a WSL distro that has the Env-Tools repo deployed (setup.sh)."
+    Write-Error "WSL is not installed. Use native mode (without -UseWsl) or install WSL."
     exit 1
 }
 
@@ -53,10 +67,5 @@ $env:AI_USAGE_MONITOR_BACKEND = "wsl"
 $env:AI_USAGE_MONITOR_WSL_DISTRO = $Distro
 $env:AI_USAGE_MONITOR_WSL_SCRIPT = $script
 
-$exe = Join-Path $PSScriptRoot "Env-Tools.exe"
-if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
-    Write-Error "Env-Tools.exe not found next to this script."
-    exit 1
-}
-Write-Host "Starting Env-Tools (distro=$Distro, script=$script)"
+Write-Host "Starting Env-Tools (WSL mode: distro=$Distro, script=$script)"
 Start-Process -FilePath $exe -WorkingDirectory $PSScriptRoot

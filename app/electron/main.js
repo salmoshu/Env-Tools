@@ -20,6 +20,17 @@ const PACKED_MONITOR = path.join(__dirname, "..", "backend", "usage_monitor.py")
 const MONITOR_SCRIPT = fs.existsSync(PACKED_MONITOR)
   ? PACKED_MONITOR
   : path.join(REPO_ROOT, "linux", "ai-tools", "usage-monitor", "usage_monitor.py");
+// Windows 包内嵌独立 Python（python-build-standalone）：存在则引擎与 agent
+// 都用它，用户无需安装 Python
+const BUNDLED_PYTHON = path.join(__dirname, "..", "backend", "python", "python.exe");
+const hasBundledPython = () => process.platform === "win32" && fs.existsSync(BUNDLED_PYTHON);
+
+function resolvePython() {
+  if (process.env.AI_USAGE_PYTHON) return process.env.AI_USAGE_PYTHON;
+  if (hasBundledPython()) return BUNDLED_PYTHON;
+  // Windows 上通常只有 `python`（无 python3 别名）
+  return process.platform === "win32" ? "python" : "python3";
+}
 const BACKEND_BINARY = path.join(
   REPO_ROOT, "app", "backend-rs", "target", "release", "env-tools-api");
 const BACKEND_PORT_DEFAULT = 8747;
@@ -97,12 +108,15 @@ function backendSpec() {
   }
   const binary = nativeBackendBinary();
   if (!binary) return null;
+  const env = { ...process.env };
+  if (hasBundledPython()) env.AI_USAGE_PYTHON = BUNDLED_PYTHON;
   return {
     command: binary,
     args: [
       "--port", String(BACKEND_PORT_DEFAULT),
       "--monitor", MONITOR_SCRIPT,
     ],
+    env,
   };
 }
 
@@ -113,6 +127,7 @@ function startBackend() {
     backendChild = spawn(spec.command, spec.args, {
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
+      env: spec.env,
     });
     let buffer = "";
     const onData = (chunk) => {
@@ -243,10 +258,7 @@ function monitorSpec(extraArgs) {
       args: ["-d", WSL_DISTRO, "--exec", "python3", WSL_MONITOR_SCRIPT, ...extraArgs],
     };
   }
-  // Windows 上通常只有 `python`（无 python3 别名），可用 AI_USAGE_PYTHON 覆盖
-  const python = process.env.AI_USAGE_PYTHON
-    || (process.platform === "win32" ? "python" : "python3");
-  return { command: python, args: [MONITOR_SCRIPT, ...extraArgs] };
+  return { command: resolvePython(), args: [MONITOR_SCRIPT, ...extraArgs] };
 }
 
 function runMonitor(extraArgs, { input = "", timeoutMs = FETCH_TIMEOUT_MS } = {}) {
@@ -799,6 +811,49 @@ ipcMain.handle("connect-target", async (_event, targetId) => {
   }
   return { ok: false, error: `unknown target: ${targetId}` };
 });
+// 按目标解析 agent 访问点（本机后端 / WSL agent / SSH 隧道），供分析与配额共用
+async function resolveTargetAgent(targetId) {
+  if (!targetId || targetId === "local") {
+    if (!backendPort) return null;
+    return { base: `http://127.0.0.1:${backendPort}`, headers: {} };
+  }
+  if (targetId.startsWith("wsl:")) {
+    const ensured = await ensureWslAgent(targetId.slice(4));
+    if (!ensured.ok) return null;
+    return { base: `http://127.0.0.1:${ensured.port}`, headers: {} };
+  }
+  if (targetId.startsWith("ssh:")) {
+    const session = sshSessions.get(targetId.slice(4));
+    if (!session) return null;
+    return {
+      base: `http://127.0.0.1:${session.localPort}`,
+      headers: { "x-env-token": session.token },
+    };
+  }
+  return null;
+}
+
+ipcMain.handle("get-usage", async (_event, targetId) => {
+  // 目标内 agent 的 /api/usage（自带单飞缓存），失败时本机目标回退 python 直连
+  const agent = await resolveTargetAgent(targetId);
+  if (agent) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 55000);
+      const res = await fetch(`${agent.base}/api/usage`, {
+        headers: agent.headers,
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      if (res.ok) return await res.json();
+    } catch {}
+  }
+  if (!targetId || targetId === "local") {
+    return await fetchUsage();
+  }
+  return { error: `target ${targetId} agent is unreachable — connect it in Tools first` };
+});
+
 ipcMain.handle("get-analytics", async (_event, days, agent, targetId) => {
   const query = `?days=${encodeURIComponent(days || 30)}&agent=${encodeURIComponent(agent || "all")}`;
   // SSH 目标：经本地端口转发访问远端 agent（请求带自举时的随机 token）
@@ -1245,6 +1300,284 @@ ipcMain.handle("component-status", async (_event, component, environment) => {
       resolve({ ok: false, error: "timed out", output: out.trim() });
     }, timeoutMs);
   });
+});
+
+// --- 自研轻量升级器（v0.6.0） -------------------------------------------------
+// 检查：读取 Release 的 latest.json（版本号 + 资产名 + sha256），与当前版本比较。
+// 安装：下载对应平台资产 → 校验 → 解压到临时目录 → 生成参数化交换脚本（等主
+// 进程退出 → 旧目录改名 .old → 新目录就位 → 重启 → 成功后清理），脱离父进程
+// 执行后主进程退出。任何一步失败都回滚保留旧版本。
+const UPDATE_FEED = process.env.AI_USAGE_UPDATE_FEED
+  || "https://github.com/salmoshu/Env-Tools/releases/latest/download/latest.json";
+let lastUpdateInfo = null;
+let cachedGithubToken = null;
+
+// 私有仓库的 release 资产匿名不可见：token 依次从环境变量、gh CLI、userData
+// 配置文件解析（gh auth token 是最省事的来源）
+function githubToken() {
+  if (cachedGithubToken !== null) return cachedGithubToken;
+  if (process.env.AI_USAGE_GH_TOKEN) {
+    cachedGithubToken = process.env.AI_USAGE_GH_TOKEN;
+    return cachedGithubToken;
+  }
+  const tokenFile = path.join(app.getPath("userData"), "gh-token");
+  try {
+    const fromFile = fs.readFileSync(tokenFile, "utf8").trim();
+    if (fromFile) {
+      cachedGithubToken = fromFile;
+      return cachedGithubToken;
+    }
+  } catch {}
+  // GUI 启动的进程 PATH 可能不含 gh 安装位置，逐个探测常见路径
+  const candidates = [
+    "gh",
+    "/usr/local/bin/gh",
+    "/usr/bin/gh",
+    path.join(process.env.HOME || process.env.USERPROFILE || "", ".local", "bin", "gh"),
+  ];
+  for (const candidate of candidates) {
+    try {
+      const token = execSync(`"${candidate}" auth token`, {
+        encoding: "utf8",
+        timeout: 10000,
+      }).trim();
+      if (token) {
+        cachedGithubToken = token;
+        return token;
+      }
+    } catch {}
+  }
+  cachedGithubToken = null;
+  return null;
+}
+
+function githubHeaders(extra = {}) {
+  const token = githubToken();
+  return {
+    "User-Agent": "env-tools-app",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...extra,
+  };
+}
+
+ipcMain.handle("update-set-token", (_event, token) => {
+  if (!token || typeof token !== "string") return { ok: false, error: "empty token" };
+  try {
+    fs.mkdirSync(app.getPath("userData"), { recursive: true });
+    fs.writeFileSync(path.join(app.getPath("userData"), "gh-token"), token.trim());
+    cachedGithubToken = token.trim();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+function compareVersions(a, b) {
+  const pa = String(a).split(".").map((n) => parseInt(n, 10) || 0);
+  const pb = String(b).split(".").map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0) ? 1 : -1;
+  }
+  return 0;
+}
+
+function pickUpdateAsset(meta) {
+  const platform = process.platform === "win32" ? "win32" : "linux";
+  return (meta.files || {})[platform] || null;
+}
+
+ipcMain.handle("update-check", async () => {
+  const current = app.getVersion();
+  try {
+    let meta;
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 20000);
+      const res = await fetch(UPDATE_FEED, {
+        headers: githubHeaders(),
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      meta = await res.json();
+    } catch (feedErr) {
+      // 兜底：私有仓库 / latest 短链延迟时，走 GitHub API 定位 latest.json
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 20000);
+      const api = await fetch("https://api.github.com/repos/salmoshu/Env-Tools/releases/latest", {
+        headers: githubHeaders({ Accept: "application/vnd.github+json" }),
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      if (!api.ok) {
+        throw new Error(
+          `feed HTTP ${String(feedErr.message || feedErr).slice(0, 40)}; api HTTP ${api.status}` +
+          (api.status === 404 ? " (private repo? configure a token)" : ""),
+        );
+      }
+      const release = await api.json();
+      const metaAsset = (release.assets || []).find((a) => a.name === "latest.json");
+      if (!metaAsset) throw new Error("latest release has no latest.json");
+      // 私有仓库的 browser_download_url 匿名/带 token 都可能 404，
+      // 统一走 API 的 octet-stream 通道
+      const res2 = await fetch(metaAsset.url, {
+        headers: githubHeaders({ Accept: "application/octet-stream" }),
+      });
+      if (!res2.ok) throw new Error(`latest.json download HTTP ${res2.status}`);
+      meta = JSON.parse(await res2.text());
+      // 记录平台资产的 API id，下载时走认证的 octet-stream 通道
+      for (const key of Object.keys(meta.files || {})) {
+        const match = (release.assets || []).find((a) => a.name === meta.files[key].name);
+        if (match) meta.files[key].id = match.id;
+      }
+    }
+    const available = compareVersions(meta.version, current) > 0;
+    lastUpdateInfo = available ? meta : null;
+    const asset = available ? pickUpdateAsset(meta) : null;
+    return {
+      ok: true,
+      current,
+      latest: meta.version,
+      available,
+      asset: asset ? asset.name : null,
+    };
+  } catch (err) {
+    return { ok: false, error: err.message, current };
+  }
+});
+
+function sendUpdateProgress(payload) {
+  for (const w of liveWindows()) w.webContents.send("update-progress", payload);
+}
+
+async function downloadUpdateAsset(asset, destFile) {
+  // 私有仓库：经 API 的 asset url（Accept: application/octet-stream）下载
+  const url = asset.id
+    ? `https://api.github.com/repos/salmoshu/Env-Tools/releases/assets/${asset.id}`
+    : `https://github.com/salmoshu/Env-Tools/releases/download/v${lastUpdateInfo.version}/${encodeURIComponent(asset.name)}`;
+  sendUpdateProgress({ phase: "download", percent: 0 });
+  const res = await fetch(url, {
+    headers: githubHeaders({ Accept: "application/octet-stream" }),
+  });
+  if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`);
+  const total = Number(res.headers.get("content-length")) || 0;
+  let received = 0;
+  const chunks = [];
+  for await (const chunk of res.body) {
+    chunks.push(chunk);
+    received += chunk.length;
+    if (total) {
+      sendUpdateProgress({ phase: "download", percent: Math.round((received / total) * 100) });
+    }
+  }
+  const buffer = Buffer.concat(chunks);
+  if (asset.sha256) {
+    const crypto = require("node:crypto");
+    const digest = crypto.createHash("sha256").update(buffer).digest("hex");
+    if (digest !== asset.sha256.toLowerCase()) {
+      throw new Error(`sha256 mismatch (expected ${asset.sha256.slice(0, 12)}…, got ${digest.slice(0, 12)}…)`);
+    }
+  }
+  fs.writeFileSync(destFile, buffer);
+}
+
+function extractUpdate(archive, destDir) {
+  fs.mkdirSync(destDir, { recursive: true });
+  if (process.platform === "win32") {
+    execSync(
+      `powershell -NoProfile -Command "Expand-Archive -Path '${archive}' -DestinationPath '${destDir}' -Force"`,
+      { stdio: "ignore" },
+    );
+  } else {
+    execSync(`tar xzf ${JSON.stringify(archive)} -C ${JSON.stringify(destDir)}`, { stdio: "ignore" });
+  }
+}
+
+ipcMain.handle("update-install", async () => {
+  if (!app.isPackaged) {
+    return { ok: false, error: "auto-update works only in packaged builds (dev: rebuild manually)" };
+  }
+  if (!lastUpdateInfo) return { ok: false, error: "no pending update — run check first" };
+  const asset = pickUpdateAsset(lastUpdateInfo);
+  if (!asset) return { ok: false, error: "no asset for this platform in the release" };
+  const currentDir = path.dirname(app.getPath("exe"));
+  const exeName = process.platform === "win32" ? "Env-Tools.exe" : "Env-Tools";
+  const work = path.join(app.getPath("temp"), `env-tools-update-${Date.now()}`);
+  fs.mkdirSync(work, { recursive: true });
+  try {
+    const archive = path.join(work, asset.name);
+    await downloadUpdateAsset(asset, archive);
+    sendUpdateProgress({ phase: "extract", percent: 100 });
+    const extractDir = path.join(work, "extracted");
+    extractUpdate(archive, extractDir);
+    const entries = fs.readdirSync(extractDir).filter((name) =>
+      fs.existsSync(path.join(extractDir, name, exeName)));
+    if (entries.length !== 1) throw new Error("unexpected package layout");
+    const newDir = path.join(extractDir, entries[0]);
+
+    // 参数化交换脚本：路径全部经参数传入，脚本内容零转义
+    const isWin = process.platform === "win32";
+    const swapScript = path.join(work, isWin ? "upgrade.ps1" : "upgrade.sh");
+    if (isWin) {
+      fs.writeFileSync(swapScript, `$ErrorActionPreference = "Stop"
+param([string]$Cur, [string]$NewDir, [string]$ExeName)
+$appExe = Join-Path $Cur $ExeName
+for ($i = 0; $i -lt 60; $i++) {
+  $p = Get-Process | Where-Object { $_.Path -eq $appExe }
+  if (-not $p) { break }
+  Start-Sleep -Seconds 1
+}
+$old = "${Cur}.old"
+$target = Join-Path (Split-Path $Cur -Parent) (Split-Path $Cur -Leaf)
+Rename-Item $Cur $old
+Move-Item $NewDir $target
+Start-Process -FilePath (Join-Path $target $ExeName) -WorkingDirectory $target
+Start-Sleep -Seconds 5
+$p = Get-Process | Where-Object { $_.Path -eq (Join-Path $target $ExeName) }
+if ($p) {
+  Remove-Item $old -Recurse -Force
+} else {
+  Rename-Item $target "$target.new-failed"
+  Rename-Item $old $Cur
+  Start-Process -FilePath $appExe -WorkingDirectory $Cur
+}
+`);
+      spawn("powershell", [
+        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", swapScript,
+        "-Cur", currentDir, "-NewDir", newDir, "-ExeName", exeName,
+      ], { detached: true, stdio: "ignore", windowsHide: true }).unref();
+    } else {
+      fs.writeFileSync(swapScript, `#!/bin/bash
+set -e
+CUR="$1"; NEW="$2"; EXE="$3"
+exe="$CUR/$EXE"
+for i in $(seq 1 60); do
+  pgrep -f "$exe" >/dev/null 2>&1 || break
+  sleep 1
+done
+mv "$CUR" "$CUR.old"
+mv "$NEW" "$CUR"
+chmod +x "$CUR/$EXE" 2>/dev/null || true
+nohup "$CUR/$EXE" >/dev/null 2>&1 &
+sleep 5
+if pgrep -f "$CUR/$EXE" >/dev/null 2>&1; then
+  rm -rf "$CUR.old"
+else
+  mv "$CUR" "$CUR.new-failed"
+  mv "$CUR.old" "$CUR"
+  nohup "$CUR/$EXE" >/dev/null 2>&1 &
+fi
+`, { mode: 0o755 });
+      spawn("bash", [swapScript, currentDir, newDir, exeName], {
+        detached: true, stdio: "ignore",
+      }).unref();
+    }
+    sendUpdateProgress({ phase: "restart", percent: 100 });
+    setTimeout(() => app.quit(), 1500);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
 });
 
 if (gotLock) {

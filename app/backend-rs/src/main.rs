@@ -249,13 +249,19 @@ async fn usage(axum::extract::State(state): axum::extract::State<AppState>) -> J
     let value = state
         .cache
         .get_or_fetch("usage".to_string(), USAGE_TTL, move || async move {
-            run_monitor(
+            let raw = run_monitor(
                 &monitor,
                 &["--json".into(), "--dashboard".into()],
                 None,
                 USAGE_TIMEOUT,
             )
-            .await
+            .await;
+            // 与 Electron 侧 fetchUsage 的形状对齐：{data: ...} / {error: ...}
+            if raw.get("accounts").is_some() {
+                serde_json::json!({ "ok": true, "data": raw })
+            } else {
+                raw
+            }
         })
         .await;
     Json(value)
