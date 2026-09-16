@@ -66,8 +66,13 @@ jobs:
           if (-not (Test-Path "python.tar.gz")) { throw "python download failed" }
           Write-Host "archive size: $((Get-Item python.tar.gz).Length)"
           New-Item -ItemType Directory -Force -Path python | Out-Null
-          # runner 自带 bsdtar 解该包会得到空目录，用 Python 标准库解压
+          # runner 自带 bsdtar 解该包不可靠，用 Python 标准库解压；
+          # 归档顶层自带 python/ 前缀，解压后会上提一层
           python -m tarfile -e python.tar.gz python
+          if (Test-Path "python/python/python.exe") {
+            Move-Item python/python/* python/ -Force
+            Remove-Item python/python -Recurse -Force
+          }
           if (-not (Test-Path "python/python.exe")) {
             Get-ChildItem -Recurse python | Select-Object -First 10 | ForEach-Object { Write-Host $_.FullName }
             throw "python.exe missing after extract"
