@@ -390,8 +390,15 @@ class EnvironmentTests(unittest.TestCase):
             now=datetime(2026, 8, 23, 10, 45, 56, tzinfo=china),
         )
 
-        self.assertEqual(membership["purchased_at"], "2026-07-23T22:45:56+08:00")
-        self.assertEqual(membership["ends_at"], "2026-08-23T22:45:56+08:00")
+        # ISO 串按本机时区输出，断言同一时刻而不是字面量（CI 时区无关）
+        self.assertEqual(
+            datetime.fromisoformat(membership["purchased_at"]),
+            datetime(2026, 7, 23, 22, 45, 56, tzinfo=china),
+        )
+        self.assertEqual(
+            datetime.fromisoformat(membership["ends_at"]),
+            datetime(2026, 8, 23, 22, 45, 56, tzinfo=china),
+        )
         self.assertEqual(membership["end_after_seconds"], 12 * 3600)
 
     def test_openai_membership_clamps_shorter_month(self):
@@ -402,7 +409,11 @@ class EnvironmentTests(unittest.TestCase):
             },
             now=datetime(2026, 1, 31, 12, 0, tzinfo=timezone.utc),
         )
-        self.assertEqual(membership["ends_at"], "2026-02-28T20:00:00+08:00")
+        # 1 个月加到 2 月 31 日不存在，收拢到 2 月 28 日同一时刻
+        self.assertEqual(
+            datetime.fromisoformat(membership["ends_at"]),
+            datetime(2026, 2, 28, 12, 0, tzinfo=timezone.utc),
+        )
 
     def test_membership_attaches_to_any_provider(self):
         result = {"provider": "DeepSeek"}
