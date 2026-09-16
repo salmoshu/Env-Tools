@@ -571,6 +571,178 @@ async function ensureWslAgent(distro) {
   return { ok: false, error: "agent did not become healthy inside WSL (see ~/.local/share/env-tools/agent.log)" };
 }
 
+// --- SSH 远端目标（v0.5.0） ---------------------------------------------------
+// 连接定义持久化在 userData/connections.json；自举 = scp agent 二进制 +
+// ssh 启动（随机 token），日常经本地端口转发访问远端 agent。Tools 安装/升级
+// 动作仍限 local/WSL 目标（脚本材料在仓库侧）。
+let sshConnections = [];
+let sshSeq = 1;
+const sshSessions = new Map(); // host → { localPort, token, tunnelChild }
+
+function connectionsFile() {
+  return path.join(app.getPath("userData"), "connections.json");
+}
+
+function loadConnections() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(connectionsFile(), "utf8"));
+    if (Array.isArray(parsed)) sshConnections = parsed.filter((c) => c && c.host);
+  } catch {}
+}
+
+function saveConnections() {
+  try {
+    fs.mkdirSync(path.dirname(connectionsFile()), { recursive: true });
+    fs.writeFileSync(connectionsFile(), JSON.stringify(sshConnections, null, 2));
+  } catch {}
+}
+
+function sshArgs(connection, remoteCommand) {
+  const args = [
+    "-p", String(connection.port || 22),
+    "-o", "BatchMode=yes",
+    "-o", "ConnectTimeout=10",
+  ];
+  if (connection.user) args.push("-l", connection.user);
+  args.push(connection.host);
+  if (remoteCommand) args.push(remoteCommand);
+  return args;
+}
+
+function runSsh(connection, remoteCommand, timeoutMs = 45000) {
+  return new Promise((resolve) => {
+    const child = spawn("ssh", sshArgs(connection, remoteCommand), {
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    let stdout = "";
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    const timer = setTimeout(() => {
+      try { child.kill(); } catch {}
+      finish({ error: "ssh command timed out" });
+    }, timeoutMs);
+    child.stdout.on("data", (d) => (stdout += String(d)));
+    child.stderr.on("data", (d) => (stdout += String(d)));
+    child.on("error", (err) => finish({ error: err.message }));
+    child.on("close", (code) => finish({ code, stdout: stdout.trim() }));
+  });
+}
+
+function sshAgentPath() {
+  const packed = path.join(__dirname, "..", "agent", "env-agent-linux");
+  if (fs.existsSync(packed)) return packed;
+  return findLinuxAgentBinary();
+}
+
+async function ensureSshAgent(connection) {
+  const existing = sshSessions.get(connection.host);
+  if (existing) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 3000);
+      const res = await fetch(`http://127.0.0.1:${existing.localPort}/api/health`, {
+        headers: { "x-env-token": existing.token },
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      if (res.ok) return { ok: true, ...existing };
+    } catch {}
+  }
+  const binary = sshAgentPath();
+  if (!binary) return { ok: false, error: "linux agent binary not found in this package" };
+  const remoteDir = "~/.local/share/env-tools";
+  const token = require("node:crypto").randomBytes(16).toString("hex");
+
+  // stage 1：建立远端目录并上传 agent（scp 参数数组，不拼 shell）
+  const mkdir = await runSsh(connection, `mkdir -p ${remoteDir}`);
+  if (mkdir.error) return { ok: false, error: `ssh failed: ${mkdir.error}` };
+  const scp = await new Promise((resolve) => {
+    // scp 没有 -l 选项，用户名并入 host（user@host:path）
+    const hostSpec = `${connection.user ? connection.user + "@" : ""}${connection.host}`;
+    const args = ["-P", String(connection.port || 22)];
+    args.push(binary, `${hostSpec}:${remoteDir}/env-agent`);
+    const child = spawn("scp", args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    let err = "";
+    child.stderr.on("data", (d) => (err += String(d)));
+    const timer = setTimeout(() => { try { child.kill(); } catch {} resolve({ error: "scp timed out" }); }, 180000);
+    child.on("error", (e) => { clearTimeout(timer); resolve({ error: e.message }); });
+    child.on("close", (code) => { clearTimeout(timer); resolve(code === 0 ? { ok: true } : { error: `scp exit ${code}: ${err.trim().slice(-200)}` }); });
+  });
+  if (scp.error) return { ok: false, error: scp.error };
+
+  // stage 2：随机 token 启动（SSH 场景非 loopback-only，必须鉴权）
+  const start = await runSsh(
+    connection,
+    `chmod +x ${remoteDir}/env-agent && pkill -f 'env-agent --port ${WSL_AGENT_PORT}' 2>/dev/null; ` +
+    `nohup ${remoteDir}/env-agent --port ${WSL_AGENT_PORT} --token ${token} >${remoteDir}/agent.log 2>&1 & disown; sleep 1; echo started`,
+  );
+  if (start.error) return { ok: false, error: `agent start failed: ${start.error}` };
+
+  // stage 3：本地端口转发隧道
+  let localPort = 19150 + (sshSeq++ % 40);
+  const tunnelChild = spawn("ssh", [
+    "-p", String(connection.port || 22),
+    "-o", "BatchMode=yes",
+    "-o", "ExitOnForwardFailure=yes",
+    "-N",
+    "-L", `${localPort}:127.0.0.1:${WSL_AGENT_PORT}`,
+    ...(connection.user ? ["-l", connection.user] : []),
+    connection.host,
+  ], { stdio: ["ignore", "ignore", "ignore"], windowsHide: true, detached: process.platform !== "win32" });
+  for (let attempt = 0; attempt < 8; attempt++) {
+    await new Promise((r) => setTimeout(r, 1200));
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 3000);
+      const res = await fetch(`http://127.0.0.1:${localPort}/api/health`, {
+        headers: { "x-env-token": token },
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      if (res.ok) {
+        sshSessions.set(connection.host, { localPort, token, tunnelChild });
+        return { ok: true, localPort, token };
+      }
+    } catch {}
+  }
+  try { tunnelChild.kill(); } catch {}
+  return { ok: false, error: "tunnel or remote agent did not become healthy (check ssh access & ~/.local/share/env-tools/agent.log)" };
+}
+
+ipcMain.handle("ssh-list", () => ({ ok: true, connections: sshConnections }));
+ipcMain.handle("ssh-save", (_event, list) => {
+  if (!Array.isArray(list)) return { ok: false, error: "invalid list" };
+  sshConnections = list
+    .filter((c) => c && typeof c.host === "string" && c.host.trim())
+    .map((c, index) => ({
+      id: `ssh:${c.host}`,
+      host: c.host.trim(),
+      port: Number(c.port) || 22,
+      user: (c.user || "").trim(),
+    }));
+  saveConnections();
+  return { ok: true, connections: sshConnections };
+});
+ipcMain.handle("ssh-connect", async (_event, host) => {
+  const connection = sshConnections.find((c) => c.host === host);
+  if (!connection) return { ok: false, error: `unknown ssh host: ${host}` };
+  return ensureSshAgent(connection);
+});
+ipcMain.handle("ssh-disconnect", (_event, host) => {
+  const session = sshSessions.get(host);
+  if (session) {
+    try { session.tunnelChild.kill(); } catch {}
+    sshSessions.delete(host);
+  }
+  return { ok: true };
+});
+
 ipcMain.handle("list-targets", async () => {
   const targets = [{ id: "local", label: "This machine", kind: "local", ready: Boolean(backendPort) }];
   if (process.platform === "win32" || IS_WSL) {
@@ -599,18 +771,50 @@ ipcMain.handle("list-targets", async () => {
       }
     } catch {}
   }
+  for (const connection of sshConnections) {
+    const session = sshSessions.get(connection.host);
+    targets.push({
+      id: `ssh:${connection.host}`,
+      label: `SSH · ${connection.user ? connection.user + "@" : ""}${connection.host}`,
+      kind: "ssh",
+      host: connection.host,
+      ready: Boolean(session),
+    });
+  }
   return { ok: true, targets };
 });
 ipcMain.handle("connect-target", async (_event, targetId) => {
   if (targetId === "local") return { ok: true };
   if (targetId.startsWith("wsl:")) {
-    const result = await ensureWslAgent(targetId.slice(4));
+    return ensureWslAgent(targetId.slice(4));
+  }
+  if (targetId.startsWith("ssh:")) {
+    const host = targetId.slice(4);
+    const result = await ensureSshAgent(sshConnections.find((c) => c.host === host) || { host });
+    if (result.ok) return { ok: true, localPort: result.localPort, token: result.token };
     return result;
   }
   return { ok: false, error: `unknown target: ${targetId}` };
 });
 ipcMain.handle("get-analytics", async (_event, days, agent, targetId) => {
   const query = `?days=${encodeURIComponent(days || 30)}&agent=${encodeURIComponent(agent || "all")}`;
+  // SSH 目标：经本地端口转发访问远端 agent（请求带自举时的随机 token）
+  if (targetId && targetId.startsWith("ssh:")) {
+    const host = targetId.slice(4);
+    const session = sshSessions.get(host);
+    if (!session) return { ok: false, error: `SSH target ${host} is not connected — connect it in Tools first` };
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), ANALYTICS_TIMEOUT_MS);
+      const res = await fetch(`http://127.0.0.1:${session.localPort}/api/analytics${query}`, {
+        headers: { "x-env-token": session.token },
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      if (res.ok) return await res.json();
+    } catch {}
+    return { ok: false, error: `SSH agent for ${host} is unreachable (tunnel may have dropped)` };
+  }
   // WSL 目标：自举并请求 WSL 内的 agent（原生引擎，无需仓库路径）
   if (targetId && targetId.startsWith("wsl:")) {
     const distro = targetId.slice(4);
@@ -1042,6 +1246,7 @@ ipcMain.handle("component-status", async (_event, component, environment) => {
 
 if (gotLock) {
   app.whenReady().then(async () => {
+    loadConnections();
     if (WSL_BACKEND) {
       const settings = await runMonitorJson(["--get-settings"]);
       if (settings && settings.ok && settings.environment === "wsl" && typeof settings.wsl_distro === "string") {

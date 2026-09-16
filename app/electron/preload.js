@@ -9,6 +9,10 @@ contextBridge.exposeInMainWorld("api", {
   getBackendStatus: () => ipcRenderer.invoke("get-backend-status"),
   listTargets: () => ipcRenderer.invoke("list-targets"),
   connectTarget: (targetId) => ipcRenderer.invoke("connect-target", targetId),
+  sshList: () => ipcRenderer.invoke("ssh-list"),
+  sshSave: (list) => ipcRenderer.invoke("ssh-save", list),
+  sshConnect: (host) => ipcRenderer.invoke("ssh-connect", host),
+  sshDisconnect: (host) => ipcRenderer.invoke("ssh-disconnect", host),
   // 窗口
   minimize: () => ipcRenderer.send("window-minimize"),
   close: () => ipcRenderer.send("window-close"),

@@ -47,6 +47,10 @@ export default function Tools({ lastPayload }) {
   const [result, setResult] = useState(null); // { ok, error }
   const [statuses, setStatuses] = useState({});
   const [backend, setBackend] = useState(null);
+  const [sshList, setSshList] = useState([]);
+  const [sshForm, setSshForm] = useState({ host: "", port: "22", user: "" });
+  const [sshBusy, setSshBusy] = useState("");
+  const [sshNote, setSshNote] = useState("");
   const logRef = useRef(null);
 
   const data = (lastPayload && lastPayload.data) || {};
@@ -56,6 +60,10 @@ export default function Tools({ lastPayload }) {
   useEffect(() => {
     (async () => {
       try { setBackend(await window.api.getBackendStatus()); } catch {}
+      try {
+        const result = await window.api.sshList();
+        if (result && result.connections) setSshList(result.connections);
+      } catch {}
     })();
     return window.api.onInstallProgress(({ line }) => {
       if (!line) return;
@@ -63,6 +71,30 @@ export default function Tools({ lastPayload }) {
       if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
     });
   }, []);
+
+  const saveSsh = async (list) => {
+    const result = await window.api.sshSave(list);
+    if (result && result.connections) setSshList(result.connections);
+  };
+
+  const connectSsh = async (host) => {
+    setSshBusy(host);
+    setSshNote(`Connecting to ${host} … (bootstrap: upload agent, start, tunnel)`);
+    try {
+      const result = await window.api.sshConnect(host);
+      setSshNote(result && result.ok
+        ? `Connected: ${host} (agent reachable via localhost tunnel)`
+        : `Failed: ${(result && result.error) || "unknown error"}`);
+      const targets = await window.api.listTargets();
+      if (targets && targets.targets) {
+        // 刷新 Dashboard 侧的目标列表（同一持久化数据）
+      }
+    } catch (err) {
+      setSshNote(`Failed: ${err.message || err}`);
+    } finally {
+      setSshBusy("");
+    }
+  };
 
   const refreshSshStatus = async () => {
     setStatuses((prev) => ({ ...prev, openssh: { busy: true } }));
@@ -145,6 +177,73 @@ export default function Tools({ lastPayload }) {
           );
         })}
       </div>
+
+      <section className="card">
+        <h2>Remote targets (SSH)</h2>
+        <div className="panel-hint">
+          Register an SSH host, then Connect: the app uploads its agent to
+          <code> ~/.local/share/env-tools/</code> on that host and tunnels it to
+          localhost — the host then appears in the Analytics Target selector.
+          Requires key-based SSH access (no password prompts).
+        </div>
+        {sshList.map((c) => (
+          <div className="login-row" key={c.host}>
+            <div className="login-info">
+              <div className="login-name">{c.user ? `${c.user}@` : ""}{c.host}</div>
+              <div className="login-method">port {c.port}</div>
+            </div>
+            <button
+              className="login-btn"
+              disabled={Boolean(sshBusy)}
+              onClick={() => connectSsh(c.host)}
+            >
+              {sshBusy === c.host ? "Connecting…" : "Connect"}
+            </button>
+            <button
+              className="login-btn"
+              style={{ background: "transparent", color: "var(--faint)", borderColor: "var(--border)" }}
+              onClick={async () => {
+                await window.api.sshDisconnect(c.host);
+                await saveSsh(sshList.filter((item) => item.host !== c.host));
+              }}
+            >
+              Remove
+            </button>
+          </div>
+        ))}
+        <div className="membership-inputs" style={{ marginTop: 8, flexWrap: "wrap" }}>
+          <input
+            className="key-input" style={{ flex: "2", minWidth: 140 }} placeholder="host (required)"
+            value={sshForm.host}
+            onChange={(e) => setSshForm({ ...sshForm, host: e.target.value })}
+          />
+          <input
+            className="key-input" style={{ flex: "0 0 80px" }} placeholder="port"
+            value={sshForm.port}
+            onChange={(e) => setSshForm({ ...sshForm, port: e.target.value })}
+          />
+          <input
+            className="key-input" style={{ flex: "1", minWidth: 110 }} placeholder="user (optional)"
+            value={sshForm.user}
+            onChange={(e) => setSshForm({ ...sshForm, user: e.target.value })}
+          />
+          <button
+            className="login-btn"
+            disabled={!sshForm.host.trim()}
+            onClick={async () => {
+              await saveSsh([...sshList, {
+                host: sshForm.host.trim(),
+                port: Number(sshForm.port) || 22,
+                user: sshForm.user.trim(),
+              }]);
+              setSshForm({ host: "", port: "22", user: "" });
+            }}
+          >
+            Add
+          </button>
+        </div>
+        {sshNote ? <div className="settings-note" style={{ marginTop: 6 }}>{sshNote}</div> : null}
+      </section>
 
       <div className="card" style={{ marginTop: 14 }}>
         <h2>Runtime</h2>

@@ -40,8 +40,16 @@ watch 自动拉起的窗口即本应用。
 
 原生引擎（v0.4.0 起）：会话用量分析已用 Rust 在 agent 内实现（内存增量扫描，
 首次约 1 秒、后续毫秒级），聚合口径与 `--json --analytics` 完全一致；Plan
-配额、设置、API Key、升级等功能仍由 python 数据引擎承载，v0.5.0 起支持把
-目标扩展到 SSH 远端主机。
+配额、设置、API Key、升级等功能仍由 python 数据引擎承载。
+
+SSH 远端目标（v0.5.0 起）：Tools 页可登记 SSH 主机（host/port/user，需密钥
+认证）并一键连接——应用把 Linux agent 上传到远端
+`~/.local/share/env-tools/`、以随机 token 启动（端口 19100），并通过本地
+端口转发隧道访问；远端主机随即出现在 Analytics 的 Target 选择器里，分析
+数据（原生引擎）经隧道获取。安全边界：scp/ssh 全部参数数组调用、不拼接
+shell；私钥不进配置与日志；远端流量走 SSH 隧道 + token。已知限制：Tools
+的安装/升级动作目前仅支持本机与 WSL 目标（脚本材料在仓库侧），SSH 目标仅
+提供用量分析。
 
 ## 凭证
 

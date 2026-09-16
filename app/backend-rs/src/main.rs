@@ -22,7 +22,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use axum::{extract::Query, routing::get, Json, Router};
+use axum::{extract::Query, response::IntoResponse, routing::get, Json, Router};
 use serde_json::Value;
 use tokio::sync::Mutex;
 
@@ -43,10 +43,33 @@ struct AppState {
     cache: Arc<Cache>,
     /// 原生分析引擎状态（进程内增量；std Mutex + spawn_blocking 避免阻塞运行时）
     analytics: Arc<std::sync::Mutex<analytics::AnalyticsState>>,
+    /// 可选鉴权 token（--token）：设置后所有 /api 请求（除 /api/health）必须带
+    /// x-env-token 头。用于 SSH 等跨机场景；本机 loopback 可省略。
+    token: Option<String>,
 }
 
 fn error_payload(message: String) -> Value {
     serde_json::json!({ "ok": false, "error": message })
+}
+
+/// 鉴权中间件：设置了 --token 时，除 health 外的请求必须携带 x-env-token。
+async fn auth_guard(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    if let Some(expected) = &state.token {
+        let is_health = req.uri().path().starts_with("/api/health");
+        let provided = req.headers().get("x-env-token").and_then(|v| v.to_str().ok());
+        if !is_health && provided != Some(expected.as_str()) {
+            return (
+                axum::http::StatusCode::UNAUTHORIZED,
+                Json(error_payload("invalid or missing x-env-token header".into())),
+            )
+                .into_response();
+        }
+    }
+    next.run(req).await
 }
 
 /// 单飞缓存：同一 key 的并发请求共享同一次抓取（OnceCell），成功结果在
@@ -256,6 +279,7 @@ async fn backend_status(
 async fn main() {
     let mut port: u16 = 8747;
     let mut monitor = PathBuf::from("usage_monitor.py");
+    let mut token: Option<String> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -269,6 +293,11 @@ async fn main() {
                     monitor = PathBuf::from(raw);
                 }
             }
+            "--token" => {
+                if let Some(raw) = args.next() {
+                    token = Some(raw);
+                }
+            }
             other => eprintln!("unknown argument: {other}"),
         }
     }
@@ -277,12 +306,14 @@ async fn main() {
         monitor_script: monitor,
         cache: Arc::new(Cache::new()),
         analytics: Arc::new(std::sync::Mutex::new(analytics::AnalyticsState::default())),
+        token: token.clone(),
     };
     let app = Router::new()
         .route("/api/health", get(health))
         .route("/api/analytics", get(analytics))
         .route("/api/usage", get(usage))
         .route("/api/backend-status", get(backend_status))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), auth_guard))
         .with_state(state);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
