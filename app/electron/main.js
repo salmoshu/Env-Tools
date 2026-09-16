@@ -243,7 +243,10 @@ function monitorSpec(extraArgs) {
       args: ["-d", WSL_DISTRO, "--exec", "python3", WSL_MONITOR_SCRIPT, ...extraArgs],
     };
   }
-  return { command: "python3", args: [MONITOR_SCRIPT, ...extraArgs] };
+  // Windows 上通常只有 `python`（无 python3 别名），可用 AI_USAGE_PYTHON 覆盖
+  const python = process.env.AI_USAGE_PYTHON
+    || (process.platform === "win32" ? "python" : "python3");
+  return { command: python, args: [MONITOR_SCRIPT, ...extraArgs] };
 }
 
 function runMonitor(extraArgs, { input = "", timeoutMs = FETCH_TIMEOUT_MS } = {}) {

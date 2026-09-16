@@ -308,14 +308,23 @@ export default function Dashboard({ lastPayload }) {
 
       <section className="block">
         <h2>Plan quotas</h2>
-        <div className="quota-grid">
+        {lastPayload && lastPayload.error ? (
+          <div className="error-card" style={{ marginTop: 0 }}>
+            Quota data unavailable — {lastPayload.error}
+            <div style={{ opacity: 0.75, marginTop: 4 }}>
+              Quotas come from the data engine of the selected target. Check the
+              target's WSL/python setup, or press refresh to retry.
+            </div>
+          </div>
+        ) : null}
+        <div className="quota-grid" style={{ marginTop: (lastPayload && lastPayload.error) ? 10 : 0 }}>
           {accounts.length
             ? accounts.map((account) => (
               <QuotaCard key={account.provider} account={account} versions={versions} />
             ))
-            : (lastPayload && lastPayload.error
-              ? <div className="status">—</div>
-              : <div className="status">Loading…</div>)}
+            : (lastPayload && !lastPayload.error
+              ? <div className="status">No data</div>
+              : null)}
         </div>
         <div>
           {errors.map((err) => (

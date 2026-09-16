@@ -29,11 +29,23 @@ if (-not $Distro) {
     $Distro = $list | Select-Object -First 1
 }
 
-# 把 WSL 内的仓库路径展开成绝对路径
+# 展开 WSL 侧的 ~（wslpath 不会展开带引号的 tilde，需先用 bash 取 $HOME）
+$wslHome = (wsl.exe -d $Distro --exec bash -c 'echo $HOME' | Out-String).Trim() -replace "`0", ""
+if ($WslRepo.StartsWith("~")) {
+    $WslRepo = $wslHome + $WslRepo.Substring(1)
+}
+$WslRepo = $WslRepo.TrimEnd('/')
+
+# 解析并校验数据引擎脚本确实存在（校验失败给出明确指引，而不是启动后配额一直为空）
 $script = (wsl.exe -d $Distro --exec bash -c "wslpath -a -u '$WslRepo/linux/ai-tools/usage-monitor/usage_monitor.py' 2>/dev/null" |
     Out-String).Trim() -replace "`0", ""
 if (-not $script) {
     Write-Error "Cannot resolve the Env-Tools repo path inside '$Distro'. Deploy the repo (setup.sh) or pass -WslRepo."
+    exit 1
+}
+$exists = (wsl.exe -d $Distro --exec bash -c "test -f '$script' && echo yes || echo no" | Out-String).Trim() -replace "`0", ""
+if ($exists -ne "yes") {
+    Write-Error "usage_monitor.py not found at '$script' in '$Distro'. Is the Env-Tools repo deployed there?"
     exit 1
 }
 
