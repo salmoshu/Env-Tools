@@ -62,10 +62,17 @@ jobs:
         shell: pwsh
         run: |
           $url = "https://github.com/astral-sh/python-build-standalone/releases/download/20241016/cpython-3.12.7+20241016-x86_64-pc-windows-msvc-shared-install_only.tar.gz"
-          Invoke-WebRequest -Uri $url -OutFile python.tar.gz
+          curl.exe -sL $url -o python.tar.gz
+          if (-not (Test-Path "python.tar.gz")) { throw "python download failed" }
+          Write-Host "archive size: $((Get-Item python.tar.gz).Length)"
           New-Item -ItemType Directory -Force -Path python | Out-Null
           tar xzf python.tar.gz -C python
-          if (-not (Test-Path "python/python.exe")) { throw "python.exe missing after extract" }
+          if ($LASTEXITCODE -ne 0) { throw "python extract failed (tar exit $LASTEXITCODE)" }
+          if (-not (Test-Path "python/python.exe")) {
+            Get-ChildItem -Recurse python | Select-Object -First 10 FullName
+            throw "python.exe missing after extract"
+          }
+          Write-Host "python.exe ok"
 
       - name: Build renderer
         working-directory: app
