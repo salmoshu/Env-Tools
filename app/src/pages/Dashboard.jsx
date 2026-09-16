@@ -15,6 +15,7 @@ import {
 const ANALYTICS_REFRESH_MS = 5 * 60 * 1000;
 const DAYS_KEY = "ai-usage-monitor.analytics-days";
 const AGENT_KEY = "ai-usage-monitor.analytics-agent";
+const TARGET_KEY = "ai-usage-monitor.target";
 
 function shortDateLabel(date) {
   return date.slice(5);
@@ -98,15 +99,19 @@ export default function Dashboard({ lastPayload }) {
   const [agent, setAgent] = useState(() => {
     try { return localStorage.getItem(AGENT_KEY) || "all"; } catch { return "all"; }
   });
+  const [targets, setTargets] = useState([{ id: "local", label: "This machine", kind: "local" }]);
+  const [target, setTarget] = useState(() => {
+    try { return localStorage.getItem(TARGET_KEY) || "local"; } catch { return "local"; }
+  });
   const [sessionsSort, setSessionsSort] = useState({ key: "total", dir: -1 });
   const analyticsBusy = useRef(false);
 
-  const requestAnalytics = useCallback(async (nextDays, nextAgent) => {
+  const requestAnalytics = useCallback(async (nextDays, nextAgent, nextTarget) => {
     if (analyticsBusy.current) return;
     analyticsBusy.current = true;
     setBusy(true);
     try {
-      const result = await window.api.getAnalytics(nextDays, nextAgent);
+      const result = await window.api.getAnalytics(nextDays, nextAgent, nextTarget);
       if (result && result.ok && result.analytics) {
         setAnalytics(result.analytics);
         setAnalyticsError("");
@@ -122,10 +127,16 @@ export default function Dashboard({ lastPayload }) {
   }, []);
 
   useEffect(() => {
-    requestAnalytics(days, agent);
-    const timer = setInterval(() => requestAnalytics(days, agent), ANALYTICS_REFRESH_MS);
+    window.api.listTargets().then((result) => {
+      if (result && result.targets) setTargets(result.targets);
+    }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    requestAnalytics(days, agent, target);
+    const timer = setInterval(() => requestAnalytics(days, agent, target), ANALYTICS_REFRESH_MS);
     return () => clearInterval(timer);
-  }, [days, agent, requestAnalytics]);
+  }, [days, agent, target, requestAnalytics]);
 
   const data = lastPayload && lastPayload.data;
   const accounts = (data && data.accounts) || [];
@@ -210,6 +221,20 @@ export default function Dashboard({ lastPayload }) {
           </div>
         </div>
         <div className="head-controls">
+          <label className="days-field">Target
+            <select
+              className="control"
+              value={target}
+              onChange={(event) => {
+                setTarget(event.target.value);
+                try { localStorage.setItem(TARGET_KEY, event.target.value); } catch {}
+              }}
+            >
+              {targets.map((item) => (
+                <option key={item.id} value={item.id}>{item.label}</option>
+              ))}
+            </select>
+          </label>
           <label className="days-field">Agent
             <select
               className="control"

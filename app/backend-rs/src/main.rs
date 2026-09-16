@@ -26,16 +26,23 @@ use axum::{extract::Query, routing::get, Json, Router};
 use serde_json::Value;
 use tokio::sync::Mutex;
 
-const ANALYTICS_TIMEOUT: Duration = Duration::from_secs(180);
+mod analytics;
+
+#[cfg(test)]
+#[path = "analytics_tests.rs"]
+mod analytics_tests;
+
+const ANALYTICS_TTL: Duration = Duration::from_secs(30);
+const USAGE_TTL: Duration = Duration::from_secs(20);
 const USAGE_TIMEOUT: Duration = Duration::from_secs(50);
 const SETTINGS_TIMEOUT: Duration = Duration::from_secs(15);
-const ANALYTICS_TTL: Duration = Duration::from_secs(60);
-const USAGE_TTL: Duration = Duration::from_secs(20);
 
 #[derive(Clone)]
 struct AppState {
     monitor_script: PathBuf,
     cache: Arc<Cache>,
+    /// 原生分析引擎状态（进程内增量；std Mutex + spawn_blocking 避免阻塞运行时）
+    analytics: Arc<std::sync::Mutex<analytics::AnalyticsState>>,
 }
 
 fn error_payload(message: String) -> Value {
@@ -143,6 +150,7 @@ async fn health() -> Json<Value> {
     }))
 }
 
+/// /api/analytics：原生引擎扫描 + 聚合（无网络、无子进程）。
 async fn analytics(
     axum::extract::State(state): axum::extract::State<AppState>,
     Query(params): Query<HashMap<String, String>>,
@@ -155,31 +163,62 @@ async fn analytics(
     let agent = params
         .get("agent")
         .map(String::as_str)
-        .filter(|raw| ["all", "kimi", "codex", "glm", "deepseek"].contains(raw))
+        .filter(|raw| analytics::AGENTS.contains(raw))
         .unwrap_or("all")
         .to_string();
     let key = format!("analytics:{days}:{agent}");
-    let monitor = state.monitor_script.clone();
+    let state = state.clone();
     let value = state
         .cache
         .get_or_fetch(key, ANALYTICS_TTL, move || async move {
-            run_monitor(
-                &monitor,
-                &[
-                    "--json".into(),
-                    "--analytics".into(),
-                    "--days".into(),
-                    days.to_string(),
-                    "--agent".into(),
-                    agent,
-                ],
-                None,
-                ANALYTICS_TIMEOUT,
-            )
+            tokio::task::spawn_blocking(move || {
+                let now = chrono::Local::now();
+                let now_sec = now.timestamp();
+                let mut engine = state.analytics.lock().unwrap();
+                let scan_started = std::time::Instant::now();
+                let dirty = engine.scan(
+                    Some(&kimi_home()),
+                    Some(&codex_home()),
+                    now_sec,
+                );
+                let payload = engine.aggregate(days, &agent, now);
+                drop(engine);
+                let engine_note = format!(
+                    "native-rust (scan {:.1}ms, dirty={dirty})",
+                    scan_started.elapsed().as_secs_f64() * 1000.0
+                );
+                serde_json::json!({
+                    "ok": true,
+                    "engine": engine_note,
+                    "analytics": payload,
+                })
+            })
             .await
+            .unwrap_or_else(|err| error_payload(format!("analytics worker failed: {err}")))
         })
         .await;
     Json(value)
+}
+
+fn kimi_home() -> PathBuf {
+    if let Some(home) = std::env::var_os("KIMI_CODE_HOME") {
+        return PathBuf::from(home);
+    }
+    default_home(".kimi-code")
+}
+
+fn codex_home() -> PathBuf {
+    if let Some(home) = std::env::var_os("CODEX_HOME") {
+        return PathBuf::from(home);
+    }
+    default_home(".codex")
+}
+
+fn default_home(dot_dir: &str) -> PathBuf {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(|home| PathBuf::from(home).join(dot_dir))
+        .unwrap_or_else(|| PathBuf::from(dot_dir))
 }
 
 async fn usage(axum::extract::State(state): axum::extract::State<AppState>) -> Json<Value> {
@@ -234,7 +273,11 @@ async fn main() {
         }
     }
 
-    let state = AppState { monitor_script: monitor, cache: Arc::new(Cache::new()) };
+    let state = AppState {
+        monitor_script: monitor,
+        cache: Arc::new(Cache::new()),
+        analytics: Arc::new(std::sync::Mutex::new(analytics::AnalyticsState::default())),
+    };
     let app = Router::new()
         .route("/api/health", get(health))
         .route("/api/analytics", get(analytics))

@@ -8,7 +8,24 @@ permissions:
   contents: write
 
 jobs:
+  agent-linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/backend-rs
+      - name: Build linux agent binary
+        working-directory: app/backend-rs
+        run: cargo build --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-linux
+          path: app/backend-rs/target/release/env-tools-api
+
   build:
+    needs: [agent-linux]
     strategy:
       fail-fast: false
       matrix:
@@ -33,6 +50,13 @@ jobs:
         working-directory: app/backend-rs
         run: cargo build --release
 
+      - name: Download linux agent (for WSL bootstrap from Windows)
+        if: matrix.platform == 'win32'
+        uses: actions/download-artifact@v4
+        with:
+          name: agent-linux
+          path: agent-linux
+
       - name: Build renderer
         working-directory: app
         run: |
@@ -49,7 +73,7 @@ jobs:
         if: matrix.platform == 'win32'
         working-directory: app
         shell: pwsh
-        run: node scripts/package.mjs --platform win32 --out release
+        run: node scripts/package.mjs --platform win32 --out release --linux-agent (Resolve-Path ../agent-linux/env-tools-api).Path
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4

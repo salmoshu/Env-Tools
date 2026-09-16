@@ -29,6 +29,20 @@ Electron 直连 python 数据引擎，契约一致）。数据解析仍在 `usag
 终端入口（`tools.sh ai-tools --usage`、`--watch` 的 Ctrl+E 拉窗）继续可用，
 watch 自动拉起的窗口即本应用。
 
+## 连接目标（v0.4.0 起）
+
+全量窗口顶部新增 **Target** 选择器：以当前所在系统（This machine）为主，同时
+可以把 WSL 发行版作为独立目标连接。选择一个 WSL 目标时应用会自动完成自举：
+把 agent 二进制与数据引擎写入该发行版的 `~/.local/share/env-tools/` 并启动
+（端口 19100，经 localhost 访问），之后用量分析全部由目标内的 Rust 原生引擎
+完成——Windows 应用不再要求把仓库部署进 WSL，也不依赖仓库路径。目标内的
+配额查询仍由数据引擎经 python 读取（凭证留在目标本机）。
+
+原生引擎（v0.4.0 起）：会话用量分析已用 Rust 在 agent 内实现（内存增量扫描，
+首次约 1 秒、后续毫秒级），聚合口径与 `--json --analytics` 完全一致；Plan
+配额、设置、API Key、升级等功能仍由 python 数据引擎承载，v0.5.0 起支持把
+目标扩展到 SSH 远端主机。
+
 ## 凭证
 
 - Kimi：默认读取 `~/.kimi-code/credentials/kimi-code.json`，并在即将过期时

@@ -50,6 +50,17 @@ fs.copyFileSync(backendBinary, path.join(staging, "backend-rs", "target", "relea
 fs.copyFileSync(path.join(root, "package.json"), path.join(staging, "package.json"));
 fs.copyFileSync(path.join(root, "Start-EnvTools.ps1"), path.join(staging, "Start-EnvTools.ps1"));
 
+// Windows 包嵌入 Linux agent 二进制：Windows UI 可通过 WSL 目标自举（v0.4.0
+// Connection 概念）。CI 从 build-agent-linux artifact 下载后经 --linux-agent 传入。
+const linuxAgentIndex = args.indexOf("--linux-agent");
+const linuxAgent = linuxAgentIndex >= 0 ? args[linuxAgentIndex + 1]
+  : path.join(root, "backend-rs", "target", "release", "env-tools-api");
+if (platformArg === "win32" && linuxAgent && fs.existsSync(linuxAgent)) {
+  fs.mkdirSync(path.join(staging, "agent"), { recursive: true });
+  fs.copyFileSync(linuxAgent, path.join(staging, "agent", "env-agent-linux"));
+  console.log("[package] embedded linux agent for WSL bootstrap");
+}
+
 // 2. electron-packager
 const appName = "Env-Tools";
 execSync(

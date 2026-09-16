@@ -465,8 +465,170 @@ ipcMain.handle("open-board-settings", async () => {
   if (window) window.webContents.send("open-settings");
 });
 // 分析数据：Rust 后端优先（单飞缓存），失败回退 python 直连
-ipcMain.handle("get-analytics", async (_event, days, agent) => {
+// --- 连接目标（v0.4.0 Connection 概念） --------------------------------------
+// 以“当前所在系统”为主（local agent），其余目标（WSL 发行版、SSH 主机，v0.5.0）
+// 通过自举把 agent 二进制部署到目标侧后走 HTTP。Windows 应用从此不再依赖
+// “先把仓库部署进 WSL”。
+const WSL_AGENT_PORT = 19100;
+const wslAgents = new Map(); // distro → { port, ready }
+
+function findLinuxAgentBinary() {
+  // 打包版：resources/app/agent/env-agent-linux（package.mjs 嵌入）
+  const packed = path.join(__dirname, "..", "agent", "env-agent-linux");
+  if (fs.existsSync(packed)) return packed;
+  // 开发版：仓库构建产物
+  const dev = path.join(REPO_ROOT, "app", "backend-rs", "target", "release", "env-tools-api");
+  return fs.existsSync(dev) ? dev : "";
+}
+
+function wslCommand(distro, args, { input = null, timeoutMs = 30000 } = {}) {
+  return new Promise((resolve) => {
+    const child = spawn("wsl.exe", ["-d", distro, "--exec", "bash", "-c", ...args], {
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    let stdout = "";
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    const timer = setTimeout(() => {
+      try { child.kill(); } catch {}
+      finish({ error: "wsl command timed out" });
+    }, timeoutMs);
+    child.stdin.on("error", () => {});
+    if (input != null) child.stdin.end(input);
+    else child.stdin.end();
+    child.stdout.on("data", (d) => (stdout += String(d)));
+    child.on("error", (err) => finish({ error: err.message }));
+    child.on("close", (code) => finish({ code, stdout: stdout.trim() }));
+  });
+}
+
+async function wslAgentHealth(distro) {
+  const entry = wslAgents.get(distro);
+  if (entry && entry.ready) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 3000);
+      const res = await fetch(`http://127.0.0.1:${WSL_AGENT_PORT}/api/health`, {
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      if (res.ok) return true;
+    } catch {}
+  }
+  // 进程可能在控制器重启后仍存活（WSL VM 常驻）：直接探测端口
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 2500);
+    const res = await fetch(`http://127.0.0.1:${WSL_AGENT_PORT}/api/health`, {
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    if (res.ok) {
+      wslAgents.set(distro, { port: WSL_AGENT_PORT, ready: true });
+      return true;
+    }
+  } catch {}
+  return false;
+}
+
+async function ensureWslAgent(distro) {
+  if (await wslAgentHealth(distro)) return { ok: true, port: WSL_AGENT_PORT };
+  const binary = findLinuxAgentBinary();
+  if (!binary) {
+    return { ok: false, error: "agent binary not found (build backend-rs for linux first)" };
+  }
+  const monitor = WSL_MONITOR_SCRIPT || path.join(REPO_ROOT, "linux", "ai-tools", "usage-monitor", "usage_monitor.py");
+  // 自举 stage 1：把 agent 二进制与数据引擎脚本写入 WSL 用户目录
+  const copyBinary = await wslCommand(
+    distro,
+    ["mkdir -p ~/.local/share/env-tools && cat > ~/.local/share/env-tools/env-agent && chmod +x ~/.local/share/env-tools/env-agent"],
+    { input: fs.readFileSync(binary) },
+  );
+  if (copyBinary.error) return { ok: false, error: `bootstrap copy failed: ${copyBinary.error}` };
+  await wslCommand(
+    distro,
+    ["mkdir -p ~/.local/share/env-tools && cat > ~/.local/share/env-tools/usage_monitor.py"],
+    { input: fs.readFileSync(monitor) },
+  );
+  // stage 2：detached 启动 agent（WSL VM 常驻期间保持运行）
+  const started = await wslCommand(
+    distro,
+    ["nohup ~/.local/share/env-tools/env-agent --port 19100 --monitor ~/.local/share/env-tools/usage_monitor.py >~/.local/share/env-tools/agent.log 2>&1 & disown; sleep 1; echo started"],
+    { timeoutMs: 20000 },
+  );
+  if (started.error) return { ok: false, error: `agent start failed: ${started.error}` };
+  // stage 3：健康检查（localhost 经 WSL2 端口转发可达）
+  for (let attempt = 0; attempt < 6; attempt++) {
+    if (await wslAgentHealth(distro)) return { ok: true, port: WSL_AGENT_PORT };
+    await new Promise((r) => setTimeout(r, 1200));
+  }
+  return { ok: false, error: "agent did not become healthy inside WSL (see ~/.local/share/env-tools/agent.log)" };
+}
+
+ipcMain.handle("list-targets", async () => {
+  const targets = [{ id: "local", label: "This machine", kind: "local", ready: Boolean(backendPort) }];
+  if (process.platform === "win32" || IS_WSL) {
+    try {
+      const raw = await new Promise((resolve) => {
+        const child = spawn("wsl.exe", ["--list", "--quiet"], { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
+        let out = "";
+        child.stdout.on("data", (d) => (out += String(d)));
+        child.on("error", () => resolve(""));
+        child.on("close", () => resolve(out));
+        setTimeout(() => resolve(out), 8000);
+      });
+      const distros = raw
+        .replace(/\0/g, "")
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean);
+      for (const distro of distros) {
+        targets.push({
+          id: `wsl:${distro}`,
+          label: `WSL · ${distro}`,
+          kind: "wsl",
+          distro,
+          ready: wslAgents.get(distro)?.ready || false,
+        });
+      }
+    } catch {}
+  }
+  return { ok: true, targets };
+});
+ipcMain.handle("connect-target", async (_event, targetId) => {
+  if (targetId === "local") return { ok: true };
+  if (targetId.startsWith("wsl:")) {
+    const result = await ensureWslAgent(targetId.slice(4));
+    return result;
+  }
+  return { ok: false, error: `unknown target: ${targetId}` };
+});
+ipcMain.handle("get-analytics", async (_event, days, agent, targetId) => {
   const query = `?days=${encodeURIComponent(days || 30)}&agent=${encodeURIComponent(agent || "all")}`;
+  // WSL 目标：自举并请求 WSL 内的 agent（原生引擎，无需仓库路径）
+  if (targetId && targetId.startsWith("wsl:")) {
+    const distro = targetId.slice(4);
+    const ensured = await ensureWslAgent(distro);
+    if (ensured.ok) {
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), ANALYTICS_TIMEOUT_MS);
+        const res = await fetch(`http://127.0.0.1:${ensured.port}/api/analytics${query}`, {
+          signal: controller.signal,
+        });
+        clearTimeout(timer);
+        if (res.ok) return await res.json();
+      } catch {}
+      return { ok: false, error: `WSL agent for ${distro} is unreachable` };
+    }
+    return ensured;
+  }
   try {
     const payload = await backendFetch(`/api/analytics${query}`);
     if (payload && payload.ok !== false) return payload;

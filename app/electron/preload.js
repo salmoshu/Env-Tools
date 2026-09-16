@@ -5,8 +5,10 @@ contextBridge.exposeInMainWorld("api", {
   onUsageUpdate: (callback) =>
     ipcRenderer.on("usage-update", (_event, payload) => callback(payload)),
   refresh: () => ipcRenderer.send("refresh"),
-  getAnalytics: (days, agent) => ipcRenderer.invoke("get-analytics", days, agent),
+  getAnalytics: (days, agent, target) => ipcRenderer.invoke("get-analytics", days, agent, target),
   getBackendStatus: () => ipcRenderer.invoke("get-backend-status"),
+  listTargets: () => ipcRenderer.invoke("list-targets"),
+  connectTarget: (targetId) => ipcRenderer.invoke("connect-target", targetId),
   // 窗口
   minimize: () => ipcRenderer.send("window-minimize"),
   close: () => ipcRenderer.send("window-close"),
