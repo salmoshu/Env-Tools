@@ -134,7 +134,5 @@ jobs:
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            artifacts/**/*
-            artifacts/latest.json
+          files: artifacts/**/*
           generate_release_notes: true
