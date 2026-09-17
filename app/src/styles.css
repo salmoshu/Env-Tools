@@ -119,10 +119,11 @@ button { font-family: var(--font-ui); }
 .titlebar .btn.btn-label { font-size: 11px; font-weight: 600; padding: 0 10px; letter-spacing: 0.3px; }
 .titlebar .btn svg { display: block; }
 .title-version {
-  flex: 1; min-width: 0; overflow: hidden; white-space: nowrap;
+  min-width: 0; overflow: hidden; white-space: nowrap;
   font-size: 9px; color: var(--faint); font-family: var(--font-num);
   margin: 0 4px 0 6px;
 }
+.titlebar .btn-spacer { flex: 1; min-width: 0; height: 1px; }
 .env-badge {
   font-size: 9px; font-weight: 600; color: var(--warn);
   background: rgba(251, 191, 36, 0.12);
@@ -225,7 +226,8 @@ tbody tr:hover { background: var(--hover-soft); }
 td b { font-weight: 600; }
 
 /* --- 套餐配额卡片（全量窗口紧凑版 + 看板版） --- */
-.quota-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+/* v0.7.0：一行固定两卡片 */
+.quota-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .qcard {
   background: var(--card); border: 1px solid var(--border);
   border-radius: 12px; padding: 12px 14px 10px; box-shadow: 0 2px 10px var(--shadow);
@@ -522,3 +524,56 @@ td b { font-weight: 600; }
 #tooltip .tt-row { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
 #tooltip .swatch { width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0; }
 #tooltip .tt-val { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--text); padding-left: 12px; }
+
+/* --- v0.7.0：主窗口布局（header 固定，滚动条只作用于内容区） --- */
+body.main-window { height: 100vh; overflow: hidden; }
+body.main-window #root { height: 100vh; overflow: hidden; }
+.page-scroll { flex: 1; min-height: 0; overflow-y: auto; }
+
+/* 主体工具条里的刷新按钮（原 header 右侧刷新移入 Range 右侧） */
+.refresh-inline {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 27px; padding: 0 12px;
+  border: 1px solid var(--border); background: transparent; color: var(--faint);
+  font-size: 11px; font-weight: 600; border-radius: 7px; cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.refresh-inline:hover:not(:disabled) { background: var(--hover); color: var(--text); }
+.refresh-inline:disabled { opacity: 0.5; cursor: default; }
+.refresh-inline svg { display: block; }
+
+/* 配额异常占位卡片：与正常卡片同尺寸，弱化红色，给修复引导 */
+.qcard.qcard-error { border: 1px dashed var(--border); box-shadow: none; }
+.qerror-hint { font-size: 11px; color: var(--dim); line-height: 1.45; margin: 8px 0 4px; }
+.qerror-toggle {
+  background: none; border: none; color: var(--faint);
+  font-size: 10px; cursor: pointer; padding: 0; margin-top: 4px;
+}
+.qerror-toggle:hover { color: var(--text); }
+.qerror-detail {
+  font-size: 10px; color: var(--faint); background: var(--hover-soft, rgba(255,255,255,0.03));
+  border-radius: 6px; padding: 6px 8px; margin-top: 6px;
+  word-break: break-word; max-height: 110px; overflow-y: auto; user-select: text;
+}
+.qerror-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.qerror-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 24px; padding: 0 10px; font-size: 10.5px; font-weight: 600;
+  border-radius: 6px; border: 1px solid var(--border);
+  background: transparent; color: var(--accent); cursor: pointer;
+}
+.qerror-btn:hover { background: var(--hover); }
+.qerror-btn.ghost { color: var(--faint); }
+.qerror-btn svg { display: block; }
+.quota-unavailable {
+  font-size: 11px; color: var(--dim); line-height: 1.5;
+  border: 1px dashed var(--border); border-radius: 8px; padding: 8px 12px;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.quota-unavailable span { opacity: 0.7; }
+
+/* 设置页在主窗口内：侧边栏加宽，主体铺满剩余高度 */
+.main-settings { min-height: calc(100vh - 38px); }
+.main-settings .settings-sidebar { width: 148px; padding: 12px 8px; }
+.main-settings .settings-sidebar .side-item { padding: 8px 12px; }
+.main-settings .settings-main { padding: 16px 22px 22px; }

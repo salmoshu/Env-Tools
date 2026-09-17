@@ -13,7 +13,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
-      - name: Python unit tests (usage_monitor)
+      - name: Python unit tests (usage_monitor CLI)
         working-directory: linux/ai-tools/usage-monitor
         run: python -m unittest test_usage_monitor -v
       - uses: dtolnay/rust-toolchain@stable
@@ -23,13 +23,16 @@ jobs:
       - name: Rust build & tests (env-tools-api)
         working-directory: app/backend-rs
         run: cargo test --release
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - name: Renderer build (vite)
         working-directory: app
         run: |
-          npm install --no-audit --no-fund
-          npx vite build
+          pnpm install --no-audit --no-fund
+          pnpm exec vite build
       - name: Shell syntax check (bash entrypoints)
         run: for f in setup.sh tools.sh; do bash -n "$f"; done

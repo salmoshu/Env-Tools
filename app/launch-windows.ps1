@@ -188,16 +188,22 @@ try {
             Remove-BrokenElectronRuntime $electronModuleDir
         }
         Copy-Item -LiteralPath $sourcePackage -Destination $runtimePackage -Force
+        # v0.7.0 起优先 pnpm（与开发/CI 一致）；缺失时回退 npm
+        $pnpm = Get-Command pnpm.cmd -ErrorAction SilentlyContinue
         $npm = Get-Command npm.cmd -ErrorAction SilentlyContinue
-        if (-not $npm) {
-            throw "Windows Node.js/npm is required to install the native Electron runtime."
+        if (-not $pnpm -and -not $npm) {
+            throw "Windows pnpm (or npm) is required to install the native Electron runtime."
         }
-        Write-LauncherLog "Installing Windows Electron runtime in $runtimeDir"
+        Write-LauncherLog "Installing Windows Electron runtime in $runtimeDir (via $(if ($pnpm) { 'pnpm' } else { 'npm' }))"
         Push-Location $runtimeDir
         try {
-            & $npm.Source install --no-audit --no-fund
+            if ($pnpm) {
+                & $pnpm.Source install --no-audit --no-fund
+            } else {
+                & $npm.Source install --no-audit --no-fund
+            }
             if ($LASTEXITCODE -ne 0) {
-                throw "npm install failed with exit code $LASTEXITCODE."
+                throw "package manager install failed with exit code $LASTEXITCODE."
             }
         } finally {
             Pop-Location
@@ -214,7 +220,9 @@ try {
             # install.js treats any existing electron.exe as installed, even if it
             # is truncated.  Always extract into a clean dist directory here.
             Remove-BrokenElectronRuntime $electronModuleDir
-            $npmRegistry = (& $npm.Source config get registry).Trim()
+            $registryTool = if ($pnpm) { $pnpm.Source } else { $npm.Source }
+            $npmRegistry = (& $registryTool config get registry)
+            if ($null -ne $npmRegistry) { $npmRegistry = ("$npmRegistry").Trim() }
             if (-not $env:ELECTRON_MIRROR -and $npmRegistry -like "*npmmirror.com*") {
                 $env:ELECTRON_MIRROR = "https://npmmirror.com/mirrors/electron/"
             }

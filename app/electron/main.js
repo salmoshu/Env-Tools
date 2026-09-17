@@ -3,10 +3,10 @@
 // v0.3.0 起整个 Env-Tools 收敛为一个 Electron 应用（React 渲染层，构建产物在
 // ../dist）。两个窗口：
 //   - 全量窗口 "Env-Tools"（默认）：会话用量分析 + 套餐配额 + Tools 组件管理
-//   - 用量看板 "AI Usage Monitor"（小悬浮窗）：紧凑配额 + 设置页
-// 数据链路：渲染层只走 IPC；主进程优先请求 Rust 后端（axum，WSL 内运行，
-// localhost 转发），后端不可用时回退为直接调 usage_monitor.py，两条路径
-// 的参数与数据契约完全一致。
+//     + 设置页（v0.7.0 起为窗口内侧边栏视图）
+//   - 用量看板 "AI Usage Monitor"（小悬浮窗）：紧凑配额，可置顶
+// 数据链路（v0.7.0）：渲染层只走 IPC；数据全部由原生后端 env-tools-api
+// （Rust + axum，配额/分析/设置全原生）提供，python 引擎已移除。
 
 const { app, BrowserWindow, ipcMain } = require("electron");
 const { spawn } = require("child_process");
@@ -14,23 +14,8 @@ const path = require("path");
 const fs = require("fs");
 
 const REPO_ROOT = path.join(__dirname, "..", "..");
-// 打包版（GitHub Release）把数据引擎放进包内 backend/；仓库开发布局则指向
-// linux/ai-tools 下的源文件，两条路径按存在性自动选择。
-const PACKED_MONITOR = path.join(__dirname, "..", "backend", "usage_monitor.py");
-const MONITOR_SCRIPT = fs.existsSync(PACKED_MONITOR)
-  ? PACKED_MONITOR
-  : path.join(REPO_ROOT, "linux", "ai-tools", "usage-monitor", "usage_monitor.py");
-// Windows 包内嵌独立 Python（python-build-standalone）：存在则引擎与 agent
-// 都用它，用户无需安装 Python
-const BUNDLED_PYTHON = path.join(__dirname, "..", "backend", "python", "python.exe");
-const hasBundledPython = () => process.platform === "win32" && fs.existsSync(BUNDLED_PYTHON);
-
-function resolvePython() {
-  if (process.env.AI_USAGE_PYTHON) return process.env.AI_USAGE_PYTHON;
-  if (hasBundledPython()) return BUNDLED_PYTHON;
-  // Windows 上通常只有 `python`（无 python3 别名）
-  return process.platform === "win32" ? "python" : "python3";
-}
+// v0.7.0 起数据引擎全部原生（env-tools-api），python 引擎不再是依赖；
+// WSL 启动器仍以 usage_monitor.py 路径标记 WSL 内的仓库位置。
 const BACKEND_BINARY = path.join(
   REPO_ROOT, "app", "backend-rs", "target", "release", "env-tools-api");
 const BACKEND_PORT_DEFAULT = 8747;
@@ -49,6 +34,9 @@ const IS_WSL = Boolean(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP);
 const WSL_BACKEND = process.env.AI_USAGE_MONITOR_BACKEND === "wsl";
 let WSL_DISTRO = process.env.AI_USAGE_MONITOR_WSL_DISTRO || "";
 const WSL_MONITOR_SCRIPT = process.env.AI_USAGE_MONITOR_WSL_SCRIPT || "";
+// 开发模式（pnpm dev）：vite dev server 地址由 scripts/dev.mjs 注入，
+// 窗口改走热更新；生产/常规启动仍加载 dist/ 静态产物
+const DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL || "";
 
 if (process.platform === "win32") {
   app.setAppUserModelId("EnvTools");
@@ -102,21 +90,14 @@ function backendSpec() {
       args: [
         "-d", WSL_DISTRO, "--exec", binary,
         "--port", String(BACKEND_PORT_DEFAULT),
-        "--monitor", WSL_MONITOR_SCRIPT,
       ],
     };
   }
   const binary = nativeBackendBinary();
   if (!binary) return null;
-  const env = { ...process.env };
-  if (hasBundledPython()) env.AI_USAGE_PYTHON = BUNDLED_PYTHON;
   return {
     command: binary,
-    args: [
-      "--port", String(BACKEND_PORT_DEFAULT),
-      "--monitor", MONITOR_SCRIPT,
-    ],
-    env,
+    args: ["--port", String(BACKEND_PORT_DEFAULT)],
   };
 }
 
@@ -163,18 +144,32 @@ function stopBackend() {
   backendPort = 0;
 }
 
-async function backendFetch(pathname, timeoutMs = ANALYTICS_TIMEOUT_MS + 15000) {
+async function backendFetch(pathname, timeoutMs = ANALYTICS_TIMEOUT_MS + 15000, body = null) {
   if (!backendPort) throw new Error("backend not running");
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(`http://127.0.0.1:${backendPort}${pathname}`, {
       signal: controller.signal,
+      ...(body === null ? {} : {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: typeof body === "string" ? body : JSON.stringify(body),
+      }),
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return await response.json();
   } finally {
     clearTimeout(timer);
+  }
+}
+
+// 后端不可用时的统一降级：返回 ok:false 结构，由渲染层占位卡片呈现
+async function backendJson(pathname, body = null, timeoutMs = SETTINGS_TIMEOUT_MS) {
+  try {
+    return await backendFetch(pathname, timeoutMs, body);
+  } catch (err) {
+    return { ok: false, error: err.message };
   }
 }
 
@@ -246,92 +241,11 @@ if (!gotLock) {
   });
 }
 
-// --- 数据引擎（python）与广播 -------------------------------------------------
-
-function monitorSpec(extraArgs) {
-  if (WSL_BACKEND) {
-    if (process.platform !== "win32" || !WSL_DISTRO || !WSL_MONITOR_SCRIPT) {
-      return null;
-    }
-    return {
-      command: "wsl.exe",
-      args: ["-d", WSL_DISTRO, "--exec", "python3", WSL_MONITOR_SCRIPT, ...extraArgs],
-    };
-  }
-  return { command: resolvePython(), args: [MONITOR_SCRIPT, ...extraArgs] };
-}
-
-function runMonitor(extraArgs, { input = "", timeoutMs = FETCH_TIMEOUT_MS } = {}) {
-  return new Promise((resolve) => {
-    const spec = monitorSpec(extraArgs);
-    if (!spec) {
-      resolve({ error: "Invalid backend configuration" });
-      return;
-    }
-    const child = spawn(spec.command, spec.args, {
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-    });
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-    const finish = (result) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      resolve(result);
-    };
-    const timeout = setTimeout(() => {
-      child.kill();
-      finish({ timedOut: true, code: null, stdout, stderr });
-    }, timeoutMs);
-    child.stdin.on("error", () => {});
-    child.stdin.end(input);
-    child.stdout.on("data", (d) => (stdout += d));
-    child.stderr.on("data", (d) => (stderr += d));
-    child.on("error", (err) => {
-      finish({ error: err.message, code: null, stdout, stderr });
-    });
-    child.on("close", (code) => {
-      if (settled) return;
-      finish({ code, stdout, stderr });
-    });
-  });
-}
+// --- 数据引擎（env-tools-api）与广播 ------------------------------------------
 
 async function fetchUsage() {
-  const run = await runMonitor(["--json", "--dashboard"]);
-  if (run.error) {
-    const backend = WSL_BACKEND ? `WSL distro ${WSL_DISTRO}` : "python3";
-    return { error: `Cannot run ${backend}: ${run.error}` };
-  }
-  if (run.timedOut) {
-    return { error: `Data fetch timed out after ${FETCH_TIMEOUT_MS / 1000}s` };
-  }
-  try {
-    const payload = JSON.parse(run.stdout);
-    // 版本号以 Electron 应用为准：打包版里 python 读不到仓库 VERSION 文件
-    payload.data = { ...(payload.data || {}), monitor_version: app.getVersion() };
-    return { data: payload.data };
-  } catch {
-    return {
-      error: `Data fetch failed (exit ${run.code}): ${run.stderr.trim() || run.stdout.trim()}`,
-    };
-  }
-}
-
-async function runMonitorJson(args, input = "", timeoutMs = SETTINGS_TIMEOUT_MS) {
-  const run = await runMonitor(args, { input, timeoutMs });
-  if (run.error) return { ok: false, error: run.error };
-  if (run.timedOut) return { ok: false, error: "Request timed out" };
-  try {
-    return JSON.parse(run.stdout);
-  } catch {
-    return {
-      ok: false,
-      error: `Request failed (exit ${run.code}): ${run.stderr.trim() || run.stdout.trim()}`,
-    };
-  }
+  // v0.7.0 起配额只走原生后端；不可用时返回错误结构，由占位卡片呈现
+  return backendJson("/api/usage", null, FETCH_TIMEOUT_MS);
 }
 
 async function pushUsage() {
@@ -373,7 +287,11 @@ function createDashboardWindow() {
       nodeIntegration: false,
     },
   });
-  mainWin.loadFile(path.join(__dirname, "..", "dist", "index.html"), { hash: "dashboard" });
+  if (DEV_SERVER_URL) {
+    mainWin.loadURL(`${DEV_SERVER_URL}#dashboard`);
+  } else {
+    mainWin.loadFile(path.join(__dirname, "..", "dist", "index.html"), { hash: "dashboard" });
+  }
   mainWin.setTitle(DASHBOARD_TITLE);
   mainWin.on("closed", () => (mainWin = null));
   // 页面加载完成（含刷新）后立即推一次数据；定时广播最快 60s 后才有下一轮
@@ -403,7 +321,11 @@ function createBoardWindow() {
       nodeIntegration: false,
     },
   });
-  boardWin.loadFile(path.join(__dirname, "..", "dist", "index.html"), { hash: "board" });
+  if (DEV_SERVER_URL) {
+    boardWin.loadURL(`${DEV_SERVER_URL}#board`);
+  } else {
+    boardWin.loadFile(path.join(__dirname, "..", "dist", "index.html"), { hash: "board" });
+  }
   boardWin.setTitle(WINDOW_TITLE);
   boardWin.on("closed", () => (boardWin = null));
   boardWin.webContents.on("did-finish-load", () => pushUsage());
@@ -461,12 +383,22 @@ ipcMain.on("window-minimize", (event) => {
   const window = senderWindow(event);
   if (window) window.minimize();
 });
+ipcMain.handle("window-maximize-toggle", (event) => {
+  const window = senderWindow(event);
+  if (!window) return false;
+  if (window.isMaximized()) {
+    window.unmaximize();
+    return false;
+  }
+  window.maximize();
+  return true;
+});
 ipcMain.on("window-close", (event) => {
   const window = senderWindow(event);
   if (window) window.close();
 });
 ipcMain.on("refresh", () => pushUsage());
-// 全量窗口 ⇄ 用量看板：互相打开对方窗口；设置页统一住在用量看板窗口里
+// 全量窗口 ⇄ 用量看板：互相打开对方窗口；设置页自 v0.7.0 起住主窗口内
 ipcMain.handle("open-usage-board", async () => {
   await focusWindow(() => boardWin, createBoardWindow);
 });
@@ -478,11 +410,6 @@ ipcMain.handle("open-tools", async () => {
   const window = await focusWindow(() => mainWin, createDashboardWindow);
   if (window) window.webContents.send("navigate", "tools");
 });
-ipcMain.handle("open-board-settings", async () => {
-  const window = await focusWindow(() => boardWin, createBoardWindow);
-  if (window) window.webContents.send("open-settings");
-});
-// 分析数据：Rust 后端优先（单飞缓存），失败回退 python 直连
 // --- 连接目标（v0.4.0 Connection 概念） --------------------------------------
 // 以“当前所在系统”为主（local agent），其余目标（WSL 发行版、SSH 主机，v0.5.0）
 // 通过自举把 agent 二进制部署到目标侧后走 HTTP。Windows 应用从此不再依赖
@@ -561,23 +488,17 @@ async function ensureWslAgent(distro) {
   if (!binary) {
     return { ok: false, error: "agent binary not found (build backend-rs for linux first)" };
   }
-  const monitor = WSL_MONITOR_SCRIPT || path.join(REPO_ROOT, "linux", "ai-tools", "usage-monitor", "usage_monitor.py");
-  // 自举 stage 1：把 agent 二进制与数据引擎脚本写入 WSL 用户目录
+  // 自举 stage 1：把原生 agent 二进制写入 WSL 用户目录（v0.7.0 起无 python 依赖）
   const copyBinary = await wslCommand(
     distro,
     ["mkdir -p ~/.local/share/env-tools && cat > ~/.local/share/env-tools/env-agent && chmod +x ~/.local/share/env-tools/env-agent"],
     { input: fs.readFileSync(binary) },
   );
   if (copyBinary.error) return { ok: false, error: `bootstrap copy failed: ${copyBinary.error}` };
-  await wslCommand(
-    distro,
-    ["mkdir -p ~/.local/share/env-tools && cat > ~/.local/share/env-tools/usage_monitor.py"],
-    { input: fs.readFileSync(monitor) },
-  );
   // stage 2：detached 启动 agent（WSL VM 常驻期间保持运行）
   const started = await wslCommand(
     distro,
-    ["nohup ~/.local/share/env-tools/env-agent --port 19100 --monitor ~/.local/share/env-tools/usage_monitor.py >~/.local/share/env-tools/agent.log 2>&1 & disown; sleep 1; echo started"],
+    ["nohup ~/.local/share/env-tools/env-agent --port 19100 >~/.local/share/env-tools/agent.log 2>&1 & disown; sleep 1; echo started"],
     { timeoutMs: 20000 },
   );
   if (started.error) return { ok: false, error: `agent start failed: ${started.error}` };
@@ -763,6 +684,8 @@ ipcMain.handle("ssh-disconnect", (_event, host) => {
 
 ipcMain.handle("list-targets", async () => {
   const targets = [{ id: "local", label: "This machine", kind: "local", ready: Boolean(backendPort) }];
+  // 汇总目标：本机后端一次合并本机与 WSL 家目录的数据
+  targets.push({ id: "aggregate", label: "All sources (merged)", kind: "aggregate", ready: Boolean(backendPort) });
   if (process.platform === "win32" || IS_WSL) {
     try {
       const raw = await new Promise((resolve) => {
@@ -851,14 +774,24 @@ ipcMain.handle("get-usage", async (_event, targetId) => {
       if (res.ok) return await res.json();
     } catch {}
   }
-  if (!targetId || targetId === "local") {
+  if (!targetId || targetId === "local" || targetId === "aggregate") {
     return await fetchUsage();
   }
   return { error: `target ${targetId} agent is unreachable — connect it in Tools first` };
 });
 
 ipcMain.handle("get-analytics", async (_event, days, agent, targetId) => {
-  const query = `?days=${encodeURIComponent(days || 30)}&agent=${encodeURIComponent(agent || "all")}`;
+  const aggregate = targetId === "aggregate";
+  const query = `?days=${encodeURIComponent(days || 30)}&agent=${encodeURIComponent(agent || "all")}` +
+    `${aggregate ? "&aggregate=1" : ""}`;
+  if (aggregate) {
+    // 汇总目标：本机后端一次扫描本机 + WSL 家目录（凭证与会话跨源合并）
+    try {
+      return await backendFetch(`/api/analytics${query}`);
+    } catch (err) {
+      return { ok: false, error: `Analytics engine unavailable: ${err.message}` };
+    }
+  }
   // SSH 目标：经本地端口转发访问远端 agent（请求带自举时的随机 token）
   if (targetId && targetId.startsWith("ssh:")) {
     const host = targetId.slice(4);
@@ -895,48 +828,28 @@ ipcMain.handle("get-analytics", async (_event, days, agent, targetId) => {
     return ensured;
   }
   try {
-    const payload = await backendFetch(`/api/analytics${query}`);
-    if (payload && payload.ok !== false) return payload;
-    // 后端明确返回错误（如数据目录缺失）也直接透传
-    return payload;
-  } catch {
-    const windowDays = Math.max(1, Math.min(365, Number(days) || 30));
-    const agentArg = ["all", "kimi", "codex", "glm", "deepseek"].includes(agent) ? agent : "all";
-    const run = await runMonitor(
-      ["--json", "--analytics", "--days", String(windowDays), "--agent", agentArg],
-      { timeoutMs: ANALYTICS_TIMEOUT_MS },
-    );
-    if (run.error) return { ok: false, error: run.error };
-    if (run.timedOut) {
-      return { ok: false, error: `Analytics timed out after ${ANALYTICS_TIMEOUT_MS / 1000}s` };
-    }
-    try {
-      return JSON.parse(run.stdout);
-    } catch {
-      return {
-        ok: false,
-        error: `Analytics failed (exit ${run.code}): ${(run.stderr || run.stdout).trim().slice(-300)}`,
-      };
-    }
+    return await backendFetch(`/api/analytics${query}`);
+  } catch (err) {
+    return { ok: false, error: `Analytics engine unavailable: ${err.message}` };
   }
 });
 ipcMain.handle("get-backend-status", async () => {
-  const info = { running: Boolean(backendPort), port: backendPort, engine: "python3 (direct)" };
+  const info = { running: Boolean(backendPort), port: backendPort, engine: "env-tools-api (not running)" };
   if (backendPort) {
     try {
       const status = await backendFetch("/api/backend-status", 20000);
-      return { ...info, running: true, engine: `env-tools-api (rust) → ${status.engine || "python3"}`, detail: status };
+      return { ...info, running: true, engine: status.engine || "env-tools-api", detail: status };
     } catch (err) {
       return { ...info, engine: `env-tools-api unreachable: ${err.message}` };
     }
   }
   return info;
 });
-ipcMain.handle("api-key-status", () => runMonitorJson(["--api-key-status"]));
+ipcMain.handle("api-key-status", () => backendJson("/api/api-keys"));
 // 设置页：读取/保存后端设置（数据源环境等）；保存成功后立即刷新看板
-ipcMain.handle("get-settings", () => runMonitorJson(["--get-settings"]));
+ipcMain.handle("get-settings", () => backendJson("/api/settings"));
 ipcMain.handle("set-settings", async (_event, values) => {
-  const result = await runMonitorJson(["--set-settings"], JSON.stringify(values || {}));
+  const result = await backendJson("/api/settings", values || {});
   if (result && result.ok) {
     const settings = result.settings || {};
     if (WSL_BACKEND && settings.environment === "wsl" && typeof settings.wsl_distro === "string") {
@@ -959,8 +872,7 @@ ipcMain.handle("save-api-keys", async (_event, values) => {
   if (Object.keys(keys).length === 0) {
     return { ok: false, error: "Enter at least one API key" };
   }
-  // 密钥只通过子进程 stdin 传入，不出现在命令行、进程列表或日志。
-  const result = await runMonitorJson(["--configure-api-keys"], JSON.stringify(keys));
+  const result = await backendJson("/api/api-keys", keys);
   if (result && result.ok) await pushUsage();
   return result;
 });
@@ -988,6 +900,10 @@ function loginSpec(agent, environment) {
         'exec "$@"', "env-tools-login", commandName, "login",
       ],
     };
+  }
+  // npm 全局安装的 codex/kimi 在 Windows 上是 .cmd 垫片，直接 spawn 可执行名会 ENOENT
+  if (process.platform === "win32") {
+    return { command: "cmd.exe", args: ["/c", commandName, "login"] };
   }
   return { command: commandName, args: ["login"] };
 }
@@ -1313,67 +1229,15 @@ ipcMain.handle("component-status", async (_event, component, environment) => {
 const UPDATE_FEED = process.env.AI_USAGE_UPDATE_FEED
   || "https://github.com/salmoshu/Env-Tools/releases/latest/download/latest.json";
 let lastUpdateInfo = null;
-let cachedGithubToken = null;
 
-// 私有仓库的 release 资产匿名不可见：token 依次从环境变量、gh CLI、userData
-// 配置文件解析（gh auth token 是最省事的来源）
-function githubToken() {
-  if (cachedGithubToken !== null) return cachedGithubToken;
-  if (process.env.AI_USAGE_GH_TOKEN) {
-    cachedGithubToken = process.env.AI_USAGE_GH_TOKEN;
-    return cachedGithubToken;
-  }
-  const tokenFile = path.join(app.getPath("userData"), "gh-token");
-  try {
-    const fromFile = fs.readFileSync(tokenFile, "utf8").trim();
-    if (fromFile) {
-      cachedGithubToken = fromFile;
-      return cachedGithubToken;
-    }
-  } catch {}
-  // GUI 启动的进程 PATH 可能不含 gh 安装位置，逐个探测常见路径
-  const candidates = [
-    "gh",
-    "/usr/local/bin/gh",
-    "/usr/bin/gh",
-    path.join(process.env.HOME || process.env.USERPROFILE || "", ".local", "bin", "gh"),
-  ];
-  for (const candidate of candidates) {
-    try {
-      const token = execSync(`"${candidate}" auth token`, {
-        encoding: "utf8",
-        timeout: 10000,
-      }).trim();
-      if (token) {
-        cachedGithubToken = token;
-        return token;
-      }
-    } catch {}
-  }
-  cachedGithubToken = null;
-  return null;
-}
-
+// v0.7.0 起仓库公开，release 资产匿名可下载：不再需要任何 GitHub token。
+// githubHeaders 保留 UA 与 Accept，便于将来扩展私有源。
 function githubHeaders(extra = {}) {
-  const token = githubToken();
   return {
     "User-Agent": "env-tools-app",
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
     ...extra,
   };
 }
-
-ipcMain.handle("update-set-token", (_event, token) => {
-  if (!token || typeof token !== "string") return { ok: false, error: "empty token" };
-  try {
-    fs.mkdirSync(app.getPath("userData"), { recursive: true });
-    fs.writeFileSync(path.join(app.getPath("userData"), "gh-token"), token.trim());
-    cachedGithubToken = token.trim();
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, error: err.message };
-  }
-});
 
 function compareVersions(a, b) {
   const pa = String(a).split(".").map((n) => parseInt(n, 10) || 0);
@@ -1404,7 +1268,7 @@ ipcMain.handle("update-check", async () => {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       meta = await res.json();
     } catch (feedErr) {
-      // 兜底：私有仓库 / latest 短链延迟时，走 GitHub API 定位 latest.json
+      // 兜底：latest 短链延迟时，走公开 GitHub API 定位 latest.json
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 20000);
       const api = await fetch("https://api.github.com/repos/salmoshu/Env-Tools/releases/latest", {
@@ -1414,24 +1278,19 @@ ipcMain.handle("update-check", async () => {
       clearTimeout(timer);
       if (!api.ok) {
         throw new Error(
-          `feed HTTP ${String(feedErr.message || feedErr).slice(0, 40)}; api HTTP ${api.status}` +
-          (api.status === 404 ? " (private repo? configure a token)" : ""),
+          `feed HTTP ${String(feedErr.message || feedErr).slice(0, 40)}; api HTTP ${api.status}`,
         );
       }
       const release = await api.json();
       const metaAsset = (release.assets || []).find((a) => a.name === "latest.json");
       if (!metaAsset) throw new Error("latest release has no latest.json");
-      // 私有仓库的 browser_download_url 匿名/带 token 都可能 404，
-      // 统一走 API 的 octet-stream 通道
-      const res2 = await fetch(metaAsset.url, {
-        headers: githubHeaders({ Accept: "application/octet-stream" }),
-      });
+      const res2 = await fetch(metaAsset.browser_download_url, { headers: githubHeaders() });
       if (!res2.ok) throw new Error(`latest.json download HTTP ${res2.status}`);
       meta = JSON.parse(await res2.text());
-      // 记录平台资产的 API id，下载时走认证的 octet-stream 通道
+      // 记录平台资产的直链，下载时匿名走 browser_download_url
       for (const key of Object.keys(meta.files || {})) {
         const match = (release.assets || []).find((a) => a.name === meta.files[key].name);
-        if (match) meta.files[key].id = match.id;
+        if (match) meta.files[key].url = match.browser_download_url;
       }
     }
     const available = compareVersions(meta.version, current) > 0;
@@ -1454,10 +1313,9 @@ function sendUpdateProgress(payload) {
 }
 
 async function downloadUpdateAsset(asset, destFile) {
-  // 私有仓库：经 API 的 asset url（Accept: application/octet-stream）下载
-  const url = asset.id
-    ? `https://api.github.com/repos/salmoshu/Env-Tools/releases/assets/${asset.id}`
-    : `https://github.com/salmoshu/Env-Tools/releases/download/v${lastUpdateInfo.version}/${encodeURIComponent(asset.name)}`;
+  // 公开仓库：优先用 update-check 拿到的直链，否则按 tag 拼接 download URL
+  const url = asset.url
+    || `https://github.com/salmoshu/Env-Tools/releases/download/v${lastUpdateInfo.version}/${encodeURIComponent(asset.name)}`;
   sendUpdateProgress({ phase: "download", percent: 0 });
   const res = await fetch(url, {
     headers: githubHeaders({ Accept: "application/octet-stream" }),
@@ -1508,6 +1366,18 @@ ipcMain.handle("update-install", async () => {
   const work = path.join(app.getPath("temp"), `env-tools-update-${Date.now()}`);
   fs.mkdirSync(work, { recursive: true });
   try {
+    // v0.7.0 起 Windows 官方分发为 NSIS setup：下载 → 校验 → 静默安装 → 退出
+    if (asset.installer || asset.name.endsWith(".exe")) {
+      const installer = path.join(work, asset.name);
+      await downloadUpdateAsset(asset, installer);
+      sendUpdateProgress({ phase: "install", percent: 100 });
+      spawn(installer, ["/S"], {
+        detached: true, stdio: "ignore", windowsHide: true,
+      }).unref();
+      sendUpdateProgress({ phase: "restart", percent: 100 });
+      setTimeout(() => app.quit(), 1500);
+      return { ok: true };
+    }
     const archive = path.join(work, asset.name);
     await downloadUpdateAsset(asset, archive);
     sendUpdateProgress({ phase: "extract", percent: 100 });
@@ -1586,12 +1456,6 @@ fi
 if (gotLock) {
   app.whenReady().then(async () => {
     loadConnections();
-    if (WSL_BACKEND) {
-      const settings = await runMonitorJson(["--get-settings"]);
-      if (settings && settings.ok && settings.environment === "wsl" && typeof settings.wsl_distro === "string") {
-        WSL_DISTRO = settings.wsl_distro;
-      }
-    }
     startBackend();
     // v0.3.0 起默认打开全量窗口；用量看板与 Tools 都在其中打开
     createDashboardWindow();

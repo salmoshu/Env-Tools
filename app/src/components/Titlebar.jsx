@@ -37,6 +37,30 @@ export function ExpandIcon() {
   );
 }
 
+export function MaximizeIcon() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4">
+      <rect x="4" y="4" width="16" height="16" rx="1.5" />
+    </svg>
+  );
+}
+
+export function AnalyticsIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+      <path d="M5 9.2h3V19H5V9.2zM10.6 5h2.8v14h-2.8V5zm5.6 8H19v6h-2.8v-6z"/>
+    </svg>
+  );
+}
+
+export function BoardIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+      <rect x="3" y="5" width="18" height="14" rx="2" />
+    </svg>
+  );
+}
+
 export function ToolsIcon() {
   return (
     <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">

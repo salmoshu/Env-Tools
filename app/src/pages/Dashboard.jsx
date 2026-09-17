@@ -11,6 +11,7 @@ import {
   CalendarHeatmap, DonutChart, LineChart, MODEL_PALETTE,
   SERIES_DEFS, StackedBars, ProjectBars,
 } from "../components/charts.jsx";
+import { RefreshIcon } from "../components/Titlebar.jsx";
 
 const ANALYTICS_REFRESH_MS = 5 * 60 * 1000;
 const DAYS_KEY = "ai-usage-monitor.analytics-days";
@@ -89,7 +90,50 @@ function QuotaCard({ account, versions }) {
   );
 }
 
-export default function Dashboard({ lastPayload }) {
+function QuotaErrorCard({ err, onFix }) {
+  const [expanded, setExpanded] = useState(false);
+  const message = String((err && err.error) || "Unknown error");
+  const lower = message.toLowerCase();
+  const kind = /login|credential|oauth|token|expired|unauthorized|401/.test(lower)
+    ? "login"
+    : /api.?key|balance|quota query|not set|configure/.test(lower)
+      ? "keys"
+      : "retry";
+  const hints = {
+    login: "Login expired or credentials missing. Start web authorization, then refresh.",
+    keys: "No usable API key. Add one in Settings → API Keys.",
+    retry: "Data could not be loaded right now. Retry in a moment.",
+  };
+  return (
+    <div className="qcard qcard-error">
+      <div className="qcard-head">
+        <span className="qname">{(err && err.provider) || "Provider"}</span>
+        <span className="plan">unavailable</span>
+      </div>
+      <div className="qerror-hint">{hints[kind]}</div>
+      <button className="qerror-toggle" onClick={() => setExpanded(!expanded)}>
+        {expanded ? "Hide details" : "Details"}
+      </button>
+      {expanded && <div className="qerror-detail">{message}</div>}
+      <div className="qerror-actions">
+        {kind === "login" && (
+          <button className="qerror-btn" onClick={() => onFix && onFix("login")}>Go to login</button>
+        )}
+        {kind === "keys" && (
+          <button className="qerror-btn" onClick={() => onFix && onFix("settings")}>Add API key</button>
+        )}
+        <button
+          className="qerror-btn ghost"
+          onClick={() => onFix && onFix("refresh")}
+        >
+          <RefreshIcon /> Retry
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
   const [analytics, setAnalytics] = useState(null);
   const [analyticsError, setAnalyticsError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -107,9 +151,9 @@ export default function Dashboard({ lastPayload }) {
   const [sessionsSort, setSessionsSort] = useState({ key: "total", dir: -1 });
   const analyticsBusy = useRef(false);
 
-  // 配额按目标路由：本地目标吃 60s 广播（lastPayload），远端目标走 get-usage
+  // 配额按目标路由：本地/汇总目标吃 60s 广播（lastPayload），远端目标走 get-usage
   const refreshUsage = useCallback(async (nextTarget) => {
-    if (nextTarget === "local") return;
+    if (nextTarget === "local" || nextTarget === "aggregate") return;
     try {
       const result = await window.api.getUsage(nextTarget);
       if (result && (result.data || result.error)) setUsage(result);
@@ -117,12 +161,12 @@ export default function Dashboard({ lastPayload }) {
   }, []);
 
   useEffect(() => {
-    if (target !== "local") refreshUsage(target);
+    if (target !== "local" && target !== "aggregate") refreshUsage(target);
   }, [target, refreshUsage]);
 
   useEffect(() => {
     const timer = setInterval(() => {
-      if (target !== "local") refreshUsage(target);
+      if (target !== "local" && target !== "aggregate") refreshUsage(target);
     }, 60000);
     return () => clearInterval(timer);
   }, [target, refreshUsage]);
@@ -159,7 +203,7 @@ export default function Dashboard({ lastPayload }) {
     return () => clearInterval(timer);
   }, [days, agent, target, requestAnalytics]);
 
-  const usagePayload = target === "local"
+  const usagePayload = target === "local" || target === "aggregate"
     ? lastPayload
     : (usage || { data: null });
   const data = usagePayload && usagePayload.data;
@@ -288,6 +332,14 @@ export default function Dashboard({ lastPayload }) {
               <option value="90">Last 90 days</option>
             </select>
           </label>
+          <button
+            className="btn refresh-inline"
+            title="Refresh data"
+            disabled={refreshing}
+            onClick={() => onRefresh && onRefresh()}
+          >
+            <RefreshIcon spinning={refreshing} /> Refresh
+          </button>
         </div>
       </header>
 
@@ -331,29 +383,35 @@ export default function Dashboard({ lastPayload }) {
       )}
 
       <section className="block">
-        <h2>Plan quotas</h2>
+        <h2>Plan quotas{target === "aggregate" ? " · all sources merged" : ""}</h2>
         {usagePayload && usagePayload.error ? (
-          <div className="error-card" style={{ marginTop: 0 }}>
+          <div className="quota-unavailable">
             Quota data unavailable — {usagePayload.error}
-            <div style={{ opacity: 0.75, marginTop: 4 }}>
-              Quotas come from the data engine of the selected target. Check the
-              target's WSL/python setup, or press refresh to retry.
-            </div>
+            <span>Check that the native backend is running, then retry.</span>
           </div>
         ) : null}
         <div className="quota-grid" style={{ marginTop: (usagePayload && usagePayload.error) ? 10 : 0 }}>
-          {accounts.length
-            ? accounts.map((account) => (
-              <QuotaCard key={account.provider} account={account} versions={versions} />
-            ))
-            : (usagePayload && !usagePayload.error
-              ? <div className="status">No data</div>
-              : <div className="status">Loading…</div>)}
-        </div>
-        <div>
-          {errors.map((err) => (
-            <div className="error-card" key={err.provider}>{err.provider}: {err.error}</div>
+          {accounts.map((account) => (
+            <QuotaCard key={account.provider} account={account} versions={versions} />
           ))}
+          {(usagePayload && !usagePayload.error ? errors : []).map((err) => (
+            <QuotaErrorCard
+              key={`${err.provider}:${err.error}`}
+              err={err}
+              onFix={(action) => {
+                if (action === "refresh") {
+                  if (onRefresh) onRefresh();
+                } else {
+                  window.location.hash = action === "login" ? "#/settings" : "#/settings";
+                }
+              }}
+            />
+          ))}
+          {accounts.length === 0 && errors.length === 0
+            ? (usagePayload && !usagePayload.error
+              ? <div className="status">No data</div>
+              : <div className="status">Loading…</div>)
+            : null}
         </div>
       </section>
 

@@ -15,7 +15,6 @@ contextBridge.exposeInMainWorld("api", {
   getUsage: (target) => ipcRenderer.invoke("get-usage", target),
   updateCheck: () => ipcRenderer.invoke("update-check"),
   updateInstall: () => ipcRenderer.invoke("update-install"),
-  updateSetToken: (token) => ipcRenderer.invoke("update-set-token", token),
   onUpdateProgress: (callback) => subscribe("update-progress", (payload) => callback(payload)),
   onNavigate: (callback) => subscribe("navigate", (_payload, route) => callback(route)),
   onOpenSettings: (callback) => subscribe("open-settings", () => callback()),
@@ -31,6 +30,7 @@ contextBridge.exposeInMainWorld("api", {
   sshDisconnect: (host) => ipcRenderer.invoke("ssh-disconnect", host),
   // 窗口
   minimize: () => ipcRenderer.send("window-minimize"),
+  windowMaximizeToggle: () => ipcRenderer.invoke("window-maximize-toggle"),
   close: () => ipcRenderer.send("window-close"),
   togglePin: () => ipcRenderer.invoke("toggle-pin"),
   getPinState: () => ipcRenderer.invoke("get-pin-state"),
@@ -39,7 +39,6 @@ contextBridge.exposeInMainWorld("api", {
   openUsageBoard: () => ipcRenderer.invoke("open-usage-board"),
   openFullDashboard: () => ipcRenderer.invoke("open-full-dashboard"),
   openTools: () => ipcRenderer.invoke("open-tools"),
-  openBoardSettings: () => ipcRenderer.invoke("open-board-settings"),
   settingsOpen: (open) => ipcRenderer.send("settings-open", open),
   // 设置
   getSettings: () => ipcRenderer.invoke("get-settings"),

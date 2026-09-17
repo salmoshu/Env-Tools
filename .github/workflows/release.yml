@@ -35,13 +35,13 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: app/backend-rs
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -57,33 +57,15 @@ jobs:
           name: agent-linux
           path: agent-linux
 
-      - name: Download embedded Python (windows)
+      - name: Install NSIS (windows setup installer)
         if: matrix.platform == 'win32'
-        shell: pwsh
-        run: |
-          $url = "https://github.com/astral-sh/python-build-standalone/releases/download/20241016/cpython-3.12.7+20241016-x86_64-pc-windows-msvc-shared-install_only.tar.gz"
-          curl.exe -sL $url -o python.tar.gz
-          if (-not (Test-Path "python.tar.gz")) { throw "python download failed" }
-          Write-Host "archive size: $((Get-Item python.tar.gz).Length)"
-          New-Item -ItemType Directory -Force -Path python | Out-Null
-          # runner 自带 bsdtar 解该包不可靠，用 Python 标准库解压；
-          # 归档顶层自带 python/ 前缀，解压后会上提一层
-          python -m tarfile -e python.tar.gz python
-          if (Test-Path "python/python/python.exe") {
-            Move-Item python/python/* python/ -Force
-            Remove-Item python/python -Recurse -Force
-          }
-          if (-not (Test-Path "python/python.exe")) {
-            Get-ChildItem -Recurse python | Select-Object -First 10 | ForEach-Object { Write-Host $_.FullName }
-            throw "python.exe missing after extract"
-          }
-          Write-Host "python.exe ok"
+        run: choco install nsis -y --no-progress
 
       - name: Build renderer
         working-directory: app
         run: |
-          npm install --no-audit --no-fund
-          npx vite build
+          pnpm install --no-audit --no-fund
+          pnpm exec vite build
 
       - name: Package (linux)
         if: matrix.platform == 'linux'
@@ -91,11 +73,13 @@ jobs:
         shell: bash
         run: node scripts/package.mjs --platform linux --out release
 
-      - name: Package (windows)
+      - name: Package (windows, zip + NSIS setup)
         if: matrix.platform == 'win32'
         working-directory: app
         shell: pwsh
-        run: node scripts/package.mjs --platform win32 --out release --linux-agent (Resolve-Path ../agent-linux/env-tools-api).Path --python-dir (Resolve-Path ../python).Path
+        run: |
+          node scripts/package.mjs --platform win32 --out release --linux-agent (Resolve-Path ../agent-linux/env-tools-api).Path
+          if (-not (Test-Path "release/*.exe")) { throw "setup exe missing after packaging" }
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -104,6 +88,7 @@ jobs:
           path: |
             app/release/*.tar.gz
             app/release/*.zip
+            app/release/*.exe
 
   release:
     needs: [build]
@@ -117,7 +102,7 @@ jobs:
         shell: bash
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          WIN_FILE=$(ls pkg-win32/*.zip | xargs -n1 basename)
+          WIN_FILE=$(ls pkg-win32/*setup*.exe | xargs -n1 basename)
           LIN_FILE=$(ls pkg-linux/*.tar.gz | xargs -n1 basename)
           WIN_SHA=$(sha256sum "pkg-win32/$WIN_FILE" | cut -d' ' -f1)
           LIN_SHA=$(sha256sum "pkg-linux/$LIN_FILE" | cut -d' ' -f1)
@@ -125,7 +110,7 @@ jobs:
           {
             "version": "$VERSION",
             "files": {
-              "win32": { "name": "$WIN_FILE", "sha256": "$WIN_SHA" },
+              "win32": { "name": "$WIN_FILE", "sha256": "$WIN_SHA", "installer": true },
               "linux": { "name": "$LIN_FILE", "sha256": "$LIN_SHA" }
             }
           }

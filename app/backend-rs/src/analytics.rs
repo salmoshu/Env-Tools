@@ -310,39 +310,39 @@ struct SessionRow {
 }
 
 impl AnalyticsState {
-    /// 扫描两个来源（任一可为 None），返回是否有变化。语义与 Python 版一致：
+    /// 扫描多个来源（任一可为空切片），返回是否有变化。语义与 Python 版一致：
     /// 文件截断重写时丢弃该文件旧记录从头统计；文件消失时保留历史记录
     /// （offset 置 -1），同路径再次出现时替换，避免重复统计。
-    pub fn scan(&mut self, kimi_home: Option<&Path>, codex_home: Option<&Path>, now: i64) -> bool {
+    /// kimi/codex 各自接受多个家目录（本机 + WSL UNC），会话按绝对路径天然合并。
+    pub fn scan(&mut self, kimi_homes: &[PathBuf], codex_homes: &[PathBuf], now: i64) -> bool {
         let cutoff = now - RECORD_RETENTION_DAYS * 86400;
         let mut dirty = !self.scanned;
         self.scanned = true;
-        if let Some(home) = kimi_home {
-            self.session_index = load_session_index(home);
+        self.session_index.clear();
+        for home in kimi_homes {
+            for (sid, wd) in load_session_index(home) {
+                self.session_index.insert(sid, wd);
+            }
         }
 
-        let sources: Vec<(Source, PathBuf, fn(&Path) -> String, fn(&str) -> bool)> = [
-            kimi_home.map(|h| {
-                (
-                    Source::Kimi,
-                    h.join("sessions"),
-                    kimi_session_id as fn(&Path) -> String,
-                    (|name: &str| name == "wire.jsonl") as fn(&str) -> bool,
-                )
-            }),
-            codex_home.map(|h| {
-                (
-                    Source::Codex,
-                    h.join("sessions"),
-                    codex_default_session_id as fn(&Path) -> String,
-                    (|name: &str| name.starts_with("rollout-") && name.ends_with(".jsonl"))
-                        as fn(&str) -> bool,
-                )
-            }),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
+        let mut sources: Vec<(Source, PathBuf, fn(&Path) -> String, fn(&str) -> bool)> = Vec::new();
+        for home in kimi_homes {
+            sources.push((
+                Source::Kimi,
+                home.join("sessions"),
+                kimi_session_id as fn(&Path) -> String,
+                (|name: &str| name == "wire.jsonl") as fn(&str) -> bool,
+            ));
+        }
+        for home in codex_homes {
+            sources.push((
+                Source::Codex,
+                home.join("sessions"),
+                codex_default_session_id as fn(&Path) -> String,
+                (|name: &str| name.starts_with("rollout-") && name.ends_with(".jsonl"))
+                    as fn(&str) -> bool,
+            ));
+        }
 
         for (source, root, session_id_of, selector) in sources {
             let files = wire_files(&root, selector);

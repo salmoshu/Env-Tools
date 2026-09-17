@@ -61,17 +61,6 @@ if (platformArg === "win32" && linuxAgent && fs.existsSync(linuxAgent)) {
   console.log("[package] embedded linux agent for WSL bootstrap");
 }
 
-// Windows 包内嵌独立 Python（python-build-standalone 的 install_only 解压目录）：
-// 配额引擎零依赖运行。CI 下载后经 --python-dir 传入。
-const pythonDirIndex = args.indexOf("--python-dir");
-const pythonDir = pythonDirIndex >= 0 ? args[pythonDirIndex + 1] : "";
-if (platformArg === "win32" && pythonDir && fs.existsSync(pythonDir)) {
-  fs.cpSync(pythonDir, path.join(staging, "backend", "python"), { recursive: true });
-  console.log("[package] embedded python runtime for native quota engine");
-} else if (platformArg === "win32") {
-  console.warn("[package] WARNING: no python dir provided — native quota needs user-installed python");
-}
-
 // 2. electron-packager
 const appName = "Env-Tools";
 execSync(
@@ -89,7 +78,7 @@ if (platformArg === "win32") {
   fs.chmodSync(backend, 0o755);
 }
 
-// 4. 压缩
+// 4. 压缩 / 安装器
 const version = JSON.parse(fs.readFileSync(path.join(root, "package.json"))).version;
 const archiveBase = `env-tools-desktop-v${version}-${platformArg}-x64`;
 if (platformArg === "win32") {
@@ -97,10 +86,37 @@ if (platformArg === "win32") {
     `powershell -NoProfile -Command "Compress-Archive -Path '${pkgDir}' -DestinationPath '${path.join(outDir, archiveBase + ".zip")}' -Force"`,
     { stdio: "inherit" },
   );
+  // 5. NSIS setup 安装器（v0.7.0 起 Windows 官方分发形态；/S 静默安装兼容）
+  const setupPath = path.join(outDir, `env-tools-setup-v${version}-win32-x64.exe`);
+  const nsi = path.join(root, "scripts", "installer.nsi");
+  const makensisCandidates = [
+    "makensis",
+    "C:\\Program Files (x86)\\NSIS\\makensis.exe",
+    "C:\\Program Files\\NSIS\\makensis.exe",
+  ];
+  let built = false;
+  for (const makensis of makensisCandidates) {
+    try {
+      execSync(
+        `${JSON.stringify(makensis)} /DAPP_DIR=${JSON.stringify(pkgDir)} ` +
+        `/DSETUP_OUT=${JSON.stringify(setupPath)} /DVERSION=${JSON.stringify(version)} ` +
+        `/DICON=${JSON.stringify(path.join(root, "electron", "assets", "logo.ico"))} ${JSON.stringify(nsi)}`,
+        { stdio: "inherit" },
+      );
+      built = true;
+      break;
+    } catch (err) {
+      if (makensis === makensisCandidates.at(-1)) {
+        console.warn(`[package] WARNING: NSIS setup build failed (${err.message}) — only zip is produced`);
+      }
+    }
+  }
+  if (built) console.log(`[package] setup installer: ${setupPath}`);
+  console.log(`[package] done: ${path.join(outDir, archiveBase)}`);
 } else {
   execSync(
     `tar czf ${JSON.stringify(path.join(outDir, archiveBase + ".tar.gz"))} -C ${JSON.stringify(outDir)} ${appName}-linux-x64`,
     { stdio: "inherit" },
   );
+  console.log(`[package] done: ${path.join(outDir, archiveBase)}`);
 }
-console.log(`[package] done: ${path.join(outDir, archiveBase)}`);

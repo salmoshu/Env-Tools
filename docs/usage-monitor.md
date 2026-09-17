@@ -42,29 +42,27 @@ watch 自动拉起的窗口即本应用。
 首次约 1 秒、后续毫秒级），聚合口径与 `--json --analytics` 完全一致；Plan
 配额、设置、API Key、升级等功能仍由 python 数据引擎承载。
 
-配额引擎迁移（v0.6.1 起）：**DeepSeek 与 GLM 的配额查询已原生迁入 Rust
-agent**（含 GLM 订阅 membership 与 5h/7d/Tools 窗口口径，单元测试与 Python
-版夹具一一对应）。`/api/usage` 现在是合并结果：Kimi/Codex 仍由 python 引擎
-承载（OAuth 刷新流待后续版本迁移），DeepSeek/GLM 为原生采集；python 不可
-用时 Kimi/Codex 显示引擎错误卡片，DeepSeek/GLM 不受影响。另外 WSLg 下由
-watch 拉起的 Electron 窗口已关闭 core dump——之前 WSL 崩溃转储会把 Windows
-Temp 撑到数百 GB 的问题不会再发生。
+配额引擎全原生（v0.7.0 起）：**Kimi/Codex 的 OAuth 刷新流也已迁入 Rust
+agent**，四家配额、会话分析、设置与 API key 全部原生实现，桌面应用不再
+依赖 python（终端 CLI 保留 python 版）。凭证跨家目录发现：Windows 侧缺少
+Kimi 网页凭证（kimi-web.json）时自动读取 WSL 家目录（9P UNC），会员名称
+（如 Allegro）与月总量不再显示 unknown；`/api/analytics?aggregate=1` 可
+把本机与 WSL 的会话数据汇总成一份视图。
 
 Windows 原生模式 + 自动升级（v0.6.0 起）：
 
-- **Native-first**：Windows 启动脚本默认不再走 WSL——配额引擎脚本与分析
-  agent 都随包分发（包内内嵌独立 Python，用户无需安装 Python），解压即可用。
-  WSL 降级为可选目标：`Start-EnvTools.ps1 -UseWsl` 或在 Target 选择器里连接
-  （自举链路不变）。
+- **Native-first**：Windows 启动脚本默认不再走 WSL——数据引擎全原生随包
+  分发（v0.7.0 起连内嵌 Python 也移除），解压即可用。WSL 降级为可选目标：
+  `Start-EnvTools.ps1 -UseWsl` 或在 Target 选择器里连接（自举链路不变）。
 - **配额按目标路由**：配额查询与分析统一跟随 Target 选择器——本机目标走本
-  机 agent，WSL/SSH 目标走对应 agent 的 `/api/usage`。选哪个目标，分析和配
-  额就都是那个目标的。
-- **自动升级**：设置页 About 面板可检查更新并一键升级。流程：读取 Release
-  的 `latest.json`（版本号 + 资产名 + sha256）→ 下载并校验 → 解压到临时目
-  录 → 两阶段目录交换（等进程退出 → 旧目录改名 .old → 新目录就位 → 重启，
-  启动失败自动回滚）。私有仓库需在 About 面板粘贴 GitHub token（或配置
-  `AI_USAGE_GH_TOKEN` 环境变量 / 本机 `gh auth login`），token 只存本机
-  userData。
+  机 agent，WSL/SSH 目标走对应 agent 的 `/api/usage`，另有 "All sources
+  (merged)" 汇总目标一次合并本机与 WSL 数据。选哪个目标，分析和配额就都
+  是那个目标的。
+- **自动升级**：设置页 About 面板可检查更新并一键升级。v0.7.0 起仓库公开，
+  全程匿名——读取 Release 的 `latest.json`（版本号 + 资产名 + sha256）→
+  下载并校验 → Windows 静默运行新版 NSIS setup（/S），Linux 保持两阶段目
+  录交换（等进程退出 → 旧目录改名 .old → 新目录就位 → 重启，启动失败自动
+  回滚）。无需任何 GitHub token。
 
 SSH 远端目标（v0.5.0 起）：Tools 页可登记 SSH 主机（host/port/user，需密钥
 认证）并一键连接——应用把 Linux agent 上传到远端
