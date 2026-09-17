@@ -32,7 +32,7 @@ jobs:
       - name: Renderer build (vite)
         working-directory: app
         run: |
-          pnpm install --no-audit --no-fund
+          pnpm install
           pnpm exec vite build
       - name: Shell syntax check (bash entrypoints)
         run: for f in setup.sh tools.sh; do bash -n "$f"; done

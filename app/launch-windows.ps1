@@ -198,7 +198,7 @@ try {
         Push-Location $runtimeDir
         try {
             if ($pnpm) {
-                & $pnpm.Source install --no-audit --no-fund
+                & $pnpm.Source install
             } else {
                 & $npm.Source install --no-audit --no-fund
             }

@@ -64,7 +64,7 @@ jobs:
       - name: Build renderer
         working-directory: app
         run: |
-          pnpm install --no-audit --no-fund
+          pnpm install
           pnpm exec vite build
 
       - name: Package (linux)
