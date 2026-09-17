@@ -98,6 +98,9 @@ export default function App() {
           </button>
         )}
         {isMain && (
+          <button className="btn" title={t("tip.minimize")} onClick={() => window.api.minimize()}>–</button>
+        )}
+        {isMain && (
           <button
             className="btn"
             title={t("tip.maximize")}
@@ -106,7 +109,10 @@ export default function App() {
             <MaximizeIcon />
           </button>
         )}
-        <button className="btn" title="Close" onClick={() => window.api.close()}>✕</button>
+        {isBoard && (
+          <button className="btn" title={t("tip.minimize")} onClick={() => window.api.minimize()}>–</button>
+        )}
+        <button className="btn close" title="Close" onClick={() => window.api.close()}>✕</button>
       </Titlebar>
 
       {isBoard ? (
@@ -140,14 +146,14 @@ export default function App() {
           </nav>
           <div className="page-scroll">
             {route === "tools" && <Tools lastPayload={lastPayload} />}
-            {route === "dashboard" && (
-              <Dashboard
-                lastPayload={lastPayload}
-                refreshing={refreshing}
-                onRefresh={triggerRefresh}
-              />
-            )}
           </div>
+          {route === "dashboard" && (
+            <Dashboard
+              lastPayload={lastPayload}
+              refreshing={refreshing}
+              onRefresh={triggerRefresh}
+            />
+          )}
         </div>
       )}
     </>

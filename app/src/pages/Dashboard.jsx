@@ -385,7 +385,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
   };
 
   return (
-    <div className="page">
+    <div className="page page-flex">
       <header className="page-head">
         <div>
           <h1>{t("nav.analytics")}</h1>
@@ -451,6 +451,8 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
         </div>
       </header>
 
+      {/* 页头固定在滚动区外：右侧滚动条只出现在正文区域（header 之下） */}
+      <div className="page-body">
       <div className={`error-card${analyticsError ? "" : " hidden"}`} style={{ margin: "0 0 12px" }}>
         {analyticsError}
       </div>
@@ -661,6 +663,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
           </table>
         </div>
       </section>
+      </div>
     </div>
   );
 }
