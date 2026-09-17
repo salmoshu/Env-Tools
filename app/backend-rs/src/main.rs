@@ -27,10 +27,15 @@ use serde_json::Value;
 use tokio::sync::Mutex;
 
 mod analytics;
+mod quota;
 
 #[cfg(test)]
 #[path = "analytics_tests.rs"]
 mod analytics_tests;
+
+#[cfg(test)]
+#[path = "quota_tests.rs"]
+mod quota_tests;
 
 const ANALYTICS_TTL: Duration = Duration::from_secs(30);
 const USAGE_TTL: Duration = Duration::from_secs(20);
@@ -249,19 +254,68 @@ async fn usage(axum::extract::State(state): axum::extract::State<AppState>) -> J
     let value = state
         .cache
         .get_or_fetch("usage".to_string(), USAGE_TTL, move || async move {
-            let raw = run_monitor(
+            // DeepSeek/GLM 原生采集；Kimi/Codex 仍由 python 引擎承载
+            //（OAuth 刷新流尚未迁移，见 v0.6.x 计划）。python 跑全量，
+            // 合并时把 DeepSeek/GLM 替换为原生结果。
+            let python = run_monitor(
                 &monitor,
                 &["--json".into(), "--dashboard".into()],
                 None,
                 USAGE_TIMEOUT,
             )
             .await;
-            // 与 Electron 侧 fetchUsage 的形状对齐：{data: ...} / {error: ...}
-            if raw.get("accounts").is_some() {
-                serde_json::json!({ "ok": true, "data": raw })
+            let native = tokio::task::spawn_blocking(quota::collect_native)
+                .await
+                .unwrap_or_else(|err| {
+                    (
+                        Vec::new(),
+                        vec![serde_json::json!({"provider": "DeepSeek", "error": format!("native worker failed: {err}")}),
+                             serde_json::json!({"provider": "GLM", "error": format!("native worker failed: {err}")})],
+                    )
+                });
+
+            let mut accounts: Vec<Value> = Vec::new();
+            let mut errors: Vec<Value> = Vec::new();
+            let mut versions: Value = serde_json::json!({});
+            if python.get("accounts").is_some() {
+                let parsed = &python;
+                if let Some(list) = parsed.get("accounts").and_then(|v| v.as_array()) {
+                    for account in list {
+                        let provider = account.get("provider").and_then(|v| v.as_str()).unwrap_or("");
+                        if matches!(provider, "DeepSeek" | "GLM") {
+                            continue;
+                        }
+                        accounts.push(account.clone());
+                    }
+                }
+                if let Some(list) = parsed.get("errors").and_then(|v| v.as_array()) {
+                    for err in list {
+                        let provider = err.get("provider").and_then(|v| v.as_str()).unwrap_or("");
+                        if matches!(provider, "DeepSeek" | "GLM") {
+                            continue;
+                        }
+                        errors.push(err.clone());
+                    }
+                }
+                versions = parsed.get("versions").cloned().unwrap_or(serde_json::json!({}));
             } else {
-                raw
+                let detail = python
+                    .get("error")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("python engine unavailable");
+                errors.push(serde_json::json!({"provider": "Kimi Code", "error": detail}));
+                errors.push(serde_json::json!({"provider": "OpenAI Codex", "error": detail}));
             }
+            accounts.extend(native.0);
+            errors.extend(native.1);
+
+            let data = serde_json::json!({
+                "accounts": accounts,
+                "errors": errors,
+                "versions": versions,
+                "monitor_version": env!("CARGO_PKG_VERSION"),
+            });
+            serde_json::json!({ "ok": true, "data": data })
         })
         .await;
     Json(value)

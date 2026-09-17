@@ -1,0 +1,142 @@
+//! DeepSeek / GLM 配额引擎测试：夹具与期望值与
+//! usage_monitor.py 的 test_usage_monitor 同名用例一一对应。
+
+use chrono::TimeZone;
+use crate::quota::{normalize_deepseek, normalize_glm, normalize_glm_subscription};
+
+#[test]
+fn deepseek_balance_becomes_usage_window() {
+    let result = normalize_deepseek(&serde_json::json!({
+        "is_available": true,
+        "balance_infos": [
+            {"currency": "CNY", "total_balance": "20.00", "granted_balance": "5.00", "topped_up_balance": "15.00"}
+        ],
+    }));
+    let window = &result["windows"][0];
+    // 余额 20 → 使用量 30 / 上限 50 = 60%
+    assert!((window["used_percent"].as_f64().unwrap() - 60.0).abs() < 1e-9);
+    assert_eq!(window["usage"], "¥30.00");
+    let extra = result["extra_lines"].as_array().unwrap();
+    assert!(extra.iter().any(|l| l == "Balance: ¥20.00 / ¥50.00"));
+    assert!(extra.iter().any(|l| l == "Usage: ¥30.00 / ¥50.00"));
+    assert!(extra.iter().any(|l| l == "Granted: ¥5.00   Topped-up: ¥15.00"));
+}
+
+#[test]
+fn deepseek_unavailable_clamps_to_full() {
+    let result = normalize_deepseek(&serde_json::json!({
+        "is_available": false,
+        "balance_infos": [
+            {"currency": "CNY", "total_balance": "0.00", "granted_balance": "0.00", "topped_up_balance": "0.00"}
+        ],
+    }));
+    // 余额 0 → 使用量 50 / 50 = 100%
+    assert!((result["windows"][0]["used_percent"].as_f64().unwrap() - 100.0).abs() < 1e-9);
+    let extra = result["extra_lines"].as_array().unwrap();
+    assert!(extra.iter().any(|l| l.as_str().unwrap().contains("Account unavailable")));
+}
+
+#[test]
+fn glm_coding_plan_quota_display() {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let result = normalize_glm(&serde_json::json!({
+        "code": 200,
+        "success": true,
+        "data": {
+            "level": "pro",
+            "limits": [
+                {"type": "TIME_LIMIT", "percentage": 7, "usage": 1000,
+                 "currentValue": 72, "remaining": 928},
+                {"type": "CREDIT_LIMIT", "unit": 3, "number": 5, "percentage": 44,
+                 "usage": 2000, "currentValue": 880, "remaining": 1120,
+                 "nextResetTime": now_ms + 3_600_000},
+                {"type": "CREDIT_LIMIT", "unit": 6, "number": 1, "percentage": 53,
+                 "usage": 10000, "currentValue": 5300, "remaining": 4700,
+                 "nextResetTime": now_ms + 3 * 86_400_000},
+            ],
+        },
+    }));
+
+    assert_eq!(result["provider"], "GLM");
+    assert_eq!(result["plan"], "Coding Pro");
+    let windows = result["windows"].as_array().unwrap();
+    let labels: Vec<&str> = windows.iter().map(|w| w["label"].as_str().unwrap()).collect();
+    assert_eq!(labels, ["5h Window", "7d Window", "Tools Quota"]);
+    let five_hour = &windows[0];
+    assert!((five_hour["used_percent"].as_f64().unwrap() - 44.0).abs() < 1e-9);
+    assert_eq!(five_hour["window_seconds"], 5 * 3600);
+    let reset = five_hour["reset_after_seconds"].as_i64().unwrap();
+    assert!((reset - 3600).abs() <= 5);
+    assert_eq!(five_hour["usage"], "880/2000");
+    let weekly = &windows[1];
+    assert!((weekly["used_percent"].as_f64().unwrap() - 53.0).abs() < 1e-9);
+    assert_eq!(weekly["window_seconds"], 7 * 86400);
+    let tools = &windows[2];
+    assert!((tools["used_percent"].as_f64().unwrap() - 7.0).abs() < 1e-9);
+    assert_eq!(tools["usage"], "72/1000");
+    let extra = result["extra_lines"].as_array().unwrap();
+    assert!(extra.iter().any(|l| l == "5h Window remaining: 1120/2000"));
+    assert!(extra.iter().any(|l| l == "7d Window remaining: 4700/10000"));
+    assert!(extra.iter().any(|l| l == "Tools remaining: 928/1000"));
+}
+
+#[test]
+fn glm_token_limits_fallback_sorted_by_reset_time() {
+    // unit/number 缺失时按重置时间排序：近的为 5 小时窗口
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let result = normalize_glm(&serde_json::json!({
+        "data": {
+            "limits": [
+                {"type": "TOKENS_LIMIT", "percentage": 80, "nextResetTime": now_ms + 5 * 86_400_000},
+                {"type": "TOKENS_LIMIT", "percentage": 20, "nextResetTime": now_ms + 1_800_000},
+            ],
+        },
+    }));
+    let windows = result["windows"].as_array().unwrap();
+    let labels: Vec<&str> = windows.iter().map(|w| w["label"].as_str().unwrap()).collect();
+    assert_eq!(labels, ["5h Window", "7d Window"]);
+    assert!((windows[0]["used_percent"].as_f64().unwrap() - 20.0).abs() < 1e-9);
+    assert!((windows[1]["used_percent"].as_f64().unwrap() - 80.0).abs() < 1e-9);
+}
+
+#[test]
+fn glm_percentage_one_is_one_percent() {
+    let result = normalize_glm(&serde_json::json!({
+        "data": {
+            "limits": [
+                {"type": "CREDIT_LIMIT", "unit": 6, "number": 1,
+                 "percentage": 1, "usage": 10000, "currentValue": 100, "remaining": 9900},
+            ],
+        },
+    }));
+    assert!((result["windows"][0]["used_percent"].as_f64().unwrap() - 1.0).abs() < 1e-9);
+}
+
+#[test]
+fn glm_subscription_membership_shape() {
+    let result = normalize_glm_subscription(
+        &serde_json::json!({
+            "success": true,
+            "data": [
+                {
+                    "status": "VALID",
+                    "inCurrentPeriod": true,
+                    "valid": "2026-12-03 10:00:00-2027-03-03 10:00:00",
+                    "purchaseTime": "2026-12-03 09:30:00",
+                    "billingCycle": "quarterly",
+                    "autoRenew": true,
+                }
+            ],
+        }),
+        chrono::Local.with_ymd_and_hms(2026, 12, 1, 12, 0, 0).unwrap(),
+    )
+    .expect("subscription should normalize");
+    assert_eq!(
+        result["ends_at"].as_str().unwrap()[..10].to_string(),
+        "2026-12-03"
+    );
+    assert_eq!(result["duration_months"], 3);
+    assert_eq!(result["auto_renew"], true);
+    // end_after_seconds 为正值（终止时刻在未来）
+    assert!(result["end_after_seconds"].as_i64().unwrap() > 0);
+}

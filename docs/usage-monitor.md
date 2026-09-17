@@ -42,6 +42,14 @@ watch 自动拉起的窗口即本应用。
 首次约 1 秒、后续毫秒级），聚合口径与 `--json --analytics` 完全一致；Plan
 配额、设置、API Key、升级等功能仍由 python 数据引擎承载。
 
+配额引擎迁移（v0.6.1 起）：**DeepSeek 与 GLM 的配额查询已原生迁入 Rust
+agent**（含 GLM 订阅 membership 与 5h/7d/Tools 窗口口径，单元测试与 Python
+版夹具一一对应）。`/api/usage` 现在是合并结果：Kimi/Codex 仍由 python 引擎
+承载（OAuth 刷新流待后续版本迁移），DeepSeek/GLM 为原生采集；python 不可
+用时 Kimi/Codex 显示引擎错误卡片，DeepSeek/GLM 不受影响。另外 WSLg 下由
+watch 拉起的 Electron 窗口已关闭 core dump——之前 WSL 崩溃转储会把 Windows
+Temp 撑到数百 GB 的问题不会再发生。
+
 Windows 原生模式 + 自动升级（v0.6.0 起）：
 
 - **Native-first**：Windows 启动脚本默认不再走 WSL——配额引擎脚本与分析

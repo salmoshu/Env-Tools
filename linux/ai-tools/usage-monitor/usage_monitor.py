@@ -2973,6 +2973,16 @@ def windows_path_from_wsl(path: Path) -> str:
     return result.stdout.strip()
 
 
+def disable_core_dumps() -> None:
+    """子进程预回调：关闭 core dump（WSL 的 wsl-crashes 目录会被撑爆）。"""
+    try:
+        import resource
+
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    except Exception:
+        pass
+
+
 def prepare_windows_launcher(app_dir: Path) -> tuple[str, str]:
     """Copy the PowerShell launcher locally so Windows does not execute it over UNC."""
     windows_dir = Path("/mnt/c/Windows")
@@ -3087,6 +3097,10 @@ def launch_usage_window() -> None:
             )
         else:
             kwargs["start_new_session"] = True
+            # WSLg 下 Electron 崩溃时 WSL 会把完整内存转储写进 Windows Temp
+            # （可达数百 GB），这里关闭 core dump
+            if running_in_wsl():
+                kwargs["preexec_fn"] = disable_core_dumps
         launched_window_proc = subprocess.Popen([str(electron_bin), "."], **kwargs)
     except OSError as exc:
         print(f"\nFailed to launch usage window: {exc}", flush=True)
