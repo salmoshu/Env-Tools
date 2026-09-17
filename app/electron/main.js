@@ -309,7 +309,10 @@ async function fetchUsage() {
     return { error: `Data fetch timed out after ${FETCH_TIMEOUT_MS / 1000}s` };
   }
   try {
-    return { data: JSON.parse(run.stdout) };
+    const payload = JSON.parse(run.stdout);
+    // 版本号以 Electron 应用为准：打包版里 python 读不到仓库 VERSION 文件
+    payload.data = { ...(payload.data || {}), monitor_version: app.getVersion() };
+    return { data: payload.data };
   } catch {
     return {
       error: `Data fetch failed (exit ${run.code}): ${run.stderr.trim() || run.stdout.trim()}`,

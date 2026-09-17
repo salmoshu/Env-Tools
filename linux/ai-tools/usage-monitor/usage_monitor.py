@@ -140,11 +140,19 @@ def write_private_json(path: Path, data: dict[str, Any]) -> None:
 
 
 def repo_version() -> str:
-    """仓库统一版本号（根目录 VERSION 文件）；缺失时返回 unknown。"""
+    """仓库统一版本号（根目录 VERSION 文件）；缺失时返回 unknown。
+
+    打包版应用里 REPO_ROOT 下没有 VERSION，但 Electron 自带的 `version` 文件
+    （内容为 Electron 版本，如 37.10.3）在 Windows 大小写不敏感文件系统上会
+    被误读——所以内容必须长得像版本号才采纳。
+    """
     try:
-        return (REPO_ROOT / "VERSION").read_text(encoding="utf-8").strip() or "unknown"
+        value = (REPO_ROOT / "VERSION").read_text(encoding="utf-8").strip()
     except OSError:
         return "unknown"
+    if re.fullmatch(r"\d+(\.\d+){0,3}", value):
+        return value
+    return "unknown"
 
 
 def native_environment() -> str:
