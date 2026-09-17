@@ -71,7 +71,7 @@ export default function App() {
   };
 
   return (
-    <>
+    <div className={isBoard ? "board-frame" : "app-frame"}>
       <Titlebar title={isBoard ? "AI Usage Monitor" : "Env-Tools"} version={version} envBadge={envBadge}>
         {isBoard ? (
           <button className="btn" title={t("tip.expand")} onClick={() => window.api.openFullDashboard()}>
@@ -97,9 +97,7 @@ export default function App() {
             <GearIcon />
           </button>
         )}
-        {isMain && (
-          <button className="btn" title={t("tip.minimize")} onClick={() => window.api.minimize()}>–</button>
-        )}
+        <button className="btn" title={t("tip.minimize")} onClick={() => window.api.minimize()}>–</button>
         {isMain && (
           <button
             className="btn"
@@ -108,9 +106,6 @@ export default function App() {
           >
             <MaximizeIcon />
           </button>
-        )}
-        {isBoard && (
-          <button className="btn" title={t("tip.minimize")} onClick={() => window.api.minimize()}>–</button>
         )}
         <button className="btn close" title="Close" onClick={() => window.api.close()}>✕</button>
       </Titlebar>
@@ -156,6 +151,6 @@ export default function App() {
           )}
         </div>
       )}
-    </>
+    </div>
   );
 }

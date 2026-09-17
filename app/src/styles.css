@@ -525,9 +525,13 @@ td b { font-weight: 600; }
 #tooltip .swatch { width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0; }
 #tooltip .tt-val { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--text); padding-left: 12px; }
 
-/* --- v0.7.0：主窗口布局（header 固定，滚动条只作用于内容区） --- */
-body.main-window { height: 100vh; overflow: hidden; }
-body.main-window #root { height: 100vh; overflow: hidden; }
+/* --- v0.7.0/v0.7.1：主窗口布局（header 固定，滚动条只作用于内容区） ---
+   .app-frame 把整个主窗口锁在视口高度内（overflow hidden），文档级滚动
+   从结构上不可能发生；滚动只发生在 .page-body / .page-scroll / .settings-main */
+.app-frame { height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+.board-frame { display: flex; flex-direction: column; }
+.app-frame .app-body { flex: 1; min-height: 0; display: flex; overflow: hidden; }
+.app-sidebar { overflow-y: auto; }
 .page-scroll { flex: 1; min-height: 0; overflow-y: auto; }
 
 /* 主体工具条里的刷新按钮（原 header 右侧刷新移入 Range 右侧） */
@@ -580,7 +584,6 @@ body.main-window #root { height: 100vh; overflow: hidden; }
 
 /* --- v0.7.1：主窗口侧边栏导航 + header 对齐 --- */
 .app-body { flex: 1; min-height: 0; display: flex; }
-body.main-window .app-body { height: calc(100vh - 38px); }
 .app-sidebar {
   width: 128px; flex-shrink: 0;
   border-right: 1px solid var(--border);
