@@ -577,3 +577,37 @@ body.main-window #root { height: 100vh; overflow: hidden; }
 .main-settings .settings-sidebar { width: 148px; padding: 12px 8px; }
 .main-settings .settings-sidebar .side-item { padding: 8px 12px; }
 .main-settings .settings-main { padding: 16px 22px 22px; }
+
+/* --- v0.7.1：主窗口侧边栏导航 + header 对齐 --- */
+.app-body { flex: 1; min-height: 0; display: flex; }
+body.main-window .app-body { height: calc(100vh - 38px); }
+.app-sidebar {
+  width: 128px; flex-shrink: 0;
+  border-right: 1px solid var(--border);
+  background: var(--sidebar-bg);
+  padding: 10px 8px;
+  display: flex; flex-direction: column; gap: 2px;
+  -webkit-app-region: no-drag;
+}
+.app-sidebar .side-item.nav {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; border-radius: 8px;
+  font-size: 12px; font-weight: 600; color: var(--dim);
+  cursor: pointer; white-space: nowrap;
+}
+.app-sidebar .side-item.nav:hover { background: var(--hover); color: var(--text); }
+.app-sidebar .side-item.nav.active { background: var(--hover-soft, var(--hover)); color: var(--accent); }
+.app-sidebar .side-item.nav svg { flex-shrink: 0; }
+
+/* header 全部内容垂直居中：按钮文字与图标同轴 */
+.titlebar { align-items: center; }
+.titlebar .btn { line-height: 1; }
+.titlebar .btn.btn-label { display: inline-flex; align-items: center; gap: 6px; }
+.titlebar .env-badge { display: inline-flex; align-items: center; }
+
+/* 设置页侧边栏（主窗口模式，带返回按钮） */
+.main-settings-nav { width: 148px; flex-shrink: 0; padding: 10px 8px; }
+
+/* 卡片标题行（标题 + 右侧控件） */
+.card-head-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.card-head-row h2 { margin: 0; }

@@ -10,6 +10,7 @@
 
 const { app, BrowserWindow, ipcMain } = require("electron");
 const { spawn } = require("child_process");
+const os = require("os");
 const path = require("path");
 const fs = require("fs");
 
@@ -411,11 +412,9 @@ ipcMain.handle("open-tools", async () => {
   if (window) window.webContents.send("navigate", "tools");
 });
 // --- 连接目标（v0.4.0 Connection 概念） --------------------------------------
-// 以“当前所在系统”为主（local agent），其余目标（WSL 发行版、SSH 主机，v0.5.0）
-// 通过自举把 agent 二进制部署到目标侧后走 HTTP。Windows 应用从此不再依赖
-// “先把仓库部署进 WSL”。
+// 以“当前所在系统”为主（local agent），其余目标：WSL 发行版（v0.7.1 起由本机
+// 后端经 UNC 直读，无需 agent）、SSH 主机（v0.5.0，自举 agent 后走 HTTP）。
 const WSL_AGENT_PORT = 19100;
-const wslAgents = new Map(); // distro → { port, ready }
 
 function findLinuxAgentBinary() {
   // 打包版：resources/app/agent/env-agent-linux（package.mjs 嵌入）
@@ -453,61 +452,14 @@ function wslCommand(distro, args, { input = null, timeoutMs = 30000 } = {}) {
   });
 }
 
-async function wslAgentHealth(distro) {
-  const entry = wslAgents.get(distro);
-  if (entry && entry.ready) {
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 3000);
-      const res = await fetch(`http://127.0.0.1:${WSL_AGENT_PORT}/api/health`, {
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
-      if (res.ok) return true;
-    } catch {}
+// 本机操作系统的展示名（Win11 探测：build >= 22000）
+function currentOsLabel() {
+  if (process.platform === "win32") {
+    const build = Number((os.release().split(".")[2] || "0"));
+    return build >= 22000 ? "Windows 11" : "Windows 10";
   }
-  // 进程可能在控制器重启后仍存活（WSL VM 常驻）：直接探测端口
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 2500);
-    const res = await fetch(`http://127.0.0.1:${WSL_AGENT_PORT}/api/health`, {
-      signal: controller.signal,
-    });
-    clearTimeout(timer);
-    if (res.ok) {
-      wslAgents.set(distro, { port: WSL_AGENT_PORT, ready: true });
-      return true;
-    }
-  } catch {}
-  return false;
-}
-
-async function ensureWslAgent(distro) {
-  if (await wslAgentHealth(distro)) return { ok: true, port: WSL_AGENT_PORT };
-  const binary = findLinuxAgentBinary();
-  if (!binary) {
-    return { ok: false, error: "agent binary not found (build backend-rs for linux first)" };
-  }
-  // 自举 stage 1：把原生 agent 二进制写入 WSL 用户目录（v0.7.0 起无 python 依赖）
-  const copyBinary = await wslCommand(
-    distro,
-    ["mkdir -p ~/.local/share/env-tools && cat > ~/.local/share/env-tools/env-agent && chmod +x ~/.local/share/env-tools/env-agent"],
-    { input: fs.readFileSync(binary) },
-  );
-  if (copyBinary.error) return { ok: false, error: `bootstrap copy failed: ${copyBinary.error}` };
-  // stage 2：detached 启动 agent（WSL VM 常驻期间保持运行）
-  const started = await wslCommand(
-    distro,
-    ["nohup ~/.local/share/env-tools/env-agent --port 19100 >~/.local/share/env-tools/agent.log 2>&1 & disown; sleep 1; echo started"],
-    { timeoutMs: 20000 },
-  );
-  if (started.error) return { ok: false, error: `agent start failed: ${started.error}` };
-  // stage 3：健康检查（localhost 经 WSL2 端口转发可达）
-  for (let attempt = 0; attempt < 6; attempt++) {
-    if (await wslAgentHealth(distro)) return { ok: true, port: WSL_AGENT_PORT };
-    await new Promise((r) => setTimeout(r, 1200));
-  }
-  return { ok: false, error: "agent did not become healthy inside WSL (see ~/.local/share/env-tools/agent.log)" };
+  if (process.platform === "darwin") return "macOS";
+  return "Linux";
 }
 
 // --- SSH 远端目标（v0.5.0） ---------------------------------------------------
@@ -683,9 +635,12 @@ ipcMain.handle("ssh-disconnect", (_event, host) => {
 });
 
 ipcMain.handle("list-targets", async () => {
-  const targets = [{ id: "local", label: "This machine", kind: "local", ready: Boolean(backendPort) }];
-  // 汇总目标：本机后端一次合并本机与 WSL 家目录的数据
-  targets.push({ id: "aggregate", label: "All sources (merged)", kind: "aggregate", ready: Boolean(backendPort) });
+  // v0.7.1：汇总目标置顶且为默认；本机目标带操作系统名（Win11 探测）；
+  // WSL 目标改走后端 UNC 直读，无需 linux agent。
+  const targets = [
+    { id: "aggregate", label: "All sources (merged)", kind: "aggregate", ready: Boolean(backendPort) },
+    { id: "local", label: currentOsLabel(), kind: "local", os: currentOsLabel(), ready: Boolean(backendPort) },
+  ];
   if (process.platform === "win32" || IS_WSL) {
     try {
       const raw = await new Promise((resolve) => {
@@ -707,7 +662,7 @@ ipcMain.handle("list-targets", async () => {
           label: `WSL · ${distro}`,
           kind: "wsl",
           distro,
-          ready: wslAgents.get(distro)?.ready || false,
+          ready: true,
         });
       }
     } catch {}
@@ -725,10 +680,9 @@ ipcMain.handle("list-targets", async () => {
   return { ok: true, targets };
 });
 ipcMain.handle("connect-target", async (_event, targetId) => {
-  if (targetId === "local") return { ok: true };
-  if (targetId.startsWith("wsl:")) {
-    return ensureWslAgent(targetId.slice(4));
-  }
+  if (targetId === "local" || targetId === "aggregate") return { ok: true };
+  // WSL 目标 v0.7.1 起走后端 UNC 直读，无需 agent 自举
+  if (targetId.startsWith("wsl:")) return { ok: true };
   if (targetId.startsWith("ssh:")) {
     const host = targetId.slice(4);
     const result = await ensureSshAgent(sshConnections.find((c) => c.host === host) || { host });
@@ -737,16 +691,12 @@ ipcMain.handle("connect-target", async (_event, targetId) => {
   }
   return { ok: false, error: `unknown target: ${targetId}` };
 });
-// 按目标解析 agent 访问点（本机后端 / WSL agent / SSH 隧道），供分析与配额共用
+// 按目标解析 agent 访问点（本机后端 / SSH 隧道）。WSL 目标不再走 agent，
+// 分析经本机后端的 UNC 扫描、配额按应用运行侧读取（见 get-usage/get-analytics）。
 async function resolveTargetAgent(targetId) {
-  if (!targetId || targetId === "local") {
+  if (!targetId || targetId === "local" || targetId === "aggregate") {
     if (!backendPort) return null;
     return { base: `http://127.0.0.1:${backendPort}`, headers: {} };
-  }
-  if (targetId.startsWith("wsl:")) {
-    const ensured = await ensureWslAgent(targetId.slice(4));
-    if (!ensured.ok) return null;
-    return { base: `http://127.0.0.1:${ensured.port}`, headers: {} };
   }
   if (targetId.startsWith("ssh:")) {
     const session = sshSessions.get(targetId.slice(4));
@@ -760,24 +710,25 @@ async function resolveTargetAgent(targetId) {
 }
 
 ipcMain.handle("get-usage", async (_event, targetId) => {
-  // 目标内 agent 的 /api/usage（自带单飞缓存），失败时本机目标回退 python 直连
-  const agent = await resolveTargetAgent(targetId);
-  if (agent) {
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 55000);
-      const res = await fetch(`${agent.base}/api/usage`, {
-        headers: agent.headers,
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
-      if (res.ok) return await res.json();
-    } catch {}
+  // v0.7.1：配额一律用应用运行侧的本机后端读取（不跨 WSL 取配额）；
+  // 仅 SSH 目标继续路由到远端 agent。
+  if (targetId && targetId.startsWith("ssh:")) {
+    const agent = await resolveTargetAgent(targetId);
+    if (agent) {
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 55000);
+        const res = await fetch(`${agent.base}/api/usage`, {
+          headers: agent.headers,
+          signal: controller.signal,
+        });
+        clearTimeout(timer);
+        if (res.ok) return await res.json();
+      } catch {}
+    }
+    return { error: `target ${targetId} agent is unreachable — connect it in Tools first` };
   }
-  if (!targetId || targetId === "local" || targetId === "aggregate") {
-    return await fetchUsage();
-  }
-  return { error: `target ${targetId} agent is unreachable — connect it in Tools first` };
+  return await fetchUsage();
 });
 
 ipcMain.handle("get-analytics", async (_event, days, agent, targetId) => {
@@ -785,7 +736,7 @@ ipcMain.handle("get-analytics", async (_event, days, agent, targetId) => {
   const query = `?days=${encodeURIComponent(days || 30)}&agent=${encodeURIComponent(agent || "all")}` +
     `${aggregate ? "&aggregate=1" : ""}`;
   if (aggregate) {
-    // 汇总目标：本机后端一次扫描本机 + WSL 家目录（凭证与会话跨源合并）
+    // 汇总目标：本机后端一次扫描本机 + WSL 家目录（会话跨源合并）
     try {
       return await backendFetch(`/api/analytics${query}`);
     } catch (err) {
@@ -809,23 +760,14 @@ ipcMain.handle("get-analytics", async (_event, days, agent, targetId) => {
     } catch {}
     return { ok: false, error: `SSH agent for ${host} is unreachable (tunnel may have dropped)` };
   }
-  // WSL 目标：自举并请求 WSL 内的 agent（原生引擎，无需仓库路径）
+  // WSL 目标（v0.7.1）：本机后端经 UNC 直读该发行版家目录，无 agent 依赖
   if (targetId && targetId.startsWith("wsl:")) {
     const distro = targetId.slice(4);
-    const ensured = await ensureWslAgent(distro);
-    if (ensured.ok) {
-      try {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), ANALYTICS_TIMEOUT_MS);
-        const res = await fetch(`http://127.0.0.1:${ensured.port}/api/analytics${query}`, {
-          signal: controller.signal,
-        });
-        clearTimeout(timer);
-        if (res.ok) return await res.json();
-      } catch {}
-      return { ok: false, error: `WSL agent for ${distro} is unreachable` };
+    try {
+      return await backendFetch(`/api/analytics${query}&wsl_distro=${encodeURIComponent(distro)}`);
+    } catch (err) {
+      return { ok: false, error: `Analytics engine unavailable: ${err.message}` };
     }
-    return ensured;
   }
   try {
     return await backendFetch(`/api/analytics${query}`);

@@ -156,7 +156,7 @@ dependencies = [
 
 [[package]]
 name = "env-tools-api"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "axum",
  "chrono",

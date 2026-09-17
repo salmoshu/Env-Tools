@@ -1,12 +1,13 @@
-// 设置页（v0.7.0 起住主窗口内，侧边栏 + 主体布局；看板窗口不再承载设置）。
-// 面板与原 Board 版一致：Display / Theme / Membership / Login / API Keys /
+// 设置页（主窗口内，侧边栏 + 主体布局；侧边栏顶部带返回按钮）。
+// 面板：Display / Theme / Language / Membership / Login / API Keys /
 // Environment / About（含无凭证的版本升级）。
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  fmtSpan, fmtTimestamp, isNewerVersion,
-  readThemePreference, writeThemePreference, applyTheme, resolvedTheme,
+  fmtSpan, fmtTimestamp,
+  readThemePreference, writeThemePreference, applyTheme,
 } from "../utils.js";
+import { t, useLang, setLang, getLang } from "../i18n.js";
 
 const MEMBERSHIP_PROVIDERS = [
   ["kimi", "Kimi Code"],
@@ -51,10 +52,7 @@ function DisplayPanel({ lastPayload }) {
         names.push(p);
       }
     }
-    setKnownProviders((prev) => {
-      if (prev.join("|") === names.join("|")) return prev;
-      return names;
-    });
+    setKnownProviders((prev) => (prev.join("|") === names.join("|") ? prev : names));
   }, [lastPayload]);
 
   useEffect(() => {
@@ -75,14 +73,14 @@ function DisplayPanel({ lastPayload }) {
 
   return (
     <div className="panel" id="panel-display">
-      <div className="panel-title">Display</div>
-      <div className="panel-hint">Choose which providers appear on the compact board.</div>
+      <div className="panel-title">{t("settings.displayTitle")}</div>
+      <div className="panel-hint">{t("settings.displayHint")}</div>
       <div
         className="display-list-item"
         onClick={() => setSelectedProviders(allSelected ? new Set() : new Set(knownProviders))}
       >
         <span className={`cb${allSelected ? " on" : selectedProviders.size > 0 ? " partial" : ""}`} />
-        All
+        {t("settings.all")}
       </div>
       {knownProviders.map((name) => (
         <div
@@ -105,11 +103,11 @@ function DisplayPanel({ lastPayload }) {
 
 function ThemePanel() {
   const [preference, setPreference] = useState(readThemePreference());
-  const options = [["system", "System"], ["dark", "Dark"], ["light", "Light"]];
+  const options = [["system", t("settings.themeSystem")], ["dark", t("settings.themeDark")], ["light", t("settings.themeLight")]];
   return (
     <div className="panel" id="panel-theme">
-      <div className="panel-title">Theme</div>
-      <div className="panel-hint">Applies immediately and is remembered on this machine.</div>
+      <div className="panel-title">{t("settings.theme")}</div>
+      <div className="panel-hint">{t("settings.themeHint")}</div>
       {options.map(([value, label]) => (
         <div
           key={value}
@@ -118,6 +116,29 @@ function ThemePanel() {
             setPreference(value);
             writeThemePreference(value);
             applyTheme(value);
+          }}
+        >
+          <span className="radio" />{label}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function LanguagePanel() {
+  const [lang, setLangState] = useState(getLang());
+  const options = [["en", "English"], ["zh", "中文"]];
+  return (
+    <div className="panel" id="panel-language">
+      <div className="panel-title">{t("settings.language")}</div>
+      <div className="panel-hint">{t("settings.langHint")}</div>
+      {options.map(([value, label]) => (
+        <div
+          key={value}
+          className={`env-option${lang === value ? " selected" : ""}`}
+          onClick={() => {
+            setLang(value);
+            setLangState(value);
           }}
         >
           <span className="radio" />{label}
@@ -145,7 +166,7 @@ function MembershipPanel({ settings, onSaved }) {
   }, [settings]);
   const save = async () => {
     setSaving(true);
-    setNote({ cls: "settings-note", text: "Saving…" });
+    setNote({ cls: "settings-note", text: t("state.saving") });
     const values = {};
     for (const row of rows) {
       const months = parseInt(row.months, 10);
@@ -156,18 +177,18 @@ function MembershipPanel({ settings, onSaved }) {
     try {
       const result = await window.api.setSettings({ membership: values });
       if (!result || !result.ok) throw new Error((result && result.error) || "unknown error");
-      setNote({ cls: "settings-note ok", text: "Saved. Usage data is refreshing…" });
+      setNote({ cls: "settings-note ok", text: t("state.saved") });
       onSaved(result);
     } catch (err) {
-      setNote({ cls: "settings-note error", text: `Save failed: ${err.message || err}` });
+      setNote({ cls: "settings-note error", text: `${t("state.saveFailed")}: ${err.message || err}` });
     } finally {
       setSaving(false);
     }
   };
   return (
     <div className="panel" id="panel-membership">
-      <div className="panel-title">Membership</div>
-      <div className="panel-hint">Set the purchase (or last renewal) date and the membership length; the dashboard shows when each membership ends. Dates use your local timezone. Leave a row empty to hide it — Kimi (with web credentials) and GLM then show the renewal date from their subscription APIs automatically.</div>
+      <div className="panel-title">{t("settings.membership")}</div>
+      <div className="panel-hint">Set the purchase (or last renewal) date and the membership length; the dashboard shows when each membership ends. Leave a row empty to hide it — Kimi (with web credentials) and GLM then show the renewal date from their subscription APIs automatically.</div>
       {rows.map((row) => {
         const entry = (settings && settings.membership || {})[row.key];
         let stateText = "";
@@ -203,7 +224,7 @@ function MembershipPanel({ settings, onSaved }) {
       })}
       <div className={note.cls}>{note.text}</div>
       <div className="settings-actions">
-        <button className="settings-save" disabled={saving} onClick={save}>Save</button>
+        <button className="settings-save" disabled={saving} onClick={save}>{t("state.save")}</button>
       </div>
     </div>
   );
@@ -220,24 +241,24 @@ function LoginPanel({ currentSettings, lastPayload }) {
         || (lastPayload && lastPayload.data && lastPayload.data.environment);
       const result = await window.api.loginAgent(agent, environment);
       if (!result || !result.ok) throw new Error((result && result.error) || "unknown error");
-      setNote({ cls: "settings-note ok", text: "Web authorization started. Finish it in your browser, then refresh." });
+      setNote({ cls: "settings-note ok", text: t("settings.loginStarted") });
     } catch (err) {
-      setNote({ cls: "settings-note error", text: `Login failed: ${err.message || err}` });
+      setNote({ cls: "settings-note error", text: `${t("state.saveFailed")}: ${err.message || err}` });
     } finally {
       setBusy(false);
     }
   };
   return (
     <div className="panel" id="panel-login">
-      <div className="panel-title">Agent Login</div>
-      <div className="panel-hint">Start web authorization manually. The dashboard never opens a login page on its own.</div>
+      <div className="panel-title">{t("settings.loginTitle")}</div>
+      <div className="panel-hint">{t("settings.loginHint")}</div>
       <div className="login-row">
-        <div className="login-info"><div className="login-name">Kimi Code</div><div className="login-method">Web authorization</div></div>
-        <button className="login-btn" disabled={busy} onClick={() => login("kimi")}>Log in</button>
+        <div className="login-info"><div className="login-name">Kimi Code</div><div className="login-method">{t("settings.loginMethod")}</div></div>
+        <button className="login-btn" disabled={busy} onClick={() => login("kimi")}>{t("settings.loginBtn")}</button>
       </div>
       <div className="login-row">
-        <div className="login-info"><div className="login-name">OpenAI Codex</div><div className="login-method">Web authorization</div></div>
-        <button className="login-btn" disabled={busy} onClick={() => login("codex")}>Log in</button>
+        <div className="login-info"><div className="login-name">OpenAI Codex</div><div className="login-method">{t("settings.loginMethod")}</div></div>
+        <button className="login-btn" disabled={busy} onClick={() => login("codex")}>{t("settings.loginBtn")}</button>
       </div>
       <div className={note.cls}>{note.text}</div>
     </div>
@@ -250,7 +271,7 @@ function ApiKeysPanel({ reloadKey }) {
     deepseek: { text: "Checking…", cls: "" },
     glm: { text: "Checking…", cls: "" },
   });
-  const [note, setNote] = useState({ cls: "settings-note", text: "Keys are stored locally by the native backend." });
+  const [note, setNote] = useState({ cls: "settings-note", text: "" });
   const [saving, setSaving] = useState(false);
 
   const showStatus = (provider, info = {}) => {
@@ -294,7 +315,7 @@ function ApiKeysPanel({ reloadKey }) {
       return;
     }
     setSaving(true);
-    setNote({ cls: "settings-note", text: "Saving…" });
+    setNote({ cls: "settings-note", text: t("state.saving") });
     try {
       const result = await window.api.saveApiKeys(values);
       if (!result || !result.ok) throw new Error((result && result.error) || "unknown error");
@@ -302,9 +323,9 @@ function ApiKeysPanel({ reloadKey }) {
         showStatus(provider, (result.status || {})[provider]);
         if (inputs[provider].current) inputs[provider].current.value = "";
       }
-      setNote({ cls: "settings-note ok", text: "Saved. Usage data is refreshing…" });
+      setNote({ cls: "settings-note ok", text: t("state.saved") });
     } catch (err) {
-      setNote({ cls: "settings-note error", text: `Save failed: ${err.message || err}` });
+      setNote({ cls: "settings-note error", text: `${t("state.saveFailed")}: ${err.message || err}` });
     } finally {
       setSaving(false);
     }
@@ -312,8 +333,8 @@ function ApiKeysPanel({ reloadKey }) {
 
   return (
     <div className="panel" id="panel-apikeys">
-      <div className="panel-title">API Keys</div>
-      <div className="panel-hint">Keys are stored locally with private file permissions.</div>
+      <div className="panel-title">{t("settings.apikeys")}</div>
+      <div className="panel-hint">{t("settings.apiKeysHint")}</div>
       <div className="key-field">
         <div className="key-label"><span>DeepSeek</span><span className={`key-state${states.deepseek.cls}`}>{states.deepseek.text}</span></div>
         <input ref={inputs.deepseek} className="key-input" type="password" autoComplete="off" spellCheck={false} placeholder="Enter API key" />
@@ -324,7 +345,7 @@ function ApiKeysPanel({ reloadKey }) {
       </div>
       <div className={note.cls}>{note.text}</div>
       <div className="settings-actions">
-        <button className="settings-save" disabled={saving} onClick={save}>Save</button>
+        <button className="settings-save" disabled={saving} onClick={save}>{t("state.save")}</button>
       </div>
     </div>
   );
@@ -341,20 +362,20 @@ function EnvironmentPanel({ settings, onSaved }) {
   }, [wslDistros.join("|")]);
   if (available.length < 2 && wslDistros.length === 0) return null;
   const save = async (values) => {
-    setNote({ cls: "settings-note", text: "Saving…" });
+    setNote({ cls: "settings-note", text: t("state.saving") });
     try {
       const result = await window.api.setSettings(values);
       if (!result || !result.ok) throw new Error((result && result.error) || "unknown error");
-      setNote({ cls: "settings-note ok", text: "Saved. Usage data is refreshing…" });
+      setNote({ cls: "settings-note ok", text: t("state.saved") });
       onSaved(result.settings || {});
     } catch (err) {
-      setNote({ cls: "settings-note error", text: `Save failed: ${err.message || err}` });
+      setNote({ cls: "settings-note error", text: `${t("state.saveFailed")}: ${err.message || err}` });
     }
   };
   return (
     <div className="panel" id="panel-environment">
-      <div className="panel-title">Data Source</div>
-      <div className="panel-hint">Agent credentials may live in Windows and/or WSL. Quotas merge both automatically; this chooses the primary source for versions and upgrades.</div>
+      <div className="panel-title">{t("settings.envTitle")}</div>
+      <div className="panel-hint">{t("settings.envHint")}</div>
       {available.map((env) => (
         <div
           key={env}
@@ -387,7 +408,7 @@ function EnvironmentPanel({ settings, onSaved }) {
 }
 
 function UpdateSection() {
-  const [status, setStatus] = useState({ text: "Not checked", available: false });
+  const [status, setStatus] = useState({ text: t("settings.notChecked"), available: false });
   const [progress, setProgress] = useState(null);
   const [busy, setBusy] = useState(false);
 
@@ -397,15 +418,18 @@ function UpdateSection() {
 
   const check = async () => {
     setBusy(true);
-    setStatus({ text: "Checking…", available: false });
+    setStatus({ text: t("state.checking"), available: false });
     try {
       const result = await window.api.updateCheck();
       if (!result || !result.ok) {
         setStatus({ text: `Check failed: ${(result && result.error) || "unknown"}`, available: false });
       } else if (result.available) {
-        setStatus({ text: `Update available: v${result.latest} (current v${result.current})`, available: true });
+        setStatus({
+          text: `${t("settings.updateAvailable")}: v${result.latest} (v${result.current})`,
+          available: true,
+        });
       } else {
-        setStatus({ text: `Up to date (v${result.current})`, available: false });
+        setStatus({ text: `${t("settings.upToDate")} (v${result.current})`, available: false });
       }
     } finally {
       setBusy(false);
@@ -431,16 +455,16 @@ function UpdateSection() {
 
   return (
     <div style={{ marginTop: 10 }}>
-      <div className="about-row"><span>Update</span><strong>{status.text}</strong></div>
+      <div className="about-row"><span>{t("settings.update")}</span><strong>{status.text}</strong></div>
       <div className="settings-actions" style={{ justifyContent: "flex-start" }}>
-        <button className="settings-save" disabled={busy} onClick={check}>Check for updates</button>
+        <button className="settings-save" disabled={busy} onClick={check}>{t("settings.checkUpdates")}</button>
         {status.available && (
           <button className="settings-save" disabled={busy} onClick={install}>
-            {progress ? `Upgrading ${progress}` : "Download & install"}
+            {progress ? `Upgrading ${progress}` : t("settings.downloadInstall")}
           </button>
         )}
       </div>
-      <div className="settings-note">Public GitHub release — no token required.</div>
+      <div className="settings-note">{t("settings.noTokenNeeded")}</div>
     </div>
   );
 }
@@ -448,22 +472,34 @@ function UpdateSection() {
 function AboutPanel({ settings, backend }) {
   return (
     <div className="panel" id="panel-about">
-      <div className="panel-title">About</div>
-      <div className="about-row"><span>Version</span><strong>{settings ? `v${settings.version}` : "—"}</strong></div>
-      <div className="about-row"><span>Data source</span><strong>{settings ? (settings.environment === "wsl" && settings.wsl_distro ? `WSL (${settings.wsl_distro})` : settings.environment) : "—"}</strong></div>
-      <div className="about-row"><span>Backend</span><strong className="about-path">{backend ? backend.engine : "—"}</strong></div>
+      <div className="panel-title">{t("settings.about")}</div>
+      <div className="about-row"><span>{t("settings.version")}</span><strong>{settings ? `v${settings.version}` : "—"}</strong></div>
+      <div className="about-row"><span>{t("settings.dataSource")}</span><strong>{settings ? (settings.environment === "wsl" && settings.wsl_distro ? `WSL (${settings.wsl_distro})` : settings.environment) : "—"}</strong></div>
+      <div className="about-row"><span>{t("settings.backend")}</span><strong className="about-path">{backend ? backend.engine : t("settings.backendNotRunning")}</strong></div>
       <UpdateSection />
     </div>
   );
 }
 
-// --- 主组件：侧边栏 + 主体 -------------------------------------------------------
+// --- 主组件：侧边栏（含返回按钮） + 主体 -----------------------------------------
+
+const PANEL_SECTIONS = [
+  ["display", "settings.display"],
+  ["theme", "settings.theme"],
+  ["language", "settings.language"],
+  ["membership", "settings.membership"],
+  ["login", "settings.login"],
+  ["apikeys", "settings.apikeys"],
+  ["environment", "settings.environment"],
+  ["about", "settings.about"],
+];
 
 export default function SettingsPage({ lastPayload }) {
   const [activePanel, setActivePanel] = useState("display");
   const [settings, setSettings] = useState(null);
   const [backend, setBackend] = useState(null);
   const [apiKeysReload, setApiKeysReload] = useState(0);
+  useLang();
 
   const refreshSettings = useCallback(async () => {
     try {
@@ -478,17 +514,12 @@ export default function SettingsPage({ lastPayload }) {
   const panel = (name) => `panel${activePanel === name ? "" : " hidden"}`;
 
   return (
-    <div className="settings-view main-settings">
-      <div className="settings-sidebar">
-        {[
-          ["display", "Display"],
-          ["theme", "Theme"],
-          ["membership", "Membership"],
-          ["login", "Login"],
-          ["apikeys", "API Keys"],
-          ["environment", "Environment"],
-          ["about", "About"],
-        ].map(([key, label]) => {
+    <div className="app-body">
+      <div className="settings-sidebar main-settings-nav">
+        <button className="settings-back" onClick={() => { window.location.hash = "#/dashboard"; }}>
+          ← {t("nav.back")}
+        </button>
+        {PANEL_SECTIONS.map(([key, labelKey]) => {
           if (key === "environment") {
             const available = (settings && settings.available_environments) || [];
             const distros = (settings && settings.wsl_distros) || [];
@@ -500,17 +531,20 @@ export default function SettingsPage({ lastPayload }) {
               className={`side-item${activePanel === key ? " active" : ""}`}
               onClick={() => setActivePanel(key)}
             >
-              {label}
+              {t(labelKey)}
             </div>
           );
         })}
       </div>
-      <div className="settings-main">
+      <div className="settings-main page-scroll">
         <div className={panel("display")}>
           <DisplayPanel lastPayload={lastPayload} />
         </div>
         <div className={panel("theme")}>
           <ThemePanel />
+        </div>
+        <div className={panel("language")}>
+          <LanguagePanel />
         </div>
         <div className={panel("membership")}>
           <MembershipPanel

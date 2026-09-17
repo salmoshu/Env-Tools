@@ -56,6 +56,25 @@ pub fn wsl_homes() -> Vec<PathBuf> {
     homes
 }
 
+/// 指定 WSL 发行版的用户家目录（UNC）。找不到时返回空列表。
+pub fn wsl_distro_homes(distro: &str) -> Vec<PathBuf> {
+    if !cfg!(windows) || distro.trim().is_empty() {
+        return Vec::new();
+    }
+    let home_root = PathBuf::from(format!("\\\\wsl.localhost\\{distro}\\home"));
+    let mut homes = Vec::new();
+    if let Ok(users) = std::fs::read_dir(&home_root) {
+        for user in users.flatten() {
+            let path = user.path();
+            if path.is_dir() {
+                homes.push(path);
+            }
+        }
+    }
+    homes.sort();
+    homes
+}
+
 pub fn read_json(path: &Path) -> Result<Value, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|err| format!("Cannot read {}: {err}", path.display()))?;

@@ -1,0 +1,266 @@
+// 轻量 i18n：中/英词典 + React 订阅。语言存 localStorage，默认跟随系统
+// （zh 开头 → 中文，其余英文）。provider 名与 "5h Window" 等数据驱动文案
+// 保持原文，不进词典。
+
+import { useEffect, useState } from "react";
+
+const LANG_KEY = "env-tools.lang";
+
+const DICT = {
+  en: {
+    // 导航 / 窗口
+    "nav.analytics": "Analytics",
+    "nav.tools": "Tools",
+    "nav.board": "Board",
+    "nav.settings": "Settings",
+    "nav.back": "Back",
+    "tip.analytics": "Usage analytics",
+    "tip.tools": "Component management",
+    "tip.board": "Open the compact usage board window",
+    "tip.settings": "Settings",
+    "tip.refresh": "Refresh data",
+    "tip.pin": "Pin on top",
+    "tip.maximize": "Maximize / restore",
+    "tip.minimize": "Minimize",
+    "tip.expand": "Open full dashboard",
+    // 通用状态
+    "state.loading": "Loading…",
+    "state.noData": "No data",
+    "state.retry": "Retry",
+    "state.details": "Details",
+    "state.hideDetails": "Hide details",
+    "state.save": "Save",
+    "state.saving": "Saving…",
+    "state.saved": "Saved. Usage data is refreshing…",
+    "state.saveFailed": "Save failed",
+    "state.checking": "Checking…",
+    // Dashboard
+    "dash.target": "Target",
+    "dash.agent": "Agent",
+    "dash.range": "Range",
+    "dash.range7": "Last 7 days",
+    "dash.range14": "Last 14 days",
+    "dash.range30": "Last 30 days",
+    "dash.range90": "Last 90 days",
+    "dash.quotas": "Plan quotas",
+    "dash.quotasMerged": "Plan quotas · all sources merged",
+    "dash.quotaUnavailable": "Quota data unavailable",
+    "dash.quotaUnavailableHint": "Check that the native backend is running, then retry.",
+    "dash.dailyTokens": "Daily tokens",
+    "dash.hourly": "Today by hour",
+    "dash.modelShare": "Model share",
+    "dash.dailyModel": "Daily × model",
+    "dash.cacheRate": "Cache hit rate (daily)",
+    "dash.topProjects": "Top projects",
+    "dash.yearly": "Yearly activity",
+    "dash.sessions": "Sessions",
+    "dash.sessionsHint": "Click Start / End / Total headers to sort · showing up to 200 rows.",
+    "dash.trend": "Token trend",
+    "dash.trendDaily": "Daily",
+    "dash.trendWeekly": "Weekly",
+    "dash.trendYearly": "Yearly",
+    "dash.trendYearlyHint": "Fetching the last 12 months…",
+    "dash.tokens": "tokens",
+    "dash.kpiWeek": "Tokens (7 days)",
+    "dash.kpiToday": "Tokens today",
+    "dash.kpiCache": "Cache hit rate",
+    "dash.kpiSessions": "Active sessions",
+    "dash.vsPrevWeek": "vs prev week",
+    "dash.targetMerged": "All sources (merged)",
+    "dash.targetMergedShort": "All sources",
+    "dash.targetCurrent": "current",
+    "dash.targetWsl": "WSL",
+    "dash.targetSsh": "SSH",
+    "dash.unavailable": "unavailable",
+    // 异常占位卡片
+    "err.loginHint": "Login expired or credentials missing. Start web authorization, then refresh.",
+    "err.keysHint": "No usable API key. Add one in Settings → API Keys.",
+    "err.retryHint": "Data could not be loaded right now. Retry in a moment.",
+    "err.goLogin": "Go to login",
+    "err.addKey": "Add API key",
+    "err.login": "Login",
+    // 设置
+    "settings.display": "Display",
+    "settings.theme": "Theme",
+    "settings.language": "Language",
+    "settings.membership": "Membership",
+    "settings.login": "Login",
+    "settings.apikeys": "API Keys",
+    "settings.environment": "Environment",
+    "settings.about": "About",
+    "settings.themeHint": "Applies immediately and is remembered on this machine.",
+    "settings.themeSystem": "System",
+    "settings.themeDark": "Dark",
+    "settings.themeLight": "Light",
+    "settings.langHint": "界面语言 / Interface language. Applies immediately.",
+    "settings.displayTitle": "Display",
+    "settings.displayHint": "Choose which providers appear on the compact board.",
+    "settings.all": "All",
+    "settings.version": "Version",
+    "settings.dataSource": "Data source",
+    "settings.backend": "Backend",
+    "settings.update": "Update",
+    "settings.checkUpdates": "Check for updates",
+    "settings.downloadInstall": "Download & install",
+    "settings.noTokenNeeded": "Public GitHub release — no token required.",
+    "settings.upToDate": "Up to date",
+    "settings.updateAvailable": "Update available",
+    "settings.loginTitle": "Agent Login",
+    "settings.loginHint": "Start web authorization manually. The dashboard never opens a login page on its own.",
+    "settings.loginMethod": "Web authorization",
+    "settings.loginBtn": "Log in",
+    "settings.loginStarted": "Web authorization started. Finish it in your browser, then refresh.",
+    "settings.apiKeysTitle": "API Keys",
+    "settings.apiKeysHint": "Keys are stored locally with private file permissions.",
+    "settings.envTitle": "Data Source",
+    "settings.envHint": "Quotas are read from the side the app runs on; analytics can merge all sources via the Target selector.",
+    "settings.notChecked": "Not checked",
+    "settings.backendNotRunning": "env-tools-api (not running)",
+    // Board
+    "board.noProviders": "No providers selected · adjust them in Settings on the main window",
+  },
+  zh: {
+    "nav.analytics": "用量分析",
+    "nav.tools": "组件管理",
+    "nav.board": "悬浮看板",
+    "nav.settings": "设置",
+    "nav.back": "返回",
+    "tip.analytics": "会话用量分析",
+    "tip.tools": "组件管理",
+    "tip.board": "打开紧凑悬浮看板窗口",
+    "tip.settings": "设置",
+    "tip.refresh": "刷新数据",
+    "tip.pin": "窗口置顶",
+    "tip.maximize": "最大化 / 还原",
+    "tip.minimize": "最小化",
+    "tip.expand": "打开全量窗口",
+    "state.loading": "加载中…",
+    "state.noData": "暂无数据",
+    "state.retry": "重试",
+    "state.details": "详情",
+    "state.hideDetails": "收起详情",
+    "state.save": "保存",
+    "state.saving": "保存中…",
+    "state.saved": "已保存，用量数据刷新中…",
+    "state.saveFailed": "保存失败",
+    "state.checking": "检查中…",
+    "dash.target": "数据目标",
+    "dash.agent": "Agent",
+    "dash.range": "时间范围",
+    "dash.range7": "最近 7 天",
+    "dash.range14": "最近 14 天",
+    "dash.range30": "最近 30 天",
+    "dash.range90": "最近 90 天",
+    "dash.quotas": "套餐配额",
+    "dash.quotasMerged": "套餐配额 · 已合并全部数据源",
+    "dash.quotaUnavailable": "配额数据不可用",
+    "dash.quotaUnavailableHint": "请确认原生后端正在运行后重试。",
+    "dash.dailyTokens": "每日 token",
+    "dash.hourly": "今日按小时",
+    "dash.modelShare": "模型占比",
+    "dash.dailyModel": "每日 × 模型",
+    "dash.cacheRate": "缓存命中率（按天）",
+    "dash.topProjects": "项目排行",
+    "dash.yearly": "全年活跃度",
+    "dash.sessions": "会话明细",
+    "dash.sessionsHint": "点击 Start / End / Total 表头排序 · 最多显示 200 行。",
+    "dash.trend": "Token 趋势",
+    "dash.trendDaily": "按日",
+    "dash.trendWeekly": "按周",
+    "dash.trendYearly": "按年",
+    "dash.trendYearlyHint": "正在获取近 12 个月数据…",
+    "dash.tokens": "tokens",
+    "dash.kpiWeek": "Token（7 天）",
+    "dash.kpiToday": "今日 token",
+    "dash.kpiCache": "缓存命中率",
+    "dash.kpiSessions": "活跃会话",
+    "dash.vsPrevWeek": "对比上周",
+    "dash.targetMerged": "全部来源（汇总）",
+    "dash.targetMergedShort": "全部来源",
+    "dash.targetCurrent": "当前",
+    "dash.targetWsl": "WSL",
+    "dash.targetSsh": "SSH",
+    "dash.unavailable": "不可用",
+    "err.loginHint": "登录已过期或凭证缺失。请先完成网页授权，然后刷新。",
+    "err.keysHint": "没有可用的 API key。请在 设置 → API Keys 中添加。",
+    "err.retryHint": "暂时无法加载数据，请稍后重试。",
+    "err.goLogin": "去登录",
+    "err.addKey": "添加 API key",
+    "err.login": "登录",
+    "settings.display": "显示",
+    "settings.theme": "主题",
+    "settings.language": "语言",
+    "settings.membership": "会员",
+    "settings.login": "登录",
+    "settings.apikeys": "API 密钥",
+    "settings.environment": "数据环境",
+    "settings.about": "关于",
+    "settings.themeHint": "立即生效并保存在本机。",
+    "settings.themeSystem": "跟随系统",
+    "settings.themeDark": "深色",
+    "settings.themeLight": "浅色",
+    "settings.langHint": "界面语言 / Interface language. 立即生效。",
+    "settings.displayTitle": "显示",
+    "settings.displayHint": "选择悬浮看板上显示哪些 provider。",
+    "settings.all": "全部",
+    "settings.version": "版本",
+    "settings.dataSource": "数据来源",
+    "settings.backend": "后端",
+    "settings.update": "软件更新",
+    "settings.checkUpdates": "检查更新",
+    "settings.downloadInstall": "下载并安装",
+    "settings.noTokenNeeded": "公开 GitHub Release，无需任何 token。",
+    "settings.upToDate": "已是最新",
+    "settings.updateAvailable": "有可用更新",
+    "settings.loginTitle": "Agent 登录",
+    "settings.loginHint": "手动发起网页授权。看板绝不会自行打开登录页面。",
+    "settings.loginMethod": "网页授权",
+    "settings.loginBtn": "登录",
+    "settings.loginStarted": "网页授权已启动。请在浏览器完成登录后刷新。",
+    "settings.apiKeysTitle": "API 密钥",
+    "settings.apiKeysHint": "密钥仅保存在本地，文件权限为私有。",
+    "settings.envTitle": "数据来源",
+    "settings.envHint": "配额始终从应用运行的一侧读取；分析数据可通过数据目标选择器合并全部来源。",
+    "settings.notChecked": "未检查",
+    "settings.backendNotRunning": "env-tools-api（未运行）",
+    "board.noProviders": "未选择任何 provider · 请在主窗口设置中调整",
+  },
+};
+
+let current = detectLang();
+const listeners = new Set();
+
+function detectLang() {
+  try {
+    const stored = localStorage.getItem(LANG_KEY);
+    if (stored === "zh" || stored === "en") return stored;
+  } catch {}
+  return (navigator.language || "en").toLowerCase().startsWith("zh") ? "zh" : "en";
+}
+
+export function getLang() {
+  return current;
+}
+
+export function setLang(lang) {
+  if (lang !== "zh" && lang !== "en") return;
+  current = lang;
+  try { localStorage.setItem(LANG_KEY, lang); } catch {}
+  for (const notify of listeners) notify();
+}
+
+/** t("dash.quotas") —— 词典缺 key 时回退英文再回退 key 本身 */
+export function t(key) {
+  return DICT[current][key] ?? DICT.en[key] ?? key;
+}
+
+/** React 绑定：语言切换时触发重渲染 */
+export function useLang() {
+  const [lang, setLangState] = useState(current);
+  useEffect(() => {
+    const notify = () => setLangState(current);
+    listeners.add(notify);
+    return () => listeners.delete(notify);
+  }, []);
+  return [lang, setLang];
+}

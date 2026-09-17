@@ -1,22 +1,34 @@
 // 全量窗口默认页：会话用量分析（多 agent）+ 套餐配额总览。
-// 数据两条线：analytics 走 get-analytics（Rust 后端优先，python 兜底），
+// 数据两条线：analytics 走 get-analytics（Rust 原生引擎），
 // 配额走 usage-update 广播（60s 定时 + did-finish-load 补推）。
+// v0.7.1：配额跟随 agent 筛选、目标默认"全部来源"、token 趋势折线图、i18n。
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AGENT_COLORS, AGENT_LABELS, abbrev, fmt, fmtPct, fmtReset, fmtSpan, fmtTimestamp,
   levelClass, timeFractionOf,
 } from "../utils.js";
 import {
   CalendarHeatmap, DonutChart, LineChart, MODEL_PALETTE,
-  SERIES_DEFS, StackedBars, ProjectBars,
+  SERIES_DEFS, StackedBars, ProjectBars, ValueLineChart,
 } from "../components/charts.jsx";
 import { RefreshIcon } from "../components/Titlebar.jsx";
+import { t, useLang } from "../i18n.js";
 
 const ANALYTICS_REFRESH_MS = 5 * 60 * 1000;
 const DAYS_KEY = "ai-usage-monitor.analytics-days";
 const AGENT_KEY = "ai-usage-monitor.analytics-agent";
 const TARGET_KEY = "ai-usage-monitor.target";
+const TREND_KEY = "ai-usage-monitor.trend-granularity";
+
+const AGENT_PROVIDERS = {
+  kimi: ["Kimi Code"],
+  codex: ["OpenAI Codex"],
+  glm: ["GLM"],
+  deepseek: ["DeepSeek"],
+};
+
+const MONTH_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 function shortDateLabel(date) {
   return date.slice(5);
@@ -90,47 +102,63 @@ function QuotaCard({ account, versions }) {
   );
 }
 
+/** 配额异常占位卡片：按 provider 类型分级引导，API 型绝不引导"去登录" */
 function QuotaErrorCard({ err, onFix }) {
   const [expanded, setExpanded] = useState(false);
   const message = String((err && err.error) || "Unknown error");
+  const provider = String((err && err.provider) || "");
   const lower = message.toLowerCase();
-  const kind = /login|credential|oauth|token|expired|unauthorized|401/.test(lower)
-    ? "login"
-    : /api.?key|balance|quota query|not set|configure/.test(lower)
-      ? "keys"
-      : "retry";
-  const hints = {
-    login: "Login expired or credentials missing. Start web authorization, then refresh.",
-    keys: "No usable API key. Add one in Settings → API Keys.",
-    retry: "Data could not be loaded right now. Retry in a moment.",
-  };
+  const isApiProvider = provider === "DeepSeek" || provider === "GLM";
+  const kind = isApiProvider
+    ? "keys"
+    : /login|expired|unauthorized|401|credential|oauth|token/i.test(message)
+      ? "login"
+      : /api.?key|not set|configure|balance/i.test(lower)
+        ? "keys"
+        : "retry";
+  const hints = { login: t("err.loginHint"), keys: t("err.keysHint"), retry: t("err.retryHint") };
   return (
     <div className="qcard qcard-error">
       <div className="qcard-head">
-        <span className="qname">{(err && err.provider) || "Provider"}</span>
-        <span className="plan">unavailable</span>
+        <span className="qname">{provider}</span>
+        <span className="plan">{t("dash.unavailable")}</span>
       </div>
       <div className="qerror-hint">{hints[kind]}</div>
       <button className="qerror-toggle" onClick={() => setExpanded(!expanded)}>
-        {expanded ? "Hide details" : "Details"}
+        {expanded ? t("state.hideDetails") : t("state.details")}
       </button>
       {expanded && <div className="qerror-detail">{message}</div>}
       <div className="qerror-actions">
         {kind === "login" && (
-          <button className="qerror-btn" onClick={() => onFix && onFix("login")}>Go to login</button>
+          <button className="qerror-btn" onClick={() => onFix && onFix("login")}>{t("err.goLogin")}</button>
         )}
         {kind === "keys" && (
-          <button className="qerror-btn" onClick={() => onFix && onFix("settings")}>Add API key</button>
+          <button className="qerror-btn" onClick={() => onFix && onFix("settings")}>{t("err.addKey")}</button>
         )}
-        <button
-          className="qerror-btn ghost"
-          onClick={() => onFix && onFix("refresh")}
-        >
-          <RefreshIcon /> Retry
+        <button className="qerror-btn ghost" onClick={() => onFix && onFix("refresh")}>
+          <RefreshIcon /> {t("state.retry")}
         </button>
       </div>
     </div>
   );
+}
+
+function targetLabel(item) {
+  if (!item) return "";
+  if (item.kind === "aggregate") return t("dash.targetMerged");
+  if (item.kind === "local") {
+    return `${item.os || item.label || "local"} (${t("dash.targetCurrent")})`;
+  }
+  if (item.kind === "wsl") return `${t("dash.targetWsl")} · ${item.distro}`;
+  if (item.kind === "ssh") return `${t("dash.targetSsh")} · ${item.host}`;
+  return item.label;
+}
+
+/** 按 agent 筛选配额：选 kimi 时配额区只显示 Kimi */
+function filterByAgent(list, agent) {
+  const allowed = AGENT_PROVIDERS[agent];
+  if (!allowed) return list;
+  return list.filter((item) => allowed.includes(item.provider));
 }
 
 export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
@@ -143,13 +171,21 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
   const [agent, setAgent] = useState(() => {
     try { return localStorage.getItem(AGENT_KEY) || "all"; } catch { return "all"; }
   });
-  const [targets, setTargets] = useState([{ id: "local", label: "This machine", kind: "local" }]);
+  const [targets, setTargets] = useState([
+    { id: "aggregate", kind: "aggregate" },
+    { id: "local", kind: "local", label: "local" },
+  ]);
   const [target, setTarget] = useState(() => {
-    try { return localStorage.getItem(TARGET_KEY) || "local"; } catch { return "local"; }
+    try { return localStorage.getItem(TARGET_KEY) || "aggregate"; } catch { return "aggregate"; }
   });
   const [usage, setUsage] = useState(null);
   const [sessionsSort, setSessionsSort] = useState({ key: "total", dir: -1 });
+  const [trendGran, setTrendGran] = useState(() => {
+    try { return localStorage.getItem(TREND_KEY) || "day"; } catch { return "day"; }
+  });
+  const [trendAnalytics, setTrendAnalytics] = useState(null);
   const analyticsBusy = useRef(false);
+  useLang();
 
   // 配额按目标路由：本地/汇总目标吃 60s 广播（lastPayload），远端目标走 get-usage
   const refreshUsage = useCallback(async (nextTarget) => {
@@ -193,7 +229,16 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
 
   useEffect(() => {
     window.api.listTargets().then((result) => {
-      if (result && result.targets) setTargets(result.targets);
+      if (result && result.targets) {
+        setTargets(result.targets);
+        // 目标列表就绪后校验当前选择：不在列表（或旧的 local 默认）则回落到汇总
+        const ids = new Set(result.targets.map((item) => item.id));
+        setTarget((prev) => {
+          if (ids.has(prev)) return prev;
+          try { localStorage.setItem(TARGET_KEY, "aggregate"); } catch {}
+          return "aggregate";
+        });
+      }
     }).catch(() => {});
   }, []);
 
@@ -203,13 +248,26 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
     return () => clearInterval(timer);
   }, [days, agent, target, requestAnalytics]);
 
+  // 年度趋势需要 12 个月数据：单独拉取，避免影响主视图的 days 选择
+  useEffect(() => {
+    if (trendGran !== "year") return;
+    let cancelled = false;
+    window.api.getAnalytics(365, agent, target).then((result) => {
+      if (!cancelled && result && result.ok && result.analytics) setTrendAnalytics(result.analytics);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [trendGran, agent, target]);
+
   const usagePayload = target === "local" || target === "aggregate"
     ? lastPayload
     : (usage || { data: null });
   const data = usagePayload && usagePayload.data;
-  const accounts = (data && data.accounts) || [];
   const errors = (data && data.errors) || [];
   const versions = (data && data.versions) || {};
+  const allAccounts = (data && data.accounts) || [];
+  // agent 筛选联动配额：只看 kimi 时配额区只显示 Kimi
+  const accounts = filterByAgent(allAccounts, agent);
+  const shownErrors = filterByAgent(errors, agent);
 
   // --- 分析数据派生 ---
   const dayList = (analytics && analytics.day_list) || [];
@@ -227,6 +285,56 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
   if (otherTotal > 0) pieItems.push({ name: "other", value: otherTotal, color: "#6b7385" });
 
   const daily = analytics && analytics.daily;
+
+  // --- token 趋势（日/周/年） ---
+  const trendSource = trendGran === "year" ? (trendAnalytics || analytics) : analytics;
+  const trend = useMemo(() => {
+    const list = (trendSource && trendSource.day_list) || [];
+    const rows = (trendSource && trendSource.daily) || [];
+    if (trendGran === "day") {
+      return { labels: list.map(shortDateLabel), values: rows.map((e) => e.total || 0) };
+    }
+    if (trendGran === "week") {
+      const labels = [];
+      const values = [];
+      let acc = 0;
+      let bucketStart = null;
+      for (let i = 0; i < list.length; i++) {
+        const day = new Date(`${list[i]}T00:00:00`);
+        if (!bucketStart) bucketStart = list[i];
+        acc += rows[i]?.total || 0;
+        // 周一开启新桶（bucket 覆盖周一..周日）
+        if (day.getDay() === 1 || i === list.length - 1) {
+          labels.push(bucketStart.slice(5));
+          values.push(acc);
+          acc = 0;
+          bucketStart = null;
+        }
+      }
+      return { labels, values };
+    }
+    // year：按月聚合
+    const labels = [];
+    const values = [];
+    let acc = 0;
+    let bucketMonth = "";
+    for (let i = 0; i < list.length; i++) {
+      const month = list[i].slice(0, 7);
+      if (!bucketMonth) bucketMonth = month;
+      acc += rows[i]?.total || 0;
+      if (month !== bucketMonth || i === list.length - 1) {
+        const monthIndex = Number(bucketMonth.slice(5, 7)) - 1;
+        labels.push(bucketMonth === list[list.length - 1].slice(0, 7) && i === list.length - 1 && month === bucketMonth
+          ? `${MONTH_SHORT[monthIndex]}`
+          : `${MONTH_SHORT[monthIndex]}`);
+        values.push(acc);
+        acc = 0;
+        bucketMonth = month;
+      }
+    }
+    return { labels, values };
+  }, [trendSource, trendGran]);
+
   const dailyChart = daily && (
     <StackedBars
       className="tall"
@@ -280,16 +388,16 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
     <div className="page">
       <header className="page-head">
         <div>
-          <h1>Usage Analytics</h1>
+          <h1>{t("nav.analytics")}</h1>
           <div className="meta">
             {analytics
               ? `Range ${analytics.date_range[0]} – ${analytics.date_range[1]} (${analytics.days} days)` +
                 ` · Updated ${analytics.generated_at} · Source ${analytics.source || "~ local sessions"}`
-              : "Loading analytics…"}
+              : t("state.loading")}
           </div>
         </div>
         <div className="head-controls">
-          <label className="days-field">Target
+          <label className="days-field">{t("dash.target")}
             <select
               className="control"
               value={target}
@@ -299,11 +407,11 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
               }}
             >
               {targets.map((item) => (
-                <option key={item.id} value={item.id}>{item.label}</option>
+                <option key={item.id} value={item.id}>{targetLabel(item)}</option>
               ))}
             </select>
           </label>
-          <label className="days-field">Agent
+          <label className="days-field">{t("dash.agent")}
             <select
               className="control"
               value={agent}
@@ -317,7 +425,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
               ))}
             </select>
           </label>
-          <label className="days-field">Range
+          <label className="days-field">{t("dash.range")}
             <select
               className="control"
               value={days}
@@ -326,19 +434,19 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                 try { localStorage.setItem(DAYS_KEY, event.target.value); } catch {}
               }}
             >
-              <option value="7">Last 7 days</option>
-              <option value="14">Last 14 days</option>
-              <option value="30">Last 30 days</option>
-              <option value="90">Last 90 days</option>
+              <option value="7">{t("dash.range7")}</option>
+              <option value="14">{t("dash.range14")}</option>
+              <option value="30">{t("dash.range30")}</option>
+              <option value="90">{t("dash.range90")}</option>
             </select>
           </label>
           <button
             className="btn refresh-inline"
-            title="Refresh data"
+            title={t("tip.refresh")}
             disabled={refreshing}
             onClick={() => onRefresh && onRefresh()}
           >
-            <RefreshIcon spinning={refreshing} /> Refresh
+            <RefreshIcon spinning={refreshing} /> {t("tip.refresh")}
           </button>
         </div>
       </header>
@@ -349,52 +457,37 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
 
       <div className="kpi-row">
         <div className="kpi-card">
-          <div className="kpi-label">Tokens (7 days){agent !== "all" ? ` · ${AGENT_LABELS[agent]}` : ""}</div>
+          <div className="kpi-label">{t("dash.kpiWeek")}{agent !== "all" ? ` · ${AGENT_LABELS[agent]}` : ""}</div>
           <div className="kpi-value">{fmt(kpi.week_total)}</div>
-          <div className="kpi-sub">{wowHtml}{wowHtml ? " vs prev week" : ""}</div>
+          <div className="kpi-sub">{wowHtml}{wowHtml ? ` ${t("dash.vsPrevWeek")}` : ""}</div>
         </div>
         <div className="kpi-card">
-          <div className="kpi-label">Tokens today</div>
+          <div className="kpi-label">{t("dash.kpiToday")}</div>
           <div className="kpi-value">{fmt(kpi.today_total)}</div>
         </div>
         <div className="kpi-card">
-          <div className="kpi-label">Cache hit rate</div>
+          <div className="kpi-label">{t("dash.kpiCache")}</div>
           <div className="kpi-value">{fmtPct(kpi.cache_hit_rate)}</div>
         </div>
         <div className="kpi-card">
-          <div className="kpi-label">Active sessions</div>
+          <div className="kpi-label">{t("dash.kpiSessions")}</div>
           <div className="kpi-value">{fmt(kpi.active_sessions)}</div>
-        </div>
-        <div className="kpi-card">
-          <div className="kpi-label">Previous week</div>
-          <div className="kpi-value">{fmt(kpi.prev_week_total)}</div>
         </div>
       </div>
 
-      {analytics && analytics.agent_rank && analytics.agent_rank.length > 0 && agent === "all" && (
-        <div className="legend" style={{ marginBottom: 14 }}>
-          {analytics.agent_rank.map((item) => (
-            <span className="item" key={item.agent}>
-              <span className="swatch" style={{ background: AGENT_COLORS[item.agent] || AGENT_COLORS.other }} />
-              {AGENT_LABELS[item.agent] || item.agent} {abbrev(item.total)} · {fmt(item.requests)} req
-            </span>
-          ))}
-        </div>
-      )}
-
       <section className="block">
-        <h2>Plan quotas{target === "aggregate" ? " · all sources merged" : ""}</h2>
+        <h2>{target === "aggregate" ? t("dash.quotasMerged") : t("dash.quotas")}{agent !== "all" ? ` · ${AGENT_LABELS[agent]}` : ""}</h2>
         {usagePayload && usagePayload.error ? (
           <div className="quota-unavailable">
-            Quota data unavailable — {usagePayload.error}
-            <span>Check that the native backend is running, then retry.</span>
+            {t("dash.quotaUnavailable")} — {usagePayload.error}
+            <span>{t("dash.quotaUnavailableHint")}</span>
           </div>
         ) : null}
         <div className="quota-grid" style={{ marginTop: (usagePayload && usagePayload.error) ? 10 : 0 }}>
           {accounts.map((account) => (
             <QuotaCard key={account.provider} account={account} versions={versions} />
           ))}
-          {(usagePayload && !usagePayload.error ? errors : []).map((err) => (
+          {(usagePayload && !usagePayload.error ? shownErrors : []).map((err) => (
             <QuotaErrorCard
               key={`${err.provider}:${err.error}`}
               err={err}
@@ -402,21 +495,21 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                 if (action === "refresh") {
                   if (onRefresh) onRefresh();
                 } else {
-                  window.location.hash = action === "login" ? "#/settings" : "#/settings";
+                  window.location.hash = "#/settings";
                 }
               }}
             />
           ))}
-          {accounts.length === 0 && errors.length === 0
+          {accounts.length === 0 && shownErrors.length === 0
             ? (usagePayload && !usagePayload.error
-              ? <div className="status">No data</div>
-              : <div className="status">Loading…</div>)
+              ? <div className="status">{t("state.noData")}</div>
+              : <div className="status">{t("state.loading")}</div>)
             : null}
         </div>
       </section>
 
       <section className="card">
-        <h2>Daily tokens</h2>
+        <h2>{t("dash.dailyTokens")}</h2>
         <div className="legend">
           {SERIES_DEFS.map(([key, name, color]) => (
             <span className="item" key={key}>
@@ -428,7 +521,28 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
       </section>
 
       <section className="card">
-        <h2>Today by hour</h2>
+        <div className="card-head-row">
+          <h2>{t("dash.trend")}</h2>
+          <select
+            className="control"
+            value={trendGran}
+            onChange={(event) => {
+              setTrendGran(event.target.value);
+              try { localStorage.setItem(TREND_KEY, event.target.value); } catch {}
+            }}
+          >
+            <option value="day">{t("dash.trendDaily")}</option>
+            <option value="week">{t("dash.trendWeekly")}</option>
+            <option value="year">{t("dash.trendYearly")}</option>
+          </select>
+        </div>
+        {trendGran === "year" && !trendAnalytics
+          ? <div className="status">{t("dash.trendYearlyHint")}</div>
+          : <ValueLineChart labels={trend.labels} values={trend.values} valueLabel={t("dash.tokens")} />}
+      </section>
+
+      <section className="card">
+        <h2>{t("dash.hourly")}</h2>
         <div className="legend">
           {SERIES_DEFS.slice(0, 3).map(([key, name, color]) => (
             <span className="item" key={key}>
@@ -453,11 +567,11 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
 
       <div className="grid">
         <section className="card">
-          <h2>Model share</h2>
+          <h2>{t("dash.modelShare")}</h2>
           <DonutChart items={pieItems} />
         </section>
         <section className="card">
-          <h2>Daily × model</h2>
+          <h2>{t("dash.dailyModel")}</h2>
           <div className="legend">
             {models.map((model, i) => (
               <span className="item" key={model}>
@@ -485,25 +599,25 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
           />
         </section>
         <section className="card">
-          <h2>Cache hit rate (daily)</h2>
+          <h2>{t("dash.cacheRate")}</h2>
           <LineChart labels={shortDays} values={(daily || []).map((entry) => entry.cache_hit_rate)} />
         </section>
         <section className="card">
-          <h2>Top projects</h2>
+          <h2>{t("dash.topProjects")}</h2>
           {(analytics && analytics.project_rank || []).slice(0, 15).length
             ? <ProjectBars items={(analytics.project_rank || []).slice(0, 15)} />
-            : <div className="status">No data</div>}
+            : <div className="status">{t("state.noData")}</div>}
         </section>
       </div>
 
       <section className="card">
-        <h2>Yearly activity</h2>
+        <h2>{t("dash.yearly")}</h2>
         <CalendarHeatmap calendar={analytics && analytics.calendar} />
       </section>
 
       <section className="card">
-        <h2>Sessions</h2>
-        <div className="table-hint">Click Start / End / Total headers to sort · showing up to 200 rows.</div>
+        <h2>{t("dash.sessions")}</h2>
+        <div className="table-hint">{t("dash.sessionsHint")}</div>
         <div className="table-wrap">
           <table>
             <thead>

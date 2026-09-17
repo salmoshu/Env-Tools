@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   fmtSpan, isNewerVersion, levelClass, timeFractionOf, fmtReset,
 } from "../utils.js";
+import { t, useLang } from "../i18n.js";
 
 const DISPLAY_SELECTION_KEY = "ai-usage-monitor.display-providers";
 
@@ -130,6 +131,7 @@ export default function Board({ lastPayload }) {
   const [upgradeProvider, setUpgradeProvider] = useState(null);
   const [compact, setCompact] = useState(false);
   const [pinned, setPinned] = useState(false);
+  useLang();
 
   try {
     if (savedProviders.current === null) {
@@ -242,7 +244,7 @@ export default function Board({ lastPayload }) {
           <div className="error-card">{lastPayload.error}</div>
         )}
         {knownProviders.length > 0 && selectedProviders.size === 0 ? (
-          <div className="status">No providers selected · adjust them in Settings on the main window</div>
+          <div className="status">{t("board.noProviders")}</div>
         ) : null}
         {accounts.map((account) => {
           const updated = account.fetched_at
@@ -344,10 +346,10 @@ export default function Board({ lastPayload }) {
             {err.provider}: {err.error}
           </div>
         ))}
-        {!lastPayload && <div className="status">Loading…</div>}
+        {!lastPayload && <div className="status">{t("state.loading")}</div>}
         {lastPayload && !lastPayload.error && accounts.length === 0
           && knownProviders.length > 0 && selectedProviders.size > 0 && (
-          <div className="status">No data</div>
+          <div className="status">{t("state.noData")}</div>
         )}
       </div>
 

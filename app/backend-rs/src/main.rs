@@ -128,7 +128,16 @@ async fn health() -> Json<Value> {
     }))
 }
 
-fn kimi_homes(aggregate: bool) -> Vec<PathBuf> {
+fn kimi_homes(aggregate: bool, wsl_distro: Option<&str>) -> Vec<PathBuf> {
+    if let Some(distro) = wsl_distro {
+        // 指定 WSL 发行版：仅扫描该发行版家目录（UNC）
+        let mut homes: Vec<PathBuf> = Vec::new();
+        for home in settings::wsl_distro_homes(distro) {
+            homes.push(home.join(".kimi-code"));
+            homes.push(home.join(".kimi"));
+        }
+        return homes;
+    }
     let mut homes = vec![kimi_home()];
     if aggregate {
         for home in settings::wsl_homes() {
@@ -139,7 +148,13 @@ fn kimi_homes(aggregate: bool) -> Vec<PathBuf> {
     homes
 }
 
-fn codex_homes(aggregate: bool) -> Vec<PathBuf> {
+fn codex_homes(aggregate: bool, wsl_distro: Option<&str>) -> Vec<PathBuf> {
+    if let Some(distro) = wsl_distro {
+        return settings::wsl_distro_homes(distro)
+            .into_iter()
+            .map(|home| home.join(".codex"))
+            .collect();
+    }
     let mut homes = vec![codex_home()];
     if aggregate {
         for home in settings::wsl_homes() {
@@ -188,8 +203,9 @@ async fn analytics(
         .unwrap_or("all")
         .to_string();
     let aggregate = params.get("aggregate").map(|v| v == "1" || v == "true").unwrap_or(false);
-    let key = format!("analytics:{days}:{agent}:{aggregate}");
-    let ttl = if aggregate { ANALYTICS_WSL_TTL } else { ANALYTICS_TTL };
+    let wsl_distro = params.get("wsl_distro").map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    let key = format!("analytics:{days}:{agent}:{aggregate}:{:?}", wsl_distro.as_deref());
+    let ttl = if aggregate || wsl_distro.is_some() { ANALYTICS_WSL_TTL } else { ANALYTICS_TTL };
     let state = state.clone();
     let value = state
         .cache
@@ -199,12 +215,14 @@ async fn analytics(
                 let now_sec = now.timestamp();
                 let mut engine = state.analytics.lock().unwrap();
                 let scan_started = std::time::Instant::now();
-                let dirty = engine.scan(&kimi_homes(aggregate), &codex_homes(aggregate), now_sec);
+                let distro = wsl_distro.as_deref();
+                let dirty = engine.scan(&kimi_homes(aggregate, distro), &codex_homes(aggregate, distro), now_sec);
                 let payload = engine.aggregate(days, &agent, now);
                 drop(engine);
                 let engine_note = format!(
-                    "native-rust{} (scan {:.1}ms, dirty={dirty})",
+                    "native-rust{}{} (scan {:.1}ms, dirty={dirty})",
                     if aggregate { "+wsl" } else { "" },
+                    if let Some(name) = distro { format!("[{name}]") } else { String::new() },
                     scan_started.elapsed().as_secs_f64() * 1000.0
                 );
                 serde_json::json!({

@@ -53,7 +53,8 @@ fn env_timeout(name: &str, default: u64) -> u64 {
 }
 
 /// 构建 HTTP agent（代理语义与 Python 版一致）；settings.rs 的版本探测也复用。
-pub fn build_agent(use_proxy: bool, timeout_secs: u64) -> ureq::Agent {    let mut builder = ureq::AgentBuilder::new()
+pub fn build_agent(use_proxy: bool, timeout_secs: u64) -> ureq::Agent {
+    let mut builder = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(15))
         .timeout(Duration::from_secs(timeout_secs));
     if use_proxy {
@@ -63,7 +64,10 @@ pub fn build_agent(use_proxy: bool, timeout_secs: u64) -> ureq::Agent {    let m
             .or_else(|| env_value("HTTP_PROXY"))
             .or_else(|| env_value("http_proxy"))
             .or_else(|| env_value("ALL_PROXY"))
-            .or_else(|| env_value("all_proxy"));
+            .or_else(|| env_value("all_proxy"))
+            // 环境变量缺失时（GUI 启动常如此）回退 Windows 系统代理：
+            // Codex/GLM 等经代理访问的接口与浏览器行为保持一致
+            .or_else(system_proxy);
         if let Some(raw) = raw {
             if let Ok(proxy) = ureq::Proxy::new(&raw) {
                 builder = builder.proxy(proxy);
@@ -71,6 +75,53 @@ pub fn build_agent(use_proxy: bool, timeout_secs: u64) -> ureq::Agent {    let m
         }
     }
     builder.build()
+}
+
+/// 读 Windows 系统代理（IE/WinINET 设置）：注册表 ProxyEnable + ProxyServer。
+/// 非 Windows 或读取失败返回 None。
+fn system_proxy() -> Option<String> {
+    if !cfg!(windows) {
+        return None;
+    }
+    let output = std::process::Command::new("reg.exe")
+        .args([
+            "query",
+            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+            "/v", "ProxyEnable",
+        ])
+        .output()
+        .ok()?;
+    if !String::from_utf8_lossy(&output.stdout).contains("0x1") {
+        return None;
+    }
+    let output = std::process::Command::new("reg.exe")
+        .args([
+            "query",
+            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+            "/v", "ProxyServer",
+        ])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    // 形如 "    ProxyServer    REG_SZ    127.0.0.1:7890"
+    let server = text
+        .lines()
+        .find(|line| line.contains("ProxyServer"))
+        .and_then(|line| line.split_whitespace().last())
+        .filter(|value| value.contains(':') || value.contains('.'))?
+        .to_string();
+    // "http=...;https=..." 分段形式取 https 段；裸 host:port 补 scheme
+    if let Some(https_part) = server.split(';').find(|part| part.starts_with("https=")) {
+        return Some(format!("https://{}", &https_part[6..]));
+    }
+    if server.contains('=') {
+        return None;
+    }
+    if server.starts_with("http") {
+        Some(server)
+    } else {
+        Some(format!("http://{server}"))
+    }
 }
 
 /// request_json 的 GET 版本：GET 重试 3 次（退避 1s/2s），HTTP 错误不重试。
@@ -700,15 +751,10 @@ fn request_json_post(
     }
 }
 
-/// 凭证的候选家目录：本机优先，其后是各 WSL 发行版的用户目录（经 UNC）。
-/// Windows 侧凭据只装在其中一个环境里时（如 kimi-web.json 只在 WSL），
-/// 跨目录发现是修复 Kimi 会员名显示 unknown 的关键。
+/// 凭证家目录（v0.7.1 起仅本机侧：配额不再跨 WSL 读取，避免 9P 慢与串源）。
+/// 分析数据仍可跨源汇总（见 /api/analytics 的 aggregate 参数）。
 fn credential_homes() -> Vec<(PathBuf, &'static str)> {
-    let mut homes = vec![(env_home(), "windows")];
-    for home in crate::settings::wsl_homes() {
-        homes.push((home, "wsl"));
-    }
-    homes
+    vec![(env_home(), "windows")]
 }
 
 fn find_file_across_homes(

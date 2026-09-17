@@ -228,6 +228,76 @@ export function LineChart({ labels, values }) {
   return <div ref={ref} className="chart" />;
 }
 
+/** 数值折线图（token 趋势）：y 轴按数据自适应刻度，tooltip 显示绝对值 */
+export function ValueLineChart({ labels, values, valueLabel = "tokens" }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const container = ref.current;
+    if (!container) return;
+    container.textContent = "";
+    const width = Math.max(container.clientWidth || 0, 240);
+    const height = Math.max(container.clientHeight || 0, 170);
+    const margin = { top: 10, right: 12, bottom: 20, left: 52 };
+    const innerW = width - margin.left - margin.right;
+    const innerH = height - margin.top - margin.bottom;
+    const maxVal = niceMax(Math.max(1, ...values, 1));
+    const svg = svgEl("svg", { width, height });
+
+    for (let tick = 0; tick <= 4; tick++) {
+      const fraction = tick / 4;
+      const y = margin.top + innerH * (1 - fraction);
+      svgEl("line", {
+        x1: margin.left, x2: margin.left + innerW, y1: y, y2: y,
+        stroke: "var(--track)", "stroke-width": 1,
+      }, svg);
+      const text = svgEl("text", {
+        x: margin.left - 6, y: y + 3, "text-anchor": "end",
+        "font-size": 9, fill: "var(--faint)",
+      }, svg);
+      text.textContent = abbrev((maxVal * tick) / 4);
+    }
+
+    const step = innerW / Math.max(1, labels.length);
+    const points = values.map((value, i) => [
+      margin.left + step * (i + 0.5),
+      margin.top + innerH * (1 - Math.min(1, (value || 0) / maxVal)),
+    ]);
+    const linePath = points.map(([x, y], i) => `${i ? "L" : "M"} ${x.toFixed(1)} ${y.toFixed(1)}`).join(" ");
+    const first = points[0] || [margin.left, margin.top + innerH];
+    const last = points[points.length - 1] || first;
+    svgEl("path", {
+      d: `${linePath} L ${last[0].toFixed(1)} ${margin.top + innerH} L ${first[0].toFixed(1)} ${margin.top + innerH} Z`,
+      fill: "var(--accent)", "fill-opacity": 0.1, stroke: "none",
+    }, svg);
+    svgEl("path", {
+      d: linePath, fill: "none", stroke: "var(--accent)",
+      "stroke-width": 2, "stroke-linejoin": "round",
+    }, svg);
+    for (const [x, y] of points) {
+      svgEl("circle", { cx: x, cy: y, r: 2.2, fill: "var(--accent)" }, svg);
+    }
+
+    const labelStep = Math.max(1, Math.ceil(labels.length / Math.max(1, Math.floor(innerW / 54))));
+    labels.forEach((label, i) => {
+      const hit = svgEl("rect", {
+        x: margin.left + step * i, y: margin.top, width: step, height: innerH,
+        fill: "transparent",
+      }, svg);
+      hit.dataset.tip = tipTitle(labels[i]) + tipRow(valueLabel, fmt(values[i] || 0));
+      if (i % labelStep === 0) {
+        const text = svgEl("text", {
+          x: margin.left + step * (i + 0.5), y: height - 6,
+          "text-anchor": "middle", "font-size": 9, fill: "var(--faint)",
+        }, svg);
+        text.textContent = label;
+      }
+    });
+    container.appendChild(svg);
+  }, [labels, values, valueLabel]);
+  useEffect(() => bindChartTooltip(ref), []);
+  return <div ref={ref} className="chart" />;
+}
+
 export function ProjectBars({ items }) {
   const ref = useRef(null);
   useEffect(() => bindChartTooltip(ref), []);
@@ -275,16 +345,23 @@ export function CalendarHeatmap({ calendar }) {
     const weeks = Math.ceil(totalDays / 7);
     const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     const monthsRow = document.createElement("div");
+    // v0.7.1：网格铺满容器宽度，月份标签与周列一一对应
     monthsRow.className = "cal-months";
+    monthsRow.style.display = "grid";
+    monthsRow.style.gridTemplateColumns = `repeat(${weeks}, minmax(13px, 1fr))`;
+    monthsRow.style.gap = "3px";
     const monthLabels = new Array(weeks).fill("");
+    let lastLabeledMonth = -1;
     for (let week = 0; week < weeks; week++) {
       const sunday = new Date(first.getTime() + week * 7 * 86400000);
-      // 该周周日落在某月前 7 天时，把月份名标在这一列
-      if (sunday.getDate() <= 7) monthLabels[week] = monthNames[sunday.getMonth()];
+      // 该周周日进入新月份时标月份名（同月不重复标注）
+      if (sunday.getDate() <= 7 && sunday.getMonth() !== lastLabeledMonth) {
+        monthLabels[week] = monthNames[sunday.getMonth()];
+        lastLabeledMonth = sunday.getMonth();
+      }
     }
     for (const label of monthLabels) {
       const span = document.createElement("span");
-      span.style.width = "16px";
       span.textContent = label;
       monthsRow.appendChild(span);
     }
@@ -302,6 +379,11 @@ export function CalendarHeatmap({ calendar }) {
     }
     const cells = document.createElement("div");
     cells.className = "cal-days";
+    cells.style.display = "grid";
+    cells.style.gridTemplateRows = "repeat(7, 13px)";
+    cells.style.gridAutoFlow = "column";
+    cells.style.gridAutoColumns = "minmax(13px, 1fr)";
+    cells.style.gap = "3px";
     const now = new Date();
     const todayKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
     for (let index = 0; index < totalDays; index++) {
