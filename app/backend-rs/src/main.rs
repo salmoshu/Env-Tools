@@ -47,8 +47,9 @@ const ANALYTICS_WSL_TTL: Duration = Duration::from_secs(120);
 #[derive(Clone)]
 struct AppState {
     cache: Arc<Cache>,
-    /// 原生分析引擎状态（进程内增量；std Mutex + spawn_blocking 避免阻塞运行时）
-    analytics: Arc<std::sync::Mutex<analytics::AnalyticsState>>,
+    /// 原生分析引擎状态：按扫描范围（local / wsl:<distro> / aggregate）各一份，
+    /// 进程内增量（std Mutex + spawn_blocking 避免阻塞运行时）
+    analytics: Arc<std::sync::Mutex<HashMap<String, analytics::AnalyticsState>>>,
     /// 可选鉴权 token（--token）：设置后所有 /api 请求（除 /api/health）必须带
     /// x-env-token 头。用于 SSH 等跨机场景；本机 loopback 可省略。
     token: Option<String>,
@@ -204,7 +205,14 @@ async fn analytics(
         .to_string();
     let aggregate = params.get("aggregate").map(|v| v == "1" || v == "true").unwrap_or(false);
     let wsl_distro = params.get("wsl_distro").map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
-    let key = format!("analytics:{days}:{agent}:{aggregate}:{:?}", wsl_distro.as_deref());
+    // 扫描范围标识：每个范围独立的引擎状态。引擎对"消失文件"保留历史记录
+    //（增量语义），共享单个状态会让上一个目标的记录污染下一个目标的结果。
+    let scope = match wsl_distro.as_deref() {
+        Some(distro) => format!("wsl:{distro}"),
+        None if aggregate => "aggregate".to_string(),
+        None => "local".to_string(),
+    };
+    let key = format!("analytics:{days}:{agent}:{scope}");
     let ttl = if aggregate || wsl_distro.is_some() { ANALYTICS_WSL_TTL } else { ANALYTICS_TTL };
     let state = state.clone();
     let value = state
@@ -213,12 +221,13 @@ async fn analytics(
             tokio::task::spawn_blocking(move || {
                 let now = chrono::Local::now();
                 let now_sec = now.timestamp();
-                let mut engine = state.analytics.lock().unwrap();
+                let mut engines = state.analytics.lock().unwrap();
+                let engine = engines.entry(scope.clone()).or_default();
                 let scan_started = std::time::Instant::now();
                 let distro = wsl_distro.as_deref();
                 let dirty = engine.scan(&kimi_homes(aggregate, distro), &codex_homes(aggregate, distro), now_sec);
                 let payload = engine.aggregate(days, &agent, now);
-                drop(engine);
+                drop(engines);
                 let engine_note = format!(
                     "native-rust{}{} (scan {:.1}ms, dirty={dirty})",
                     if aggregate { "+wsl" } else { "" },
@@ -319,7 +328,7 @@ async fn main() {
 
     let state = AppState {
         cache: Arc::new(Cache::new()),
-        analytics: Arc::new(std::sync::Mutex::new(analytics::AnalyticsState::default())),
+        analytics: Arc::new(std::sync::Mutex::new(HashMap::new())),
         token: token.clone(),
     };
     let app = Router::new()
