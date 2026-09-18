@@ -1,7 +1,7 @@
 // 开发编排：先起 vite dev server（HMR），就绪后拉起 Electron 并通过
 // VITE_DEV_SERVER_URL 让窗口加载热更新页面；Electron 退出时顺带关掉 vite。
 // 不引入 concurrently 等新依赖。生产式运行仍是 pnpm run build + pnpm start。
-import { spawn } from "node:child_process";
+import { execSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
@@ -19,6 +19,34 @@ if (!fs.existsSync(viteEntry)) {
 
 const PORT = 5173;
 const devUrl = `http://localhost:${PORT}/`;
+
+// 幂等启动：上次异常退出可能遗留占用 5173 的 vite（node.exe），先清掉。
+// 只杀 node.exe 进程，绝不误伤其他应用。
+function killStaleVite() {
+  if (process.platform !== "win32") return;
+  let out = "";
+  try {
+    out = execSync(`netstat -ano -p tcp | findstr ":${PORT} "`, { encoding: "utf8" });
+  } catch {
+    return; // 端口空闲
+  }
+  const pids = new Set();
+  for (const line of out.split("\n")) {
+    if (!line.includes("LISTENING")) continue;
+    const pid = line.trim().split(/\s+/).pop();
+    if (pid && /^\d+$/.test(pid) && pid !== "0") pids.add(pid);
+  }
+  for (const pid of pids) {
+    try {
+      const info = execSync(`tasklist /FI "PID eq ${pid}" /FO CSV /NH`, { encoding: "utf8" });
+      if (info.toLowerCase().includes("node.exe")) {
+        execSync(`taskkill /PID ${pid} /F`, { stdio: "ignore" });
+        console.log(`[dev] killed stale vite (pid ${pid}) on port ${PORT}`);
+      }
+    } catch {}
+  }
+}
+killStaleVite();
 
 const vite = spawn(process.execPath, [viteEntry, "--port", String(PORT), "--strictPort"], {
   cwd: root,

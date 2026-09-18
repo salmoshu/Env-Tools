@@ -53,6 +53,16 @@ struct AppState {
     /// 可选鉴权 token（--token）：设置后所有 /api 请求（除 /api/health）必须带
     /// x-env-token 头。用于 SSH 等跨机场景；本机 loopback 可省略。
     token: Option<String>,
+    /// 最近一次 /api 请求的时刻（毫秒，INSTANT_MILLIS 基准）；空闲自毁依据
+    last_activity: Arc<std::sync::atomic::AtomicU64>,
+}
+
+fn now_millis() -> u64 {
+    use std::time::SystemTime;
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 fn error_payload(message: String) -> Value {
@@ -60,11 +70,15 @@ fn error_payload(message: String) -> Value {
 }
 
 /// 鉴权中间件：设置了 --token 时，除 health 外的请求必须携带 x-env-token。
+/// 所有请求都会刷新活跃时间戳（空闲自毁的依据）。
 async fn auth_guard(
     axum::extract::State(state): axum::extract::State<AppState>,
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
+    state
+        .last_activity
+        .store(now_millis(), std::sync::atomic::Ordering::Relaxed);
     if let Some(expected) = &state.token {
         let is_health = req.uri().path().starts_with("/api/health");
         let provided = req.headers().get("x-env-token").and_then(|v| v.to_str().ok());
@@ -305,6 +319,7 @@ async fn save_api_keys(Json(payload): Json<Value>) -> Json<Value> {
 async fn main() {
     let mut port: u16 = 8747;
     let mut token: Option<String> = None;
+    let mut idle_exit_secs: u64 = 0;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -322,6 +337,11 @@ async fn main() {
                     token = Some(raw);
                 }
             }
+            "--idle-exit-secs" => {
+                if let Some(raw) = args.next() {
+                    idle_exit_secs = raw.parse().unwrap_or(0);
+                }
+            }
             other => eprintln!("unknown argument: {other}"),
         }
     }
@@ -330,7 +350,25 @@ async fn main() {
         cache: Arc::new(Cache::new()),
         analytics: Arc::new(std::sync::Mutex::new(HashMap::new())),
         token: token.clone(),
+        last_activity: Arc::new(std::sync::atomic::AtomicU64::new(now_millis())),
     };
+
+    // 空闲自毁（v0.7.1）：应用异常退出留下的孤儿后端，超过阈值无任何请求
+    // 即自行退出，避免长期驻留的旧版本进程。0 = 不启用（SSH/手动模式）。
+    if idle_exit_secs > 0 {
+        let state = state.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(Duration::from_secs(30));
+            loop {
+                ticker.tick().await;
+                let last = state.last_activity.load(std::sync::atomic::Ordering::Relaxed);
+                if now_millis().saturating_sub(last) > idle_exit_secs * 1000 {
+                    eprintln!("idle for {idle_exit_secs}s — exiting (orphan cleanup)");
+                    std::process::exit(0);
+                }
+            }
+        });
+    }
     let app = Router::new()
         .route("/api/health", get(health))
         .route("/api/analytics", get(analytics))

@@ -91,6 +91,7 @@ function backendSpec() {
       args: [
         "-d", WSL_DISTRO, "--exec", binary,
         "--port", String(BACKEND_PORT_DEFAULT),
+        "--idle-exit-secs", "1800",
       ],
     };
   }
@@ -98,11 +99,41 @@ function backendSpec() {
   if (!binary) return null;
   return {
     command: binary,
-    args: ["--port", String(BACKEND_PORT_DEFAULT)],
+    // idle-exit：应用异常退出留下孤儿后端时，30 分钟无请求自动退出自清理
+    args: ["--port", String(BACKEND_PORT_DEFAULT), "--idle-exit-secs", "1800"],
   };
 }
 
+// 根治进程残留第一道防线：启动前把占用默认端口、且确系我们自己的旧后端
+// 进程清掉（按 PID 反查进程镜像名，绝不误杀无关进程）。这保证新实例
+// 连到的 8747 后端一定是本次拉起的新二进制。
+function killStaleBackend() {
+  if (process.platform !== "win32") return;
+  let out = "";
+  try {
+    out = execSync(`netstat -ano -p tcp | findstr ":${BACKEND_PORT_DEFAULT} "`, { encoding: "utf8" });
+  } catch {
+    return; // 端口无人监听，无需清理
+  }
+  const pids = new Set();
+  for (const line of out.split("\n")) {
+    if (!line.includes("LISTENING")) continue;
+    const pid = line.trim().split(/\s+/).pop();
+    if (pid && /^\d+$/.test(pid) && pid !== "0") pids.add(pid);
+  }
+  for (const pid of pids) {
+    try {
+      const info = execSync(`tasklist /FI "PID eq ${pid}" /FO CSV /NH`, { encoding: "utf8" });
+      if (info.toLowerCase().includes("env-tools-api")) {
+        execSync(`taskkill /PID ${pid} /F`, { stdio: "ignore" });
+        console.log(`[backend] killed stale backend (pid ${pid}) on port ${BACKEND_PORT_DEFAULT}`);
+      }
+    } catch {}
+  }
+}
+
 function startBackend() {
+  killStaleBackend();
   const spec = backendSpec();
   if (!spec) return;
   try {
