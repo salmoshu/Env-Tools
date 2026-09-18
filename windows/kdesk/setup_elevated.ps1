@@ -1,6 +1,8 @@
 ﻿# One-time setup (self-elevating). Run this on any machine:
 # - uses an existing kdesk installation when one is found
-# - otherwise deploys the bundled 33_1 backup to a portable directory
+# - otherwise runs the bundled official installer (kdesk_33_1_setup.exe);
+#   the first install establishes kdesk_33_1_backup, later runs maintain it
+# - deploys to a portable directory if needed
 #   (largest non-system fixed drive preferred, ProgramData as fallback)
 # - registers the kdeskcore service, registry entries and shortcuts for portable deployments
 # - redirects the wallpaper cache into <project>\wallpaper_cache and migrates any existing cache
@@ -48,13 +50,30 @@ $target = Find-KdeskDir -StateFile $pathCache -ExcludedPath $backup
 $portable = $false
 if ([string]::IsNullOrWhiteSpace($target)) {
     if (-not (Test-Path (Join-Path $backup 'kwallpaper.exe'))) {
-        Log 'ERROR: kdesk not installed and backup snapshot is missing - run the installer first, then re-run this script'
-        Log '=== setup aborted ==='
-        exit 1
+        # 首次使用：本机既无安装也没有快照备份时，运行随库分发的官方安装包。
+        # 安装完成后重新检测，继续走下面的快照建立与维护流程。
+        $installer = Join-Path $dir 'kdesk_33_1_setup.exe'
+        if (-not (Test-Path $installer)) {
+            Log 'ERROR: kdesk not installed, backup snapshot missing and bundled installer not found'
+            Log '=== setup aborted ==='
+            exit 1
+        }
+        Log "first-time setup: running bundled official installer: $installer"
+        Write-Host 'First-time setup: launching the official kdesk installer. Please finish the installation wizard; this setup continues afterwards.'
+        $proc = Start-Process -FilePath $installer -Wait -PassThru
+        Log "installer exited with code $($proc.ExitCode)"
+        $target = Find-KdeskDir -StateFile $pathCache -ExcludedPath $backup
+        if ([string]::IsNullOrWhiteSpace($target)) {
+            Log 'ERROR: kdesk still not detected after the installer ran'
+            Log '=== setup aborted ==='
+            exit 1
+        }
+        Log "kdesk dir after installer: $target"
+    } else {
+        $target = Get-KdeskPortableTarget
+        $portable = $true
+        Log "no installed kdesk found; deploying portable copy to: $target"
     }
-    $target = Get-KdeskPortableTarget
-    $portable = $true
-    Log "no installed kdesk found; deploying portable copy to: $target"
 } else {
     Log "kdesk dir: $target"
 }

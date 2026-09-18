@@ -12,6 +12,7 @@
   做同样的快照还原 + 封堵升级 + 优化器执行，用于对抗自动升级（降回 33_1）。
 - `scripts/kdesk_locator.ps1`：定位已安装目录（缓存路径在 `scripts/data/kdesk_install_path.txt`）。
 - `scripts/kdesk_integration.ps1`：共享函数库（服务/注册表/快捷方式/壁纸缓存/优化器）。
+- `kdesk_33_1_setup.exe`：官方安装包（随库分发）。首次使用：本机既无安装也没有快照时，`setup_elevated.ps1` 自动运行它完成官方安装，随后建立 `kdesk_33_1_backup/` 快照；后续维护（还原/刷新备份）都以该快照为准。快照目录不入库（见 `.gitignore`）。
 - `kdesk_33_1_backup/`：33_1 快照，还原与备份都靠 `robocopy /MIR`（退出码 0-7 均为成功）。
 - 日志：`log/setup.log`（装机）、`log/deploy.log`（登录任务）。
 
