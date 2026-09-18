@@ -139,9 +139,11 @@ export default function App() {
               <BoardIcon /> {t("nav.board")}
             </div>
           </nav>
-          <div className="page-scroll">
-            {route === "tools" && <Tools lastPayload={lastPayload} />}
-          </div>
+          {route === "tools" && (
+            <div className="page-scroll">
+              <Tools lastPayload={lastPayload} />
+            </div>
+          )}
           {route === "dashboard" && (
             <Dashboard
               lastPayload={lastPayload}

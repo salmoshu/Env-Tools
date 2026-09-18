@@ -540,7 +540,9 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
         </div>
         {trendGran === "year" && !trendAnalytics
           ? <div className="status">{t("dash.trendYearlyHint")}</div>
-          : <ValueLineChart labels={trend.labels} values={trend.values} valueLabel={t("dash.tokens")} />}
+          : trend.labels.length
+            ? <ValueLineChart labels={trend.labels} values={trend.values} valueLabel={t("dash.tokens")} />
+            : <div className="status">{t("state.noData")}</div>}
       </section>
 
       <section className="card">
