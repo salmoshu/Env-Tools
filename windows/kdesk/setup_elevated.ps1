@@ -100,6 +100,9 @@ if ($restoreCode -gt 7) {
 robocopy $target $backup /MIR /R:2 /W:2 /NFL /NDL /NJH /NJS /NP | Out-Null
 Log "backup robocopy exit=$LASTEXITCODE (0-7 = success)"
 
+# 持久屏蔽桌面助手（改名 + IFEO），放在快照刷新之后，保证还原/刷新都不会复活它
+Disable-KdeskAssistant -Target $target -Backup $backup -LogFile $log
+
 # block silent auto-update (hosts entries + IFEO on cmlive.exe), re-applied on every run
 Disable-KdeskAutoUpdate -LogFile $log
 

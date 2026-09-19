@@ -228,8 +228,8 @@ export function LineChart({ labels, values }) {
   return <div ref={ref} className="chart" />;
 }
 
-/** 数值折线图（token 趋势）：y 轴按数据自适应刻度，tooltip 显示绝对值 */
-export function ValueLineChart({ labels, values, valueLabel = "tokens" }) {
+/** 数值折线图（token 趋势）：y 轴按数据自适应刻度，可传入每点的自定义悬浮 HTML */
+export function ValueLineChart({ labels, values, valueLabel = "tokens", toolTips }) {
   const ref = useRef(null);
   useEffect(() => {
     const container = ref.current;
@@ -283,7 +283,8 @@ export function ValueLineChart({ labels, values, valueLabel = "tokens" }) {
         x: margin.left + step * i, y: margin.top, width: step, height: innerH,
         fill: "transparent",
       }, svg);
-      hit.dataset.tip = tipTitle(labels[i]) + tipRow(valueLabel, fmt(values[i] || 0));
+      hit.dataset.tip = (toolTips && toolTips[i]) ||
+        tipTitle(labels[i]) + tipRow(valueLabel, fmt(values[i] || 0));
       if (i % labelStep === 0) {
         const text = svgEl("text", {
           x: margin.left + step * (i + 0.5), y: height - 6,
@@ -293,7 +294,7 @@ export function ValueLineChart({ labels, values, valueLabel = "tokens" }) {
       }
     });
     container.appendChild(svg);
-  }, [labels, values, valueLabel]);
+  }, [labels, values, valueLabel, toolTips]);
   useEffect(() => bindChartTooltip(ref), []);
   return <div ref={ref} className="chart" />;
 }

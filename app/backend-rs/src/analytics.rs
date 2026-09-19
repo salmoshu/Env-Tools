@@ -430,6 +430,7 @@ impl AnalyticsState {
         let mut hourly: Vec<Bucket> = vec![Bucket::default(); 24];
         let mut daily_model: HashMap<String, HashMap<String, i64>> = HashMap::new();
         let mut daily_agent: HashMap<String, HashMap<String, i64>> = HashMap::new();
+        let mut daily_project: HashMap<String, HashMap<String, i64>> = HashMap::new();
         let mut model_total: HashMap<String, i64> = HashMap::new();
         let mut model_agent: HashMap<String, &'static str> = HashMap::new();
         let mut project_total: HashMap<(String, String), i64> = HashMap::new();
@@ -493,6 +494,11 @@ impl AnalyticsState {
                 model_agent.entry(record.model.clone()).or_insert(record_agent);
                 *project_total
                     .entry((project_name(&work_dir), work_dir.clone()))
+                    .or_default() += total;
+                *daily_project
+                    .entry(date.clone())
+                    .or_default()
+                    .entry(project_name(&work_dir).clone())
                     .or_default() += total;
 
                 let session = sessions.entry(record.sid.clone()).or_insert_with(|| SessionRow {
@@ -570,6 +576,24 @@ impl AnalyticsState {
         let mut project_rank: Vec<((String, String), i64)> =
             project_total.iter().map(|(k, v)| (k.clone(), *v)).collect();
         project_rank.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+
+        // 每日 top 项目（悬浮提示用）：date → [{name, total}] 前 5
+        let mut daily_projects: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+        for day in &day_list {
+            if let Some(projects) = daily_project.get(day) {
+                let mut ranked: Vec<(String, i64)> =
+                    projects.iter().map(|(name, total)| (name.clone(), *total)).collect();
+                ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+                let top: Vec<serde_json::Value> = ranked
+                    .into_iter()
+                    .take(5)
+                    .map(|(name, total)| {
+                        serde_json::json!({ "name": name, "total": total })
+                    })
+                    .collect();
+                daily_projects.insert(day.clone(), serde_json::Value::Array(top));
+            }
+        }
 
         let mut session_rows: Vec<&SessionRow> = sessions.values().collect();
         session_rows.sort_by(|a, b| b.total.cmp(&a.total).then(a.first.cmp(&b.first)));
@@ -653,6 +677,7 @@ impl AnalyticsState {
                 "path": path,
                 "total": total,
             })).collect::<Vec<_>>(),
+            "daily_projects": daily_projects,
             "calendar": {
                 "range": [
                     date_string(now - chrono::Duration::days(364)),

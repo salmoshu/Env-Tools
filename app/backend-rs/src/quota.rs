@@ -1151,14 +1151,21 @@ fn add_calendar_months_utc(moment: DateTime<Utc>, months: i64) -> DateTime<Utc> 
     Utc.from_utc_datetime(&naive)
 }
 
-/// Kimi 卡片：CLI 凭证查窗口 + 网页凭证补月总量/会员名（凭证可分属不同环境）。
+/// Kimi 卡片：CLI 凭证查窗口（仅本机侧）+ 网页凭证补月总量/会员名/会员到期。
+/// 网页凭证（kimi-web.json）允许跨家目录发现（本机缺失时读 WSL 侧小文件，
+/// 成本极低）——它承载 plan（如 Allegro）与订阅到期，配额窗口本身仍来自
+/// 本机 CLI 凭证，不受跨源影响。
 fn collect_kimi(homes: &[(PathBuf, &'static str)], errors: &mut Vec<Value>) -> Option<Value> {
     let mut account = fetch_kimi_account(homes, errors)?;
     let use_proxy = crate::settings::env_enabled("KIMI_USE_PROXY", false);
     let timeout = crate::settings::env_value("KIMI_TIMEOUT")
         .and_then(|v| v.parse().ok())
         .unwrap_or(30);
-    if let Some((web_path, _)) = kimi_web_credential(homes) {
+    let mut web_homes = homes.to_vec();
+    for home in crate::settings::wsl_homes() {
+        web_homes.push((home, "wsl"));
+    }
+    if let Some((web_path, _)) = kimi_web_credential(&web_homes) {
         if let Ok(credentials) = read_json_file(&web_path) {
             if let Some(token) = kimi_web_access_token(&web_path, &credentials, use_proxy, timeout, errors) {
                 let stats = request_json_post(

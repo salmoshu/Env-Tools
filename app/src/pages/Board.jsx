@@ -160,7 +160,9 @@ export default function Board({ lastPayload }) {
         savedProviders.current = null;
         setSelectedProviders((prev) => {
           const prevKey = [...prev].sort().join("|");
-          const next = new Set(names.filter((name) => storedSet.has(name)));
+          let next = new Set(names.filter((name) => storedSet.has(name)));
+          // 自愈：筛选结果为空（旧数据/全被过滤）时回退为显示全部，避免看板空白
+          if (next.size === 0 && names.length > 0) next = new Set(names);
           const nextKey = [...next].sort().join("|");
           return prevKey === nextKey ? prev : next;
         });

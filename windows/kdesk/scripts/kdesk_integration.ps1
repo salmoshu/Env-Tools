@@ -312,10 +312,47 @@ function Get-KdeskOptimizer {
     # which turns into mojibake when a script is saved without a UTF-8 BOM
     # (Windows PowerShell then reads the file as ANSI), so resolve it by
     # scanning instead of hard-coding the name.
+    # v0.7.3: exclude the bundled official installer (kdesk_*) so the scan
+    # cannot pick it up and launch an installation instead of the optimizer.
     param([Parameter(Mandatory = $true)][string]$Dir)
 
     Get-ChildItem -LiteralPath $Dir -File -Filter '*.exe' -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -notlike 'kdesk_*' } |
         Select-Object -First 1 -ExpandProperty FullName
+}
+
+# 桌面助手（kdeskassist.exe）会在每次启动时被重新拉起，设置页的开关会被
+# 服务重置。这里做持久性三重封锁：进程强杀 + 主程序改名（备份与安装目录
+# 都改，快照还原/刷新后依然保持禁用）+ IFEO 映射阻止其再次运行。
+function Disable-KdeskAssistant {
+    param(
+        [string]$Target,
+        [string]$Backup,
+        [string]$LogFile
+    )
+    $name = 'kdeskassist'
+    Get-Process -Name $name -ErrorAction SilentlyContinue |
+        Stop-Process -Force -ErrorAction SilentlyContinue
+    foreach ($dir in @($Target, $Backup)) {
+        if ([string]::IsNullOrWhiteSpace($dir) -or -not (Test-Path -LiteralPath $dir)) { continue }
+        $exe = Join-Path $dir ($name + '.exe')
+        if (Test-Path -LiteralPath $exe -PathType Leaf) {
+            try {
+                Move-Item -LiteralPath $exe -Destination ($exe + '.disabled') -Force
+                if ($LogFile) { Write-KdeskLog -LogFile $LogFile -Message ("assistant disabled (renamed) in " + $dir) }
+            } catch {
+                if ($LogFile) { Write-KdeskLog -LogFile $LogFile -Message ("assistant rename failed in " + $dir + " : " + $_.Exception.Message) }
+            }
+        }
+    }
+    $ifeo = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\kdeskassist.exe'
+    try {
+        if (-not (Test-Path $ifeo)) { New-Item -Path $ifeo -Force | Out-Null }
+        Set-ItemProperty -Path $ifeo -Name Debugger -Value 'cmd.exe /c exit' -Force
+        if ($LogFile) { Write-KdeskLog -LogFile $LogFile -Message 'assistant IFEO block set' }
+    } catch {
+        if ($LogFile) { Write-KdeskLog -LogFile $LogFile -Message ("assistant IFEO failed: " + $_.Exception.Message) }
+    }
 }
 
 function Invoke-KdeskOptimizer {

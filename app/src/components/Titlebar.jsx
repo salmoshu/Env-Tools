@@ -75,7 +75,7 @@ export default function Titlebar({ title, version, envBadge, children }) {
       <img className="logo" src="assets/logo.svg" alt="" />
       <span className="title">{title}</span>
       <span className="title-version">{version ? `v${version}` : ""}</span>
-      <span className={`env-badge${envBadge ? "" : " hidden"}`}>{envBadge || ""}</span>
+      {envBadge ? <span className="env-badge">{envBadge}</span> : null}
       {children}
     </div>
   );

@@ -65,12 +65,13 @@ function QuotaCard({ account, versions }) {
     ? new Date(account.fetched_at).toLocaleTimeString("en-GB", { hour12: false })
     : "";
   const version = (versions[account.provider] || {}).current;
+  const resetCredits = account.rate_limit_reset_credits;
   return (
     <div className="qcard">
       <div className="qcard-head">
         <span className="qname">{account.provider}</span>
+        {version ? <span className="qver">v{version}</span> : null}
         <span className="plan">{account.plan || "unknown"}</span>
-        {version ? <span className="qupdated">v{version}</span> : null}
         <span className="qupdated">{updated}</span>
       </div>
       <MembershipLine account={account} />
@@ -98,6 +99,22 @@ function QuotaCard({ account, versions }) {
           </div>
         );
       })}
+      {(() => {
+        if (!resetCredits || typeof resetCredits !== "object") return null;
+        const available = resetCredits.available_count;
+        const applicable = resetCredits.applicable_available_count;
+        if (available == null && applicable == null) return null;
+        const parts = [];
+        if (available != null) parts.push(`${available} remaining`);
+        if (applicable != null) {
+          parts.push(Number(applicable) > 0 ? `${applicable} usable now` : "not usable until limit reached");
+        }
+        return (
+          <div className={`limit-resets${Number(applicable) > 0 ? " ready" : ""}`}>
+            Reset chance: {parts.join(" · ")}
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -180,6 +197,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
   });
   const [usage, setUsage] = useState(null);
   const [sessionsSort, setSessionsSort] = useState({ key: "total", dir: -1 });
+  const [showHourly, setShowHourly] = useState(false);
   const [trendGran, setTrendGran] = useState(() => {
     try { return localStorage.getItem(TREND_KEY) || "day"; } catch { return "day"; }
   });
@@ -285,54 +303,54 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
   if (otherTotal > 0) pieItems.push({ name: "other", value: otherTotal, color: "#6b7385" });
 
   const daily = analytics && analytics.daily;
+  const dailyProjectsMap = (analytics && analytics.daily_projects) || {};
 
   // --- token 趋势（日/周/年） ---
   const trendSource = trendGran === "year" ? (trendAnalytics || analytics) : analytics;
   const trend = useMemo(() => {
     const list = (trendSource && trendSource.day_list) || [];
     const rows = (trendSource && trendSource.daily) || [];
+    const dailyProjectsMap = (trendSource && trendSource.daily_projects) || {};
+    const tip = (label, projects, value) =>
+      `<b>${label}</b><div class="tt-row"><span class="tt-val">${t("dash.tokens")}: ${fmt(value || 0)}</span></div>` +
+      projects.map((p, i) => `<div class="tt-row"><span class="tt-val">${i + 1}. ${p[0]} · ${fmt(p[1])}</span></div>`).join("");
     if (trendGran === "day") {
-      return { labels: list.map(shortDateLabel), values: rows.map((e) => e.total || 0) };
+      return {
+        labels: list.map(shortDateLabel),
+        values: rows.map((e) => e.total || 0),
+        tips: list.map((day, i) =>
+          tip(shortDateLabel(day), (dailyProjectsMap[day] || []).slice(0, 3).map((p) => [p.name, p.total]), rows[i]?.total)),
+      };
     }
-    if (trendGran === "week") {
-      const labels = [];
-      const values = [];
-      let acc = 0;
-      let bucketStart = null;
-      for (let i = 0; i < list.length; i++) {
-        const day = new Date(`${list[i]}T00:00:00`);
-        if (!bucketStart) bucketStart = list[i];
-        acc += rows[i]?.total || 0;
-        // 周一开启新桶（bucket 覆盖周一..周日）
-        if (day.getDay() === 1 || i === list.length - 1) {
-          labels.push(bucketStart.slice(5));
-          values.push(acc);
-          acc = 0;
-          bucketStart = null;
-        }
-      }
-      return { labels, values };
-    }
-    // year：按月聚合
     const labels = [];
     const values = [];
+    const tips = [];
     let acc = 0;
-    let bucketMonth = "";
-    for (let i = 0; i < list.length; i++) {
-      const month = list[i].slice(0, 7);
-      if (!bucketMonth) bucketMonth = month;
-      acc += rows[i]?.total || 0;
-      if (month !== bucketMonth || i === list.length - 1) {
-        const monthIndex = Number(bucketMonth.slice(5, 7)) - 1;
-        labels.push(bucketMonth === list[list.length - 1].slice(0, 7) && i === list.length - 1 && month === bucketMonth
-          ? `${MONTH_SHORT[monthIndex]}`
-          : `${MONTH_SHORT[monthIndex]}`);
-        values.push(acc);
-        acc = 0;
-        bucketMonth = month;
+    let bucketStartIdx = 0;
+    const flush = (startIdx, endIdx) => {
+      const agg = {};
+      for (let i = startIdx; i <= endIdx; i++) {
+        for (const p of (dailyProjectsMap[list[i]] || [])) agg[p.name] = (agg[p.name] || 0) + p.total;
       }
+      const projects = Object.entries(agg).sort((a, b) => b[1] - a[1]).slice(0, 3);
+      const label = trendGran === "week"
+        ? list[startIdx].slice(5)
+        : `${MONTH_SHORT[Number(list[startIdx].slice(5, 7)) - 1]}`;
+      labels.push(label);
+      values.push(acc);
+      tips.push(tip(label, projects, acc));
+    };
+    for (let i = 0; i < list.length; i++) {
+      const day = new Date(`${list[i]}T00:00:00`);
+      acc += rows[i]?.total || 0;
+      const boundary = trendGran === "week" ? day.getDay() === 1 : day.getDate() === 1;
+      if (boundary && i > 0 && i > bucketStartIdx) {
+        flush(bucketStartIdx, i - 1);
+        bucketStartIdx = i;
+      }
+      if (i === list.length - 1) flush(bucketStartIdx, i);
     }
-    return { labels, values };
+    return { labels, values, tips };
   }, [trendSource, trendGran]);
 
   const dailyChart = daily && (
@@ -348,7 +366,9 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
             `<span class="tt-val">${fmt(entry[key])}</span></div>`).join("") +
           `<div class="tt-row">total<span class="tt-val">${fmt(total)}</span></div>` +
           `<div class="tt-row">requests<span class="tt-val">${fmt(entry.requests)}</span></div>` +
-          `<div class="tt-row">cache hit<span class="tt-val">${fmtPct(entry.cache_hit_rate)}</span></div>`;
+          `<div class="tt-row">cache hit<span class="tt-val">${fmtPct(entry.cache_hit_rate)}</span></div>` +
+          (dailyProjectsMap[entry.date] || []).slice(0, 3).map((p, j) =>
+            `<div class="tt-row"><span class="tt-val">${j + 1}. ${p.name} · ${fmt(p.total)}</span></div>`).join("");
       }}
     />
   );
@@ -511,7 +531,15 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
       </section>
 
       <section className="card">
-        <h2>{t("dash.dailyTokens")}</h2>
+        <div className="card-head-row">
+          <h2>{t("dash.dailyTokens")}</h2>
+          <button
+            className="refresh-inline"
+            onClick={() => setShowHourly((v) => !v)}
+          >
+            {t("dash.hourly")} {showHourly ? "▾" : "▸"}
+          </button>
+        </div>
         <div className="legend">
           {SERIES_DEFS.map(([key, name, color]) => (
             <span className="item" key={key}>
@@ -520,6 +548,31 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
           ))}
         </div>
         {dailyChart}
+        {showHourly && (
+          <>
+            <h2 style={{ marginTop: 14 }}>{t("dash.hourly")}</h2>
+            <div className="legend">
+              {SERIES_DEFS.slice(0, 3).map(([key, name, color]) => (
+                <span className="item" key={key}>
+                  <span className="swatch" style={{ background: color }} />{name}
+                </span>
+              ))}
+            </div>
+            <StackedBars
+              labels={hourly.map((entry) => String(entry.hour).padStart(2, "0"))}
+              series={SERIES_DEFS.map(([key, , color]) => ({ color, data: hourly.map((entry) => entry[key]) }))}
+              columnTip={(i, total) => {
+                const entry = hourly[i] || {};
+                return `<b>${String(i).padStart(2, "0")}:00 – ${String(i).padStart(2, "0")}:59</b>` +
+                  SERIES_DEFS.map(([key, name, color]) =>
+                    `<div class="tt-row"><span class="swatch" style="background:${color}"></span>${name}` +
+                    `<span class="tt-val">${fmt(entry[key])}</span></div>`).join("") +
+                  `<div class="tt-row">total<span class="tt-val">${fmt(total)}</span></div>` +
+                  `<div class="tt-row">requests<span class="tt-val">${fmt(entry.requests)}</span></div>`;
+              }}
+            />
+          </>
+        )}
       </section>
 
       <section className="card">
@@ -541,67 +594,51 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
         {trendGran === "year" && !trendAnalytics
           ? <div className="status">{t("dash.trendYearlyHint")}</div>
           : trend.labels.length
-            ? <ValueLineChart labels={trend.labels} values={trend.values} valueLabel={t("dash.tokens")} />
+            ? <ValueLineChart labels={trend.labels} values={trend.values} valueLabel={t("dash.tokens")} toolTips={trend.tips} />
             : <div className="status">{t("state.noData")}</div>}
       </section>
 
+      <div className="row-yearly">
+        <section className="card">
+          <h2>{t("dash.yearly")}</h2>
+          <CalendarHeatmap calendar={analytics && analytics.calendar} />
+        </section>
+        <section className="card card-model-share">
+          <h2>{t("dash.modelShare")}</h2>
+          <DonutChart items={pieItems} />
+        </section>
+      </div>
+
       <section className="card">
-        <h2>{t("dash.hourly")}</h2>
+        <h2>{t("dash.dailyModel")}</h2>
         <div className="legend">
-          {SERIES_DEFS.slice(0, 3).map(([key, name, color]) => (
-            <span className="item" key={key}>
-              <span className="swatch" style={{ background: color }} />{name}
+          {models.map((model, i) => (
+            <span className="item" key={model}>
+              <span className="swatch" style={{ background: MODEL_PALETTE[i % MODEL_PALETTE.length] }} />
+              {model}
             </span>
           ))}
         </div>
         <StackedBars
-          labels={hourly.map((entry) => String(entry.hour).padStart(2, "0"))}
-          series={SERIES_DEFS.map(([key, , color]) => ({ color, data: hourly.map((entry) => entry[key]) }))}
-          columnTip={(i, total) => {
-            const entry = hourly[i] || {};
-            return `<b>${String(i).padStart(2, "0")}:00 – ${String(i).padStart(2, "0")}:59</b>` +
-              SERIES_DEFS.map(([key, name, color]) =>
-                `<div class="tt-row"><span class="swatch" style="background:${color}"></span>${name}` +
-                `<span class="tt-val">${fmt(entry[key])}</span></div>`).join("") +
-              `<div class="tt-row">total<span class="tt-val">${fmt(total)}</span></div>` +
-              `<div class="tt-row">requests<span class="tt-val">${fmt(entry.requests)}</span></div>`;
+          labels={shortDays}
+          series={models.map((model, i) => ({
+            color: MODEL_PALETTE[i % MODEL_PALETTE.length],
+            data: dayList.map((day) => (dailyModel[day] || [])[i] || 0),
+          }))}
+          columnTip={(i) => {
+            const date = dayList[i] || "";
+            const perModel = dailyModel[date] || [];
+            return `<b>${date}</b>` +
+              models.map((model, j) => perModel[j]
+                ? `<div class="tt-row"><span class="swatch" style="background:${MODEL_PALETTE[j % MODEL_PALETTE.length]}"></span>${model}` +
+                  `<span class="tt-val">${fmt(perModel[j])}</span></div>`
+                : "").join("") +
+              `<div class="tt-row">total<span class="tt-val">${fmt(((daily || [])[i] || {}).total || 0)}</span></div>`;
           }}
         />
       </section>
 
       <div className="grid">
-        <section className="card">
-          <h2>{t("dash.modelShare")}</h2>
-          <DonutChart items={pieItems} />
-        </section>
-        <section className="card">
-          <h2>{t("dash.dailyModel")}</h2>
-          <div className="legend">
-            {models.map((model, i) => (
-              <span className="item" key={model}>
-                <span className="swatch" style={{ background: MODEL_PALETTE[i % MODEL_PALETTE.length] }} />
-                {model}
-              </span>
-            ))}
-          </div>
-          <StackedBars
-            labels={shortDays}
-            series={models.map((model, i) => ({
-              color: MODEL_PALETTE[i % MODEL_PALETTE.length],
-              data: dayList.map((day) => (dailyModel[day] || [])[i] || 0),
-            }))}
-            columnTip={(i) => {
-              const date = dayList[i] || "";
-              const perModel = dailyModel[date] || [];
-              return `<b>${date}</b>` +
-                models.map((model, j) => perModel[j]
-                  ? `<div class="tt-row"><span class="swatch" style="background:${MODEL_PALETTE[j % MODEL_PALETTE.length]}"></span>${model}` +
-                    `<span class="tt-val">${fmt(perModel[j])}</span></div>`
-                  : "").join("") +
-                `<div class="tt-row">total<span class="tt-val">${fmt(((daily || [])[i] || {}).total || 0)}</span></div>`;
-            }}
-          />
-        </section>
         <section className="card">
           <h2>{t("dash.cacheRate")}</h2>
           <LineChart labels={shortDays} values={(daily || []).map((entry) => entry.cache_hit_rate)} />
@@ -613,11 +650,6 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
             : <div className="status">{t("state.noData")}</div>}
         </section>
       </div>
-
-      <section className="card">
-        <h2>{t("dash.yearly")}</h2>
-        <CalendarHeatmap calendar={analytics && analytics.calendar} />
-      </section>
 
       <section className="card">
         <h2>{t("dash.sessions")}</h2>
