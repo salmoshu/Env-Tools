@@ -280,19 +280,34 @@ pub fn update_membership_config(payload: &Value) -> Result<Value, String> {
             obj.remove(provider);
             continue;
         };
+        // UI 契约：{ purchased_at, duration_months }（purchased_at 为 datetime-local
+        // 格式，如 2026-09-20T15:30）；config.json 落盘键为 membership_purchased_at
+        let purchased = section
+            .get("purchased_at")
+            .or_else(|| section.get("membership_purchased_at"))
+            .and_then(|v| v.as_str())
+            .map(|v| v.trim().to_string())
+            .unwrap_or_default();
+        let months = section
+            .get("duration_months")
+            .or_else(|| section.get("membership_duration_months"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(1)
+            .max(1);
         let mut cleaned = serde_json::Map::new();
-        if let Some(purchased) = section.get("membership_purchased_at").and_then(|v| v.as_str()) {
-            let trimmed = purchased.trim();
-            if !trimmed.is_empty() {
-                chrono::DateTime::parse_from_rfc3339(trimmed)
-                    .map(|_| ())
-                    .or_else(|_| chrono::NaiveDateTime::parse_from_str(trimmed, "%Y-%m-%d %H:%M").map(|_| ()))
-                    .map_err(|_| format!("Invalid membership_purchased_at for {provider}: {trimmed}"))?;
-                cleaned.insert("membership_purchased_at".into(), Value::String(trimmed.to_string()));
-            }
-        }
-        if let Some(months) = section.get("membership_duration_months") {
-            let months = months.as_i64().unwrap_or(1).max(1);
+        if !purchased.is_empty() {
+            chrono::DateTime::parse_from_rfc3339(&purchased)
+                .map(|_| ())
+                .or_else(|_| {
+                    for format in ["%Y-%m-%dT%H:%M", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"] {
+                        if chrono::NaiveDateTime::parse_from_str(&purchased, format).is_ok() {
+                            return Ok(());
+                        }
+                    }
+                    Err(())
+                })
+                .map_err(|_| format!("Invalid membership_purchased_at for {provider}: {purchased}"))?;
+            cleaned.insert("membership_purchased_at".into(), Value::String(purchased));
             cleaned.insert("membership_duration_months".into(), Value::from(months));
         }
         if cleaned.is_empty() {

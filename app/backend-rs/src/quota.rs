@@ -1108,7 +1108,8 @@ fn attach_manual_membership(account: &mut Value, provider: &str) -> bool {
     let purchased_text = section.get("membership_purchased_at").and_then(|v| v.as_str()).unwrap_or("");
     let purchased_at = chrono::DateTime::parse_from_rfc3339(purchased_text)
         .or_else(|_| {
-            chrono::NaiveDateTime::parse_from_str(purchased_text, "%Y-%m-%d %H:%M")
+            chrono::NaiveDateTime::parse_from_str(purchased_text, "%Y-%m-%dT%H:%M")
+                .or_else(|_| chrono::NaiveDateTime::parse_from_str(purchased_text, "%Y-%m-%d %H:%M"))
                 .map(|naive| {
                     Local
                         .from_local_datetime(&naive)
@@ -1421,7 +1422,7 @@ fn normalize_codex(data: &Value) -> Value {
             }
         }
         if !normalized.is_empty() {
-            result["reset_credits"] = Value::Object(normalized);
+            result["rate_limit_reset_credits"] = Value::Object(normalized);
         }
     }
     result
