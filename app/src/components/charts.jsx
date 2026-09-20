@@ -327,6 +327,7 @@ export function ProjectBars({ items }) {
 
 export function CalendarHeatmap({ calendar }) {
   const ref = useRef(null);
+  const scrolledRight = useRef(false);
   useEffect(() => {
     const container = ref.current;
     if (!container || !calendar) return;
@@ -407,6 +408,13 @@ export function CalendarHeatmap({ calendar }) {
     body.appendChild(cells);
     container.appendChild(monthsRow);
     container.appendChild(body);
+    // 默认滚动到最右：优先展示最近月份（有数据的区域），往左滚动查看历史
+    if (!scrolledRight.current) {
+      requestAnimationFrame(() => {
+        container.scrollLeft = container.scrollWidth;
+      });
+      scrolledRight.current = true;
+    }
   }, [calendar]);
   useEffect(() => bindChartTooltip(ref), []);
   return <div className="calendar-scroll" ref={ref} />;
