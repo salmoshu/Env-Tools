@@ -40,6 +40,13 @@ mod analytics_tests;
 #[path = "quota_tests.rs"]
 mod quota_tests;
 
+/// 展示给用户的版本号：由 build.rs 从仓库根 VERSION 文件注入，
+/// Cargo.toml 的 version 仅作编译期兜底，保证全项目版本显示一致。
+pub(crate) const APP_VERSION: &str = match option_env!("APP_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 const ANALYTICS_TTL: Duration = Duration::from_secs(30);
 const USAGE_TTL: Duration = Duration::from_secs(20);
 const ANALYTICS_WSL_TTL: Duration = Duration::from_secs(120);
@@ -139,7 +146,7 @@ async fn health() -> Json<Value> {
     Json(serde_json::json!({
         "ok": true,
         "service": "env-tools-api",
-        "version": env!("CARGO_PKG_VERSION"),
+        "version": APP_VERSION,
     }))
 }
 
@@ -274,7 +281,7 @@ async fn usage(axum::extract::State(state): axum::extract::State<AppState>) -> J
                     "accounts": accounts,
                     "errors": errors,
                     "versions": versions.get("providers").cloned().unwrap_or(serde_json::json!({})),
-                    "monitor_version": env!("CARGO_PKG_VERSION"),
+                    "monitor_version": APP_VERSION,
                     "environment": settings.get("environment").cloned().unwrap_or(Value::Null),
                     "native_environment": settings::native_environment(),
                 });
@@ -395,7 +402,7 @@ async fn main() {
     println!("LISTENING {bound}");
     println!(
         "env-tools-api {} on http://127.0.0.1:{bound}",
-        env!("CARGO_PKG_VERSION")
+        APP_VERSION
     );
     axum::serve(listener, app).await.unwrap();
 }

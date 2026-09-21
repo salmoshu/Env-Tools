@@ -183,7 +183,7 @@ pub fn settings_payload() -> Value {
     let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default();
     serde_json::json!({
         "ok": true,
-        "version": env!("CARGO_PKG_VERSION"),
+        "version": crate::APP_VERSION,
         "environment": environment,
         "available_environments": available,
         "wsl_distros": wsl_distros,
@@ -551,7 +551,7 @@ pub fn backend_status_payload() -> Value {
     let settings = load_settings();
     serde_json::json!({
         "ok": true,
-        "engine": format!("env-tools-api (native rust {})", env!("CARGO_PKG_VERSION")),
+        "engine": format!("env-tools-api (native rust {})", crate::APP_VERSION),
         "environment": settings.get("environment").cloned().unwrap_or(Value::Null),
         "wsl_distro": settings.get("wsl_distro").cloned().unwrap_or(Value::Null),
     })
