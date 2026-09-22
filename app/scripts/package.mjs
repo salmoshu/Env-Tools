@@ -104,7 +104,10 @@ if (platformArg === "win32") {
       break;
     } catch (err) {
       if (makensis === makensisCandidates.at(-1)) {
-        console.warn(`[package] WARNING: NSIS setup build failed (${err.message}) — only zip is produced`);
+        // NSIS 失败必须硬失败：历史上警告后继续曾导致 CI 只产出 zip、
+        // 到上传步骤才报 "setup exe missing"，真正的 makensis 错误被淹没问题现场
+        console.error(`[package] ERROR: NSIS setup build failed (${err.message})`);
+        process.exit(1);
       }
     }
   }

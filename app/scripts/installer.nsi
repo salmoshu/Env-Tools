@@ -1,4 +1,4 @@
-; Env-Tools Windows 安装器（NSIS，静默安装兼容：/S）
+﻿; Env-Tools Windows 安装器（NSIS，静默安装兼容：/S）
 ; 用法：makensis /DAPP_DIR=<打包输出目录> /DSETUP_OUT=<输出exe> /DVERSION=<版本> installer.nsi
 ; 用户级安装（LOCALAPPDATA，无需管理员），带开始菜单/桌面快捷方式与卸载器。
 
@@ -79,7 +79,7 @@ init_sleep:
 init_still_locked:
   IfSilent init_kill init_ask
 init_ask:
-  MessageBox MB_RETRYCANCEL|MB_ICONEXAMINATION "检测到 Env-Tools 正在运行。$\r$\n请先关闭 Env-Tools 后点击“重试”，或点击“取消”中止安装。" IDRETRY init_retry IDCANCEL init_abort
+  MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "检测到 Env-Tools 正在运行。$\r$\n请先关闭 Env-Tools 后点击“重试”，或点击“取消”中止安装。" IDRETRY init_retry IDCANCEL init_abort
 init_retry:
   StrCpy $R0 0
   Goto init_wait
@@ -115,7 +115,7 @@ uninit_sleep:
 uninit_still_locked:
   IfSilent uninit_kill uninit_ask
 uninit_ask:
-  MessageBox MB_RETRYCANCEL|MB_ICONEXAMINATION "检测到 Env-Tools 正在运行。$\r$\n请先关闭 Env-Tools 后点击“重试”，或点击“取消”中止卸载。" IDRETRY uninit_retry IDCANCEL uninit_abort
+  MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "检测到 Env-Tools 正在运行。$\r$\n请先关闭 Env-Tools 后点击“重试”，或点击“取消”中止卸载。" IDRETRY uninit_retry IDCANCEL uninit_abort
 uninit_retry:
   StrCpy $R0 0
   Goto uninit_wait
