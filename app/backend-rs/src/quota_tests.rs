@@ -1,8 +1,10 @@
 //! DeepSeek / GLM 配额引擎测试：夹具与期望值与
 //! usage_monitor.py 的 test_usage_monitor 同名用例一一对应。
 
+use crate::quota::{
+    normalize_deepseek, normalize_glm, normalize_glm_subscription, normalize_reset_status,
+};
 use chrono::TimeZone;
-use crate::quota::{normalize_deepseek, normalize_glm, normalize_glm_subscription};
 
 #[test]
 fn deepseek_balance_becomes_usage_window() {
@@ -19,7 +21,9 @@ fn deepseek_balance_becomes_usage_window() {
     let extra = result["extra_lines"].as_array().unwrap();
     assert!(extra.iter().any(|l| l == "Balance: ¥20.00 / ¥50.00"));
     assert!(extra.iter().any(|l| l == "Usage: ¥30.00 / ¥50.00"));
-    assert!(extra.iter().any(|l| l == "Granted: ¥5.00   Topped-up: ¥15.00"));
+    assert!(extra
+        .iter()
+        .any(|l| l == "Granted: ¥5.00   Topped-up: ¥15.00"));
 }
 
 #[test]
@@ -33,7 +37,9 @@ fn deepseek_unavailable_clamps_to_full() {
     // 余额 0 → 使用量 50 / 50 = 100%
     assert!((result["windows"][0]["used_percent"].as_f64().unwrap() - 100.0).abs() < 1e-9);
     let extra = result["extra_lines"].as_array().unwrap();
-    assert!(extra.iter().any(|l| l.as_str().unwrap().contains("Account unavailable")));
+    assert!(extra
+        .iter()
+        .any(|l| l.as_str().unwrap().contains("Account unavailable")));
 }
 
 #[test]
@@ -60,7 +66,10 @@ fn glm_coding_plan_quota_display() {
     assert_eq!(result["provider"], "GLM");
     assert_eq!(result["plan"], "Coding Pro");
     let windows = result["windows"].as_array().unwrap();
-    let labels: Vec<&str> = windows.iter().map(|w| w["label"].as_str().unwrap()).collect();
+    let labels: Vec<&str> = windows
+        .iter()
+        .map(|w| w["label"].as_str().unwrap())
+        .collect();
     assert_eq!(labels, ["5h Window", "7d Window", "Tools Quota"]);
     let five_hour = &windows[0];
     assert!((five_hour["used_percent"].as_f64().unwrap() - 44.0).abs() < 1e-9);
@@ -93,7 +102,10 @@ fn glm_token_limits_fallback_sorted_by_reset_time() {
         },
     }));
     let windows = result["windows"].as_array().unwrap();
-    let labels: Vec<&str> = windows.iter().map(|w| w["label"].as_str().unwrap()).collect();
+    let labels: Vec<&str> = windows
+        .iter()
+        .map(|w| w["label"].as_str().unwrap())
+        .collect();
     assert_eq!(labels, ["5h Window", "7d Window"]);
     assert!((windows[0]["used_percent"].as_f64().unwrap() - 20.0).abs() < 1e-9);
     assert!((windows[1]["used_percent"].as_f64().unwrap() - 80.0).abs() < 1e-9);
@@ -128,7 +140,9 @@ fn glm_subscription_membership_shape() {
                 }
             ],
         }),
-        chrono::Local.with_ymd_and_hms(2026, 12, 1, 12, 0, 0).unwrap(),
+        chrono::Local
+            .with_ymd_and_hms(2026, 12, 1, 12, 0, 0)
+            .unwrap(),
     )
     .expect("subscription should normalize");
     assert_eq!(
@@ -155,7 +169,10 @@ fn codex_windows_map_to_5h_and_7d() {
     assert_eq!(result["provider"], "OpenAI Codex");
     assert_eq!(result["plan"], "plus");
     let windows = result["windows"].as_array().unwrap();
-    let labels: Vec<&str> = windows.iter().map(|w| w["label"].as_str().unwrap()).collect();
+    let labels: Vec<&str> = windows
+        .iter()
+        .map(|w| w["label"].as_str().unwrap())
+        .collect();
     assert_eq!(labels, ["5h Window", "7d Window"]);
     assert!((windows[0]["used_percent"].as_f64().unwrap() - 12.5).abs() < 1e-9);
     // reset_at 推算 reset_after_seconds
@@ -189,9 +206,71 @@ fn kimi_limits_normalize_window_labels() {
     assert_eq!(result["provider"], "Kimi Code");
     assert_eq!(result["plan"], "allegro");
     let windows = result["windows"].as_array().unwrap();
-    let labels: Vec<&str> = windows.iter().map(|w| w["label"].as_str().unwrap()).collect();
+    let labels: Vec<&str> = windows
+        .iter()
+        .map(|w| w["label"].as_str().unwrap())
+        .collect();
     assert_eq!(labels, ["5h Window", "2h Window", "7d Window"]);
     // remaining/limit 口径：(100 - 60) / 100 = 40%
     assert!((windows[1]["used_percent"].as_f64().unwrap() - 40.0).abs() < 1e-9);
     assert_eq!(windows[2]["reset_after_seconds"], 1000);
+}
+
+#[test]
+fn glm_reset_cards_filter_sort_and_format() {
+    let now = chrono::Local
+        .with_ymd_and_hms(2026, 9, 22, 12, 0, 0)
+        .unwrap();
+    let now_ms = now.timestamp() * 1000;
+    let result = normalize_reset_status(
+        &serde_json::json!({
+            "available_five_hour_resets": [
+                {"expire_at": now_ms + 86_400_000},
+                {"expire_at": now_ms + 3_600_000},
+                {"expire_at": now_ms - 60_000}
+            ],
+            "available_week_resets": [{"expire_at": now_ms + 7 * 86_400_000}],
+            "latest_five_hour_reset_history": {"used_at": now_ms - 86_400_000},
+            "latest_week_reset_history": null,
+            "has_unread_history": false
+        }),
+        now,
+    );
+    let five = result["five_hour"].as_array().unwrap();
+    // 已过期卡片被过滤，剩余按到期升序
+    assert_eq!(five.len(), 2);
+    assert_eq!(five[0]["expire_after_seconds"].as_i64().unwrap(), 3600);
+    assert_eq!(five[1]["expire_after_seconds"].as_i64().unwrap(), 86400);
+    assert!(five[0]["expire_at"]
+        .as_str()
+        .unwrap()
+        .starts_with("2026-09-22T13:00:00"));
+    let week = result["week"].as_array().unwrap();
+    assert_eq!(week.len(), 1);
+    assert!(result["latest_five_hour_used_at"]
+        .as_str()
+        .unwrap()
+        .starts_with("2026-09-21"));
+    assert!(result["latest_week_used_at"].is_null());
+    assert_eq!(result["has_unread_history"], false);
+}
+
+#[test]
+fn glm_reset_cards_empty_response() {
+    let now = chrono::Local
+        .with_ymd_and_hms(2026, 9, 22, 12, 0, 0)
+        .unwrap();
+    let result = normalize_reset_status(
+        &serde_json::json!({
+            "available_five_hour_resets": [],
+            "available_week_resets": [],
+            "latest_five_hour_reset_history": null,
+            "latest_week_reset_history": null,
+            "has_unread_history": true
+        }),
+        now,
+    );
+    assert_eq!(result["five_hour"].as_array().unwrap().len(), 0);
+    assert_eq!(result["week"].as_array().unwrap().len(), 0);
+    assert_eq!(result["has_unread_history"], true);
 }

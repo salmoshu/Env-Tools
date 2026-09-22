@@ -7,119 +7,10 @@ import {
   activateOnKeys, fmtSpan, isNewerVersion, levelClass, timeFractionOf, fmtReset,
 } from "../utils.js";
 import { t, useLang } from "../i18n.js";
+import UpgradeOverlay from "../components/UpgradeOverlay.jsx";
 
 const DISPLAY_SELECTION_KEY = "ai-usage-monitor.display-providers";
 
-// --- 升级浮层 -------------------------------------------------------------------
-
-function UpgradeOverlay({ provider, payload, onClose }) {
-  const [phase, setPhase] = useState("confirm"); // confirm | running | done | failed
-  const [message, setMessage] = useState("");
-  const [log, setLog] = useState([]);
-  const logRef = useRef(null);
-  const targetsRef = useRef([provider]);
-
-  useEffect(() => {
-    const versions = (payload.data && payload.data.versions) || {};
-    const outdated = Object.keys(versions).filter((key) => {
-      const info = versions[key] || {};
-      return info.current && info.latest && isNewerVersion(info.latest, info.current);
-    });
-    targetsRef.current = outdated.length > 1 ? outdated : [provider];
-  }, []);
-
-  useEffect(() => {
-    return window.api.onInstallProgress(({ line }) => {
-      if (!line) return;
-      setLog((prev) => [...prev.slice(-30), line]);
-      if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
-    });
-  }, []);
-
-  const start = async (targets) => {
-    setPhase("running");
-    setMessage(`Upgrading ${targets.join(", ")} …`);
-    const startedAt = Date.now();
-    const elapsed = setInterval(() => {
-      setMessage(`Upgrading ${targets.join(", ")} … (${Math.round((Date.now() - startedAt) / 1000)}s)`);
-    }, 1000);
-    try {
-      const data = (payload && payload.data) || {};
-      const result = await window.api.upgrade(targets, data.environment, data.windows_setup_script);
-      clearInterval(elapsed);
-      if (result && result.ok) {
-        setMessage("Upgrade finished");
-        setPhase("done");
-        setTimeout(onClose, 1600);
-      } else {
-        setMessage(`Upgrade failed: ${(result && result.error) || "unknown error"}`);
-        setPhase("failed");
-      }
-    } catch (err) {
-      clearInterval(elapsed);
-      setMessage(`Upgrade failed: ${err.message || err}`);
-      setPhase("failed");
-    }
-  };
-
-  const versions = (payload.data && payload.data.versions) || {};
-  const info = versions[provider] || {};
-  const outdated = Object.keys(versions).filter((key) => {
-    const item = versions[key] || {};
-    return item.current && item.latest && isNewerVersion(item.latest, item.current);
-  });
-
-  return (
-    <div className="overlay">
-      <div className="dialog">
-        <div className="dialog-title">{provider}</div>
-        <div className="dialog-ver">v{info.current} → {info.latest}</div>
-        {phase === "confirm" && (
-          <div className="dialog-btns">
-            <button type="button" onClick={() => start([provider])}>Upgrade {provider}</button>
-            {outdated.length > 1 && (
-              <button type="button" onClick={() => start(outdated)}>Upgrade all ({outdated.length})</button>
-            )}
-            <button type="button" className="ghost" onClick={onClose}>Cancel</button>
-          </div>
-        )}
-        {phase === "running" && (
-          <>
-            <div className="dialog-msg">{message}</div>
-            <div className="install-log" ref={logRef}>
-              {log.slice(-4).map((line, i) => <div key={i}>{line}</div>)}
-            </div>
-            <div className="dialog-btns">
-              <button
-                type="button"
-                className="ghost"
-                onClick={async (event) => {
-                  event.target.disabled = true;
-                  event.target.textContent = "Cancelling …";
-                  try { await window.api.cancelInstall(); } catch {}
-                }}
-              >
-                Cancel
-              </button>
-            </div>
-          </>
-        )}
-        {phase === "done" && <div className="dialog-msg">{message}</div>}
-        {phase === "failed" && (
-          <>
-            <div className="dialog-msg">{message}</div>
-            <div className="install-log" ref={logRef}>
-              {log.slice(-8).map((line, i) => <div key={i}>{line}</div>)}
-            </div>
-            <div className="dialog-btns">
-              <button type="button" className="ghost" onClick={onClose}>Close</button>
-            </div>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
 
 // --- 主组件 ---------------------------------------------------------------------
 
@@ -341,6 +232,31 @@ export default function Board({ lastPayload }) {
                 return (
                   <div className={`limit-resets${Number(applicable) > 0 ? " ready" : ""}`}>
                     Reset chance: {parts.join(" · ")}
+                  </div>
+                );
+              })()}
+              {(() => {
+                const cards = account.reset_cards;
+                if (!cards || typeof cards !== "object") return null;
+                const five = Array.isArray(cards.five_hour) ? cards.five_hour : [];
+                const week = Array.isArray(cards.week) ? cards.week : [];
+                if (!five.length && !week.length) return null;
+                const parts = [];
+                if (five.length) parts.push(`5h ×${five.length}`);
+                if (week.length) parts.push(`7d ×${week.length}`);
+                const soonest = [...five, ...week]
+                  .map((c) => Number(c.expire_after_seconds))
+                  .filter((n) => Number.isFinite(n) && n > 0)
+                  .sort((a, b) => a - b)[0];
+                let expiry = "";
+                if (soonest) {
+                  const d = new Date(Date.now() + soonest * 1000);
+                  const pad = (n) => String(n).padStart(2, "0");
+                  expiry = ` · ${t("dash.resetChancesEarliest")} ${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+                }
+                return (
+                  <div className="limit-resets ready">
+                    {t("dash.resetChances")}: {parts.join(" · ")}{expiry}
                   </div>
                 );
               })()}

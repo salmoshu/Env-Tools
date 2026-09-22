@@ -1,6 +1,6 @@
 [package]
 name = "env-tools-api"
-version = "0.7.7"
+version = "0.7.8"
 edition = "2021"
 description = "Env-Tools desktop local API gateway (axum): analytics/usage relay with single-flight caching"
 
@@ -15,6 +15,10 @@ ureq = { version = "2", default-features = false, features = ["tls", "gzip", "js
 zip = { version = "2", default-features = false, features = ["deflate"] }
 tar = { version = "0.4", default-features = false }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+# GLM Coding Plan 重置卡：解密 ZCode 本机凭证（enc:v1 = AES-256-GCM，密钥为
+# sha256 派生串），无替代品只能自实现解密；RustCrypto 纯 Rust 小 crate
+aes-gcm = "0.10"
+sha2 = "0.10"
 
 [profile.release]
 opt-level = 3

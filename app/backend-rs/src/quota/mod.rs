@@ -16,6 +16,7 @@ use serde_json::Value;
 mod codex;
 mod deepseek;
 mod glm;
+mod glm_reset;
 mod http;
 mod kimi;
 // settings::membership_settings 也复用归一化逻辑，需对 crate 可见
@@ -31,6 +32,8 @@ pub use deepseek::normalize_deepseek;
 #[cfg(test)]
 pub use glm::{normalize_glm, normalize_glm_subscription};
 #[cfg(test)]
+pub use glm_reset::normalize_reset_status;
+#[cfg(test)]
 pub use kimi::normalize_kimi;
 
 /// 凭证家目录（v0.7.1 起仅本机侧：配额不再跨 WSL 读取，避免 9P 慢与串源）。
@@ -40,7 +43,11 @@ fn credential_homes() -> Vec<PathBuf> {
 }
 
 /// 在多个家目录下按相对路径找第一个存在的文件；env_name 可显式指定全路径。
-fn find_file_across_homes(homes: &[PathBuf], relatives: &[&str], env_name: &str) -> Option<PathBuf> {
+fn find_file_across_homes(
+    homes: &[PathBuf],
+    relatives: &[&str],
+    env_name: &str,
+) -> Option<PathBuf> {
     if let Some(explicit) = crate::settings::env_value(env_name) {
         let path = PathBuf::from(explicit);
         if path.is_file() {
@@ -61,27 +68,46 @@ fn find_file_across_homes(homes: &[PathBuf], relatives: &[&str], env_name: &str)
 /// 刷新后的凭证回写失败不阻断本次查询，仅记录。
 fn write_credentials(path: &Path, value: &Value) {
     if let Err(err) = crate::settings::write_private_json(path, value) {
-        eprintln!("[quota] cannot persist credentials {}: {err}", path.display());
+        eprintln!(
+            "[quota] cannot persist credentials {}: {err}",
+            path.display()
+        );
     }
 }
 
 /// 从 credentials.json 提取 API key（DeepSeek/GLM 共用，字段优先级同 Python）。
 fn api_key_from_file(path: &Path, provider: &str, fields: &[&str]) -> Result<String, String> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|err| format!("Cannot read {provider} credentials file {}: {err}", path.display()))?;
-    let data: Value = serde_json::from_str(&text)
-        .map_err(|err| format!("Cannot read {provider} credentials file {}: {err}", path.display()))?;
+    let text = std::fs::read_to_string(path).map_err(|err| {
+        format!(
+            "Cannot read {provider} credentials file {}: {err}",
+            path.display()
+        )
+    })?;
+    let data: Value = serde_json::from_str(&text).map_err(|err| {
+        format!(
+            "Cannot read {provider} credentials file {}: {err}",
+            path.display()
+        )
+    })?;
     for field in fields {
         if let Some(key) = data.get(*field).and_then(|v| v.as_str()) {
             return Ok(key.to_string());
         }
     }
-    Err(format!("{provider} credentials file {} is missing api_key", path.display()))
+    Err(format!(
+        "{provider} credentials file {} is missing api_key",
+        path.display()
+    ))
 }
 
 /// 单家结果落地：成功进 accounts，失败以 errors 形式返回
 ///（与 python _collect_provider 的契约一致），不阻塞其他家。
-fn push_result(accounts: &mut Vec<Value>, errors: &mut Vec<Value>, provider: &str, result: Result<Value, String>) {
+fn push_result(
+    accounts: &mut Vec<Value>,
+    errors: &mut Vec<Value>,
+    provider: &str,
+    result: Result<Value, String>,
+) {
     match result {
         Ok(account) => accounts.push(account),
         Err(err) => errors.push(serde_json::json!({ "provider": provider, "error": err })),

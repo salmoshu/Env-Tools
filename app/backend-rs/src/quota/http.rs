@@ -41,7 +41,8 @@ fn system_proxy() -> Option<String> {
         .args([
             "query",
             r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
-            "/v", "ProxyEnable",
+            "/v",
+            "ProxyEnable",
         ])
         .output()
         .ok()?;
@@ -52,7 +53,8 @@ fn system_proxy() -> Option<String> {
         .args([
             "query",
             r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
-            "/v", "ProxyServer",
+            "/v",
+            "ProxyServer",
         ])
         .output()
         .ok()?;
@@ -85,7 +87,10 @@ fn into_json(result: Result<ureq::Response, ureq::Error>) -> Result<Value, Strin
             .into_json()
             .map_err(|err| format!("Invalid API response: {err}")),
         Err(ureq::Error::Status(code, response)) => {
-            let reason = response.header("http_status_message").unwrap_or("error").to_string();
+            let reason = response
+                .header("http_status_message")
+                .unwrap_or("error")
+                .to_string();
             Err(format!("HTTP {code}: {reason}"))
         }
         Err(err) => Err(format!("Network request failed: {err}")),
@@ -93,7 +98,12 @@ fn into_json(result: Result<ureq::Response, ureq::Error>) -> Result<Value, Strin
 }
 
 /// 带 Bearer 的 JSON GET（Python request_json 的 GET 分支：重试 3 次，退避 1s/2s，HTTP 错误不重试）。
-pub fn get_json(url: &str, bearer: &str, use_proxy: bool, timeout_secs: u64) -> Result<Value, String> {
+pub fn get_json(
+    url: &str,
+    bearer: &str,
+    use_proxy: bool,
+    timeout_secs: u64,
+) -> Result<Value, String> {
     let agent = build_agent(use_proxy, timeout_secs);
     let mut last_error = String::new();
     for attempt in 1..=3 {
@@ -102,6 +112,35 @@ pub fn get_json(url: &str, bearer: &str, use_proxy: bool, timeout_secs: u64) -> 
             .set("Authorization", &format!("Bearer {bearer}"))
             .set("Accept", "application/json")
             .call();
+        match result {
+            Err(ureq::Error::Status(..)) => return into_json(result),
+            Err(err) => {
+                last_error = format!("Network request failed: {err}");
+                if attempt < 3 {
+                    std::thread::sleep(Duration::from_secs(attempt as u64));
+                }
+            }
+            Ok(_) => return into_json(result),
+        }
+    }
+    Err(last_error)
+}
+
+/// 自定义请求头的 JSON GET（重试语义同 get_json：3 次，退避 1s/2s，HTTP 错误不重试）。
+pub fn get_json_headers(
+    url: &str,
+    headers: &[(&str, &str)],
+    use_proxy: bool,
+    timeout_secs: u64,
+) -> Result<Value, String> {
+    let agent = build_agent(use_proxy, timeout_secs);
+    let mut last_error = String::new();
+    for attempt in 1..=3 {
+        let mut request = agent.get(url).set("Accept", "application/json");
+        for (name, value) in headers {
+            request = request.set(name, value);
+        }
+        let result = request.call();
         match result {
             Err(ureq::Error::Status(..)) => return into_json(result),
             Err(err) => {

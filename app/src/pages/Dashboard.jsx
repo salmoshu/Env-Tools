@@ -6,13 +6,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AGENT_COLORS, AGENT_LABELS, abbrev, activateOnKeys, fmt, fmtPct, fmtReset, fmtSpan, fmtTimestamp,
-  levelClass, timeFractionOf,
+  isNewerVersion, levelClass, timeFractionOf,
 } from "../utils.js";
 import {
   CalendarHeatmap, DonutChart, LineChart, MODEL_PALETTE,
   SERIES_DEFS, StackedBars, ProjectBars, ValueLineChart,
 } from "../components/charts.jsx";
 import { RefreshIcon } from "../components/Titlebar.jsx";
+import UpgradeOverlay from "../components/UpgradeOverlay.jsx";
 import { t, useLang } from "../i18n.js";
 
 const ANALYTICS_REFRESH_MS = 5 * 60 * 1000;
@@ -60,17 +61,33 @@ function MembershipLine({ account }) {
   );
 }
 
-function QuotaCard({ account, versions }) {
+function QuotaCard({ account, versions, onUpgrade }) {
   const updated = account.fetched_at
     ? new Date(account.fetched_at).toLocaleTimeString("en-GB", { hour12: false })
     : "";
-  const version = (versions[account.provider] || {}).current;
+  const info = versions[account.provider] || {};
+  const newer = info.current && info.latest && isNewerVersion(info.latest, info.current);
   const resetCredits = account.rate_limit_reset_credits;
   return (
     <div className="qcard">
       <div className="qcard-head">
         <span className="qname">{account.provider}</span>
-        {version ? <span className="qver">v{version}</span> : null}
+        {newer && onUpgrade ? (
+          <span
+            className="qver upgrade"
+            role="button"
+            tabIndex={0}
+            title={t("upgrade.click")}
+            onClick={() => onUpgrade(account.provider)}
+            onKeyDown={activateOnKeys(() => onUpgrade(account.provider))}
+          >
+            v{info.current} <span className="new">→ {info.latest}</span>
+          </span>
+        ) : newer ? (
+          <span className="qver">v{info.current} <span className="new">→ {info.latest}</span></span>
+        ) : info.current ? (
+          <span className="qver">v{info.current}</span>
+        ) : null}
         <span className="plan">{account.plan || "unknown"}</span>
         <span className="qupdated">{updated}</span>
       </div>
@@ -112,6 +129,31 @@ function QuotaCard({ account, versions }) {
         return (
           <div className={`limit-resets${Number(applicable) > 0 ? " ready" : ""}`}>
             Reset chance: {parts.join(" · ")}
+          </div>
+        );
+      })()}
+      {(() => {
+        const cards = account.reset_cards;
+        if (!cards || typeof cards !== "object") return null;
+        const five = Array.isArray(cards.five_hour) ? cards.five_hour : [];
+        const week = Array.isArray(cards.week) ? cards.week : [];
+        if (!five.length && !week.length) return null;
+        const parts = [];
+        if (five.length) parts.push(`5h ×${five.length}`);
+        if (week.length) parts.push(`7d ×${week.length}`);
+        const soonest = [...five, ...week]
+          .map((c) => Number(c.expire_after_seconds))
+          .filter((n) => Number.isFinite(n) && n > 0)
+          .sort((a, b) => a - b)[0];
+        let expiry = "";
+        if (soonest) {
+          const d = new Date(Date.now() + soonest * 1000);
+          const pad = (n) => String(n).padStart(2, "0");
+          expiry = ` · ${t("dash.resetChancesEarliest")} ${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+        }
+        return (
+          <div className="limit-resets ready">
+            {t("dash.resetChances")}: {parts.join(" · ")}{expiry}
           </div>
         );
       })()}
@@ -202,6 +244,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
     try { return localStorage.getItem(TREND_KEY) || "day"; } catch { return "day"; }
   });
   const [trendAnalytics, setTrendAnalytics] = useState(null);
+  const [upgradeProvider, setUpgradeProvider] = useState(null);
   const analyticsBusy = useRef(false);
   useLang();
 
@@ -519,7 +562,12 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
         ) : null}
         <div className="quota-grid" style={{ marginTop: (usagePayload && usagePayload.error) ? 10 : 0 }}>
           {accounts.map((account) => (
-            <QuotaCard key={account.provider} account={account} versions={versions} />
+            <QuotaCard
+              key={account.provider}
+              account={account}
+              versions={versions}
+              onUpgrade={target === "local" ? setUpgradeProvider : null}
+            />
           ))}
           {(usagePayload && !usagePayload.error ? shownErrors : []).map((err) => (
             <QuotaErrorCard
@@ -710,6 +758,13 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
           </table>
         </div>
       </section>
+      {upgradeProvider && (
+        <UpgradeOverlay
+          provider={upgradeProvider}
+          payload={usagePayload || { data: {} }}
+          onClose={() => setUpgradeProvider(null)}
+        />
+      )}
       </div>
     </div>
   );

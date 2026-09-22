@@ -31,9 +31,16 @@ fn api_key() -> Result<String, String> {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| local_home().join(".glm").join("credentials.json"));
     if path.is_file() {
-        return super::api_key_from_file(&path, "GLM", &["api_key", "GLM_API_KEY", "ZHIPU_API_KEY", "ZHIPUAI_API_KEY"]);
+        return super::api_key_from_file(
+            &path,
+            "GLM",
+            &["api_key", "GLM_API_KEY", "ZHIPU_API_KEY", "ZHIPUAI_API_KEY"],
+        );
     }
-    Err("GLM_API_KEY not set; export it, write it to ~/.glm/credentials.json, or pass --glm-key".into())
+    Err(
+        "GLM_API_KEY not set; export it, write it to ~/.glm/credentials.json, or pass --glm-key"
+            .into(),
+    )
 }
 
 fn limit_percent(limit: &Value) -> Option<f64> {
@@ -64,8 +71,16 @@ fn glm_normalize_level(payload: &Value) -> String {
 }
 
 pub fn normalize_glm(data: &Value) -> Value {
-    let payload = data.get("data").filter(|v| v.is_object()).cloned().unwrap_or_else(|| serde_json::json!({}));
-    let limits = payload.get("limits").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let payload = data
+        .get("data")
+        .filter(|v| v.is_object())
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let limits = payload
+        .get("limits")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
     let level = glm_normalize_level(&payload);
     let mut windows: Vec<Value> = Vec::new();
     let mut extra_lines: Vec<String> = Vec::new();
@@ -194,7 +209,11 @@ fn glm_subscription_end(item: &Value) -> Option<DateTime<Local>> {
         let renew = renew.trim();
         if !renew.is_empty() {
             // nextRenewTime 可能只有日期（"2026-12-03"），按本机时区零点计
-            let text = if renew.contains(':') { renew.to_string() } else { format!("{renew} 00:00:00") };
+            let text = if renew.contains(':') {
+                renew.to_string()
+            } else {
+                format!("{renew} 00:00:00")
+            };
             return parse_local_datetime(&text);
         }
     }
@@ -215,7 +234,9 @@ pub fn normalize_glm_subscription(result: &Value, now: DateTime<Local>) -> Optio
     let current: Vec<_> = candidates
         .iter()
         .filter(|(item, _)| {
-            item.get("inCurrentPeriod").and_then(|v| v.as_bool()).unwrap_or(false)
+            item.get("inCurrentPeriod")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
                 && item
                     .get("status")
                     .and_then(|v| v.as_str())
@@ -229,11 +250,15 @@ pub fn normalize_glm_subscription(result: &Value, now: DateTime<Local>) -> Optio
         None => (candidates[0].0, candidates[0].1),
     };
     let purchased_at = parse_local_datetime(
-        item.get("purchaseTime").and_then(|v| v.as_str()).unwrap_or(""),
+        item.get("purchaseTime")
+            .and_then(|v| v.as_str())
+            .unwrap_or(""),
     )
     .or_else(|| {
         parse_local_datetime(
-            item.get("currentRenewTime").and_then(|v| v.as_str()).unwrap_or(""),
+            item.get("currentRenewTime")
+                .and_then(|v| v.as_str())
+                .unwrap_or(""),
         )
     });
     let billing_cycle = item
@@ -258,7 +283,12 @@ pub fn normalize_glm_subscription(result: &Value, now: DateTime<Local>) -> Optio
 
 fn glm_subscription_url() -> String {
     let quota_url = env_value("GLM_QUOTA_URL").unwrap_or_else(|| GLM_QUOTA_URL.into());
-    let base = quota_url.split("/api/").next().unwrap_or("").trim_end_matches('/').to_string();
+    let base = quota_url
+        .split("/api/")
+        .next()
+        .unwrap_or("")
+        .trim_end_matches('/')
+        .to_string();
     format!("{base}{GLM_SUBSCRIPTION_PATH}")
 }
 
@@ -269,8 +299,14 @@ pub fn collect() -> Result<Value, String> {
     let timeout = env_timeout("GLM_TIMEOUT", 30);
     let quota_url = env_value("GLM_QUOTA_URL").unwrap_or_else(|| GLM_QUOTA_URL.into());
     let result = get_json(&quota_url, &key, use_proxy, timeout)?;
-    let limits_ok = result.get("success").and_then(|v| v.as_bool()).unwrap_or(false)
-        && result.get("data").map(|d| d.get("limits").map(|l| l.is_array()).unwrap_or(false)).unwrap_or(false);
+    let limits_ok = result
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+        && result
+            .get("data")
+            .map(|d| d.get("limits").map(|l| l.is_array()).unwrap_or(false))
+            .unwrap_or(false);
     if !limits_ok {
         let error = result
             .get("msg")
@@ -290,6 +326,10 @@ pub fn collect() -> Result<Value, String> {
         if let Some(membership) = subscription_membership {
             account["membership"] = membership;
         }
+    }
+    // Coding Plan 重置卡走 ZCode 本机凭证通道，无凭证时静默跳过
+    if let Some(cards) = super::glm_reset::collect_reset_cards() {
+        account["reset_cards"] = cards;
     }
     Ok(account)
 }
