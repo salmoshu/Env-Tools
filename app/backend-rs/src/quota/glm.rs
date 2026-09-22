@@ -281,8 +281,13 @@ pub fn collect() -> Result<Value, String> {
     }
     let mut account = normalize_glm(&result);
     let subscription_url = env_value("GLM_SUBSCRIPTION_URL").unwrap_or_else(glm_subscription_url);
+    let mut subscription_membership = None;
     if let Ok(subscription) = get_json(&subscription_url, &key, use_proxy, timeout) {
-        if let Some(membership) = normalize_glm_subscription(&subscription, Local::now()) {
+        subscription_membership = normalize_glm_subscription(&subscription, Local::now());
+    }
+    // 手动会员配置优先（口径同 kimi.rs），订阅结果仅作兜底
+    if !super::membership::attach_manual_membership(&mut account, "glm") {
+        if let Some(membership) = subscription_membership {
             account["membership"] = membership;
         }
     }

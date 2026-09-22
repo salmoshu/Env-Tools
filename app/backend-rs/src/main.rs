@@ -29,6 +29,7 @@ use serde_json::Value;
 use tokio::sync::Mutex;
 
 mod analytics;
+mod apply_update;
 mod quota;
 mod settings;
 
@@ -324,6 +325,12 @@ async fn save_api_keys(Json(payload): Json<Value>) -> Json<Value> {
 
 #[tokio::main]
 async fn main() {
+    // apply-update 子命令：自升级解压/交换（Electron 退出前 detached 拉起），
+    // 处理完直接退出，不起 server（不影响 LISTENING 探测协议）。
+    let raw_args: Vec<String> = std::env::args().skip(1).collect();
+    if raw_args.first().map(String::as_str) == Some("apply-update") {
+        std::process::exit(apply_update::run(&raw_args[1..]));
+    }
     let mut port: u16 = 8747;
     let mut token: Option<String> = None;
     let mut idle_exit_secs: u64 = 0;

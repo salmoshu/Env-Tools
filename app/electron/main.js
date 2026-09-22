@@ -1201,9 +1201,11 @@ ipcMain.handle("component-status", async (_event, component, environment) => {
 
 // --- 自研轻量升级器（v0.6.0） -------------------------------------------------
 // 检查：读取 Release 的 latest.json（版本号 + 资产名 + sha256），与当前版本比较。
-// 安装：下载对应平台资产 → 校验 → 解压到临时目录 → 生成参数化交换脚本（等主
-// 进程退出 → 旧目录改名 .old → 新目录就位 → 重启 → 成功后清理），脱离父进程
-// 执行后主进程退出。任何一步失败都回滚保留旧版本。
+// 安装（NSIS setup 资产）：下载 → 校验 → detached 拉起 /S 静默安装 → 主进程退出，
+// 安装器自行等待/结束旧进程并在完成后拉起新版本。
+// 安装（zip / tar.gz 便携包资产）：下载 → 校验 → detached 拉起后端
+// `env-tools-api apply-update`（解压 → 等旧进程退出 → 旧目录改名 .old → 新目录
+// 就位 → 拉新 exe → 失败回滚，全部在后端内完成）→ 主进程退出。
 const UPDATE_FEED = process.env.AI_USAGE_UPDATE_FEED
   || "https://github.com/salmoshu/Env-Tools/releases/latest/download/latest.json";
 let lastUpdateInfo = null;
@@ -1256,7 +1258,10 @@ ipcMain.handle("update-check", async () => {
       const release = await api.json();
       const metaAsset = (release.assets || []).find((a) => a.name === "latest.json");
       if (!metaAsset) throw new Error("latest release has no latest.json");
-      const res2 = await fetch(metaAsset.browser_download_url, { headers: githubHeaders() });
+      const res2 = await fetchWithTimeout(metaAsset.browser_download_url, {
+        headers: githubHeaders(),
+        timeoutMs: 30000,
+      });
       if (!res2.ok) throw new Error(`latest.json download HTTP ${res2.status}`);
       meta = JSON.parse(await res2.text());
       // 记录平台资产的直链，下载时匿名走 browser_download_url
@@ -1314,18 +1319,6 @@ async function downloadUpdateAsset(asset, destFile) {
   fs.writeFileSync(destFile, buffer);
 }
 
-function extractUpdate(archive, destDir) {
-  fs.mkdirSync(destDir, { recursive: true });
-  if (process.platform === "win32") {
-    execSync(
-      `powershell -NoProfile -Command "Expand-Archive -Path '${archive}' -DestinationPath '${destDir}' -Force"`,
-      { stdio: "ignore" },
-    );
-  } else {
-    execSync(`tar xzf ${JSON.stringify(archive)} -C ${JSON.stringify(destDir)}`, { stdio: "ignore" });
-  }
-}
-
 ipcMain.handle("update-install", async () => {
   if (!app.isPackaged) {
     return { ok: false, error: "auto-update works only in packaged builds (dev: rebuild manually)" };
@@ -1350,73 +1343,22 @@ ipcMain.handle("update-install", async () => {
       setTimeout(() => app.quit(), 1500);
       return { ok: true };
     }
+    // zip / tar.gz 便携包：解压与目录交换整体委托给后端 apply-update 子命令
+    //（校验布局 → 等旧进程退出/超时强杀 → cur 改名 .old → 新目录就位 → detached
+    // 拉起新 exe → 5s 验证失败回滚），主进程拉起后端后即可退出。
     const archive = path.join(work, asset.name);
     await downloadUpdateAsset(asset, archive);
-    sendUpdateProgress({ phase: "extract", percent: 100 });
-    const extractDir = path.join(work, "extracted");
-    extractUpdate(archive, extractDir);
-    const entries = fs.readdirSync(extractDir).filter((name) =>
-      fs.existsSync(path.join(extractDir, name, exeName)));
-    if (entries.length !== 1) throw new Error("unexpected package layout");
-    const newDir = path.join(extractDir, entries[0]);
-
-    // 参数化交换脚本：路径全部经参数传入，脚本内容零转义
-    const isWin = process.platform === "win32";
-    const swapScript = path.join(work, isWin ? "upgrade.ps1" : "upgrade.sh");
-    if (isWin) {
-      fs.writeFileSync(swapScript, `$ErrorActionPreference = "Stop"
-param([string]$Cur, [string]$NewDir, [string]$ExeName)
-$appExe = Join-Path $Cur $ExeName
-for ($i = 0; $i -lt 60; $i++) {
-  $p = Get-Process | Where-Object { $_.Path -eq $appExe }
-  if (-not $p) { break }
-  Start-Sleep -Seconds 1
-}
-$old = "${Cur}.old"
-$target = Join-Path (Split-Path $Cur -Parent) (Split-Path $Cur -Leaf)
-Rename-Item $Cur $old
-Move-Item $NewDir $target
-Start-Process -FilePath (Join-Path $target $ExeName) -WorkingDirectory $target
-Start-Sleep -Seconds 5
-$p = Get-Process | Where-Object { $_.Path -eq (Join-Path $target $ExeName) }
-if ($p) {
-  Remove-Item $old -Recurse -Force
-} else {
-  Rename-Item $target "$target.new-failed"
-  Rename-Item $old $Cur
-  Start-Process -FilePath $appExe -WorkingDirectory $Cur
-}
-`);
-      spawn("powershell", [
-        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", swapScript,
-        "-Cur", currentDir, "-NewDir", newDir, "-ExeName", exeName,
-      ], { detached: true, stdio: "ignore", windowsHide: true }).unref();
-    } else {
-      fs.writeFileSync(swapScript, `#!/bin/bash
-set -e
-CUR="$1"; NEW="$2"; EXE="$3"
-exe="$CUR/$EXE"
-for i in $(seq 1 60); do
-  pgrep -f "$exe" >/dev/null 2>&1 || break
-  sleep 1
-done
-mv "$CUR" "$CUR.old"
-mv "$NEW" "$CUR"
-chmod +x "$CUR/$EXE" 2>/dev/null || true
-nohup "$CUR/$EXE" >/dev/null 2>&1 &
-sleep 5
-if pgrep -f "$CUR/$EXE" >/dev/null 2>&1; then
-  rm -rf "$CUR.old"
-else
-  mv "$CUR" "$CUR.new-failed"
-  mv "$CUR.old" "$CUR"
-  nohup "$CUR/$EXE" >/dev/null 2>&1 &
-fi
-`, { mode: 0o755 });
-      spawn("bash", [swapScript, currentDir, newDir, exeName], {
-        detached: true, stdio: "ignore",
-      }).unref();
+    const backendExe = path.join(
+      currentDir, "resources", "app", "backend-rs", "target", "release",
+      process.platform === "win32" ? "env-tools-api.exe" : "env-tools-api",
+    );
+    if (!fs.existsSync(backendExe)) {
+      return { ok: false, error: `backend binary missing, cannot apply update: ${backendExe}` };
     }
+    spawn(backendExe, [
+      "apply-update", "--archive", archive, "--cur", currentDir, "--exe", exeName,
+    ], { detached: true, stdio: "ignore", windowsHide: true }).unref();
+    sendUpdateProgress({ phase: "install", percent: 100 });
     sendUpdateProgress({ phase: "restart", percent: 100 });
     setTimeout(() => app.quit(), 1500);
     return { ok: true };

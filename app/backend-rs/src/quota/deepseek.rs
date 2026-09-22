@@ -88,5 +88,8 @@ pub fn collect() -> Result<Value, String> {
         env_enabled("DEEPSEEK_USE_PROXY", true),
         env_timeout("DEEPSEEK_TIMEOUT", 30),
     )?;
-    Ok(normalize_deepseek(&data))
+    let mut account = normalize_deepseek(&data);
+    // DeepSeek 无订阅接口，会员到期只有手动配置一个来源
+    super::membership::attach_manual_membership(&mut account, "deepseek");
+    Ok(account)
 }

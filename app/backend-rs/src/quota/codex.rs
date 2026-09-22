@@ -141,7 +141,19 @@ pub fn collect(homes: &[PathBuf], errors: &mut Vec<Value>) -> Option<Value> {
                 err
             };
             errors.push(serde_json::json!({ "provider": "OpenAI Codex", "error": message }));
-            None
+            // 配额接口失败但存在手动会员配置时，额外推一个最小账户：
+            // error 条目照常进 errors，会员到期信息仍能在前端卡片展示
+            let mut account = serde_json::json!({
+                "provider": "OpenAI Codex",
+                "plan": "unknown",
+                "windows": [],
+                "fetched_at": fetched_now(),
+            });
+            if attach_manual_membership(&mut account, "openai") {
+                Some(account)
+            } else {
+                None
+            }
         }
     }
 }

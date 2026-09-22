@@ -18,7 +18,8 @@ mod deepseek;
 mod glm;
 mod http;
 mod kimi;
-mod membership;
+// settings::membership_settings 也复用归一化逻辑，需对 crate 可见
+pub(crate) mod membership;
 mod util;
 
 pub use http::build_agent;

@@ -28,7 +28,6 @@ const outDir = path.resolve(root, (() => {
 
 const exeSuffix = platformArg === "win32" ? ".exe" : "";
 const backendBinary = path.join(root, "backend-rs", "target", "release", `env-tools-api${exeSuffix}`);
-const monitorScript = path.resolve(root, "..", "linux", "ai-tools", "usage-monitor", "usage_monitor.py");
 const staging = path.join(root, "release-staging");
 
 if (!fs.existsSync(backendBinary)) {
@@ -43,8 +42,6 @@ fs.mkdirSync(staging, { recursive: true });
 for (const entry of ["electron", "dist"]) {
   fs.cpSync(path.join(root, entry), path.join(staging, entry), { recursive: true });
 }
-fs.mkdirSync(path.join(staging, "backend"), { recursive: true });
-fs.copyFileSync(monitorScript, path.join(staging, "backend", "usage_monitor.py"));
 fs.mkdirSync(path.join(staging, "backend-rs", "target", "release"), { recursive: true });
 fs.copyFileSync(backendBinary, path.join(staging, "backend-rs", "target", "release", `env-tools-api${exeSuffix}`));
 fs.copyFileSync(path.join(root, "package.json"), path.join(staging, "package.json"));

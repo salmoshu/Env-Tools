@@ -405,6 +405,7 @@ pub fn collect(homes: &[PathBuf], errors: &mut Vec<Value>) -> Option<Value> {
             errors.push(serde_json::json!({ "provider": "Kimi Monthly Total", "error": err }));
         }
     }
+    let mut subscription_membership = None;
     match kimi_web_post(
         &env_value("KIMI_WEB_SUBSCRIPTION_URL").unwrap_or_else(|| KIMI_WEB_SUBSCRIPTION_URL.into()),
         &token,
@@ -416,15 +417,17 @@ pub fn collect(homes: &[PathBuf], errors: &mut Vec<Value>) -> Option<Value> {
                 if let Some(plan) = subscription.get("plan").and_then(|v| v.as_str()) {
                     account["plan"] = Value::String(plan.to_string());
                 }
-                if !attach_manual_membership(&mut account, "kimi") {
-                    if let Some(membership) = subscription.get("membership") {
-                        account["membership"] = membership.clone();
-                    }
-                }
+                subscription_membership = subscription.get("membership").cloned();
             }
         }
         // 订阅属增强项：失败保持 plan=unknown 不额外报错（口径同 Python）
         Err(_) => {}
+    }
+    // 手动会员配置无条件优先（订阅接口失败时也不能丢），订阅结果仅作兜底
+    if !attach_manual_membership(&mut account, "kimi") {
+        if let Some(membership) = subscription_membership {
+            account["membership"] = membership;
+        }
     }
     Some(account)
 }

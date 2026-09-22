@@ -252,14 +252,14 @@ pub fn load_membership_config() -> Value {
 }
 
 /// 设置页的会员配置概览（仅 kimi/openai/glm/deepseek 小节）。
+/// 返回归一化形状（purchased_at/duration_months/ends_at/end_after_seconds/source），
+/// 与配额账户上的 membership 同源（quota::membership::normalized_manual_entry），
+/// 前端按 entry.purchased_at 等字段回填；无配置的 provider 不出现在 map 里。
 pub fn membership_settings() -> Value {
-    let config = load_membership_config();
     let mut sections = serde_json::Map::new();
     for provider in MEMBERSHIP_PROVIDERS {
-        if let Some(section) = config.get(*provider).filter(|v| v.is_object()) {
-            if section.get("membership_purchased_at").and_then(|v| v.as_str()).is_some() {
-                sections.insert(provider.to_string(), section.clone());
-            }
+        if let Some(entry) = crate::quota::membership::normalized_manual_entry(provider) {
+            sections.insert(provider.to_string(), entry);
         }
     }
     Value::Object(sections)
