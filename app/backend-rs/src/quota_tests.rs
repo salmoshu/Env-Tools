@@ -140,3 +140,58 @@ fn glm_subscription_membership_shape() {
     // end_after_seconds 为正值（终止时刻在未来）
     assert!(result["end_after_seconds"].as_i64().unwrap() > 0);
 }
+
+#[test]
+fn codex_windows_map_to_5h_and_7d() {
+    let now = chrono::Utc::now().timestamp();
+    let result = crate::quota::normalize_codex(&serde_json::json!({
+        "plan_type": "plus",
+        "rate_limit": {
+            "primary_window": {"used_percent": 12.5, "limit_window_seconds": 18000, "reset_at": now + 3600},
+            "secondary_window": {"used_percent": 34, "limit_window_seconds": 604800, "reset_at": now + 86400},
+        },
+        "credits": {"balance": "10.5"},
+    }));
+    assert_eq!(result["provider"], "OpenAI Codex");
+    assert_eq!(result["plan"], "plus");
+    let windows = result["windows"].as_array().unwrap();
+    let labels: Vec<&str> = windows.iter().map(|w| w["label"].as_str().unwrap()).collect();
+    assert_eq!(labels, ["5h Window", "7d Window"]);
+    assert!((windows[0]["used_percent"].as_f64().unwrap() - 12.5).abs() < 1e-9);
+    // reset_at 推算 reset_after_seconds
+    let reset = windows[0]["reset_after_seconds"].as_i64().unwrap();
+    assert!((reset - 3600).abs() <= 5);
+    assert_eq!(windows[1]["window_seconds"], 604800);
+}
+
+#[test]
+fn codex_reset_credits_normalize_to_snake_case() {
+    let result = crate::quota::normalize_codex(&serde_json::json!({
+        "rateLimitResetCredits": {"availableCount": "7", "applicableAvailableCount": 3},
+    }));
+    let credits = &result["rate_limit_reset_credits"];
+    assert_eq!(credits["available_count"], 7);
+    assert_eq!(credits["applicable_available_count"], 3);
+}
+
+#[test]
+fn kimi_limits_normalize_window_labels() {
+    let result = crate::quota::normalize_kimi(&serde_json::json!({
+        "limits": [
+            {"window": {"duration": 300, "timeUnit": "minute"},
+             "detail": {"used_percent": 40, "limit_window_seconds": 18000}},
+            {"window": {"duration": 2, "timeUnit": "hour"},
+             "detail": {"remaining": 60, "limit": 100}},
+        ],
+        "usage": {"used_percent": 7, "reset_after_seconds": 1000},
+        "user": {"membership": {"level": "allegro"}},
+    }));
+    assert_eq!(result["provider"], "Kimi Code");
+    assert_eq!(result["plan"], "allegro");
+    let windows = result["windows"].as_array().unwrap();
+    let labels: Vec<&str> = windows.iter().map(|w| w["label"].as_str().unwrap()).collect();
+    assert_eq!(labels, ["5h Window", "2h Window", "7d Window"]);
+    // remaining/limit 口径：(100 - 60) / 100 = 40%
+    assert!((windows[1]["used_percent"].as_f64().unwrap() - 40.0).abs() < 1e-9);
+    assert_eq!(windows[2]["reset_after_seconds"], 1000);
+}

@@ -163,6 +163,7 @@ export default function Tools({ lastPayload }) {
               <div className="tool-actions">
                 {component.actions.map((action) => (
                   <button
+                    type="button"
                     key={action.key}
                     className={`tool-btn${action.ghost ? " ghost" : ""}`}
                     disabled={Boolean(running) || disabledByPlatform}
@@ -193,6 +194,7 @@ export default function Tools({ lastPayload }) {
               <div className="login-method">port {c.port}</div>
             </div>
             <button
+              type="button"
               className="login-btn"
               disabled={Boolean(sshBusy)}
               onClick={() => connectSsh(c.host)}
@@ -200,6 +202,7 @@ export default function Tools({ lastPayload }) {
               {sshBusy === c.host ? "Connecting…" : "Connect"}
             </button>
             <button
+              type="button"
               className="login-btn"
               style={{ background: "transparent", color: "var(--faint)", borderColor: "var(--border)" }}
               onClick={async () => {
@@ -228,6 +231,7 @@ export default function Tools({ lastPayload }) {
             onChange={(e) => setSshForm({ ...sshForm, user: e.target.value })}
           />
           <button
+            type="button"
             className="login-btn"
             disabled={!sshForm.host.trim()}
             onClick={async () => {
@@ -268,6 +272,7 @@ export default function Tools({ lastPayload }) {
             <div className="dialog-btns">
               {running ? (
                 <button
+                  type="button"
                   className="ghost"
                   onClick={async (event) => {
                     event.target.disabled = true;
@@ -278,7 +283,7 @@ export default function Tools({ lastPayload }) {
                   Cancel
                 </button>
               ) : (
-                <button className="ghost" onClick={() => { setLog([]); setResult(null); }}>Close</button>
+                <button type="button" className="ghost" onClick={() => { setLog([]); setResult(null); }}>Close</button>
               )}
             </div>
           </div>

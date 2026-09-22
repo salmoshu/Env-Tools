@@ -5,7 +5,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  AGENT_COLORS, AGENT_LABELS, abbrev, fmt, fmtPct, fmtReset, fmtSpan, fmtTimestamp,
+  AGENT_COLORS, AGENT_LABELS, abbrev, activateOnKeys, fmt, fmtPct, fmtReset, fmtSpan, fmtTimestamp,
   levelClass, timeFractionOf,
 } from "../utils.js";
 import {
@@ -392,12 +392,19 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
       <th
         className={`${sortable ? "sortable" : ""}${left ? " l" : ""}`}
         data-key={sortable ? key : undefined}
+        role={sortable ? "button" : undefined}
+        tabIndex={sortable ? 0 : undefined}
         onClick={() => {
           if (!sortable) return;
           setSessionsSort((prev) => prev.key === key
             ? { key, dir: -prev.dir }
             : { key, dir: -1 });
         }}
+        onKeyDown={sortable ? activateOnKeys(() => {
+          setSessionsSort((prev) => prev.key === key
+            ? { key, dir: -prev.dir }
+            : { key, dir: -1 });
+        }) : undefined}
       >
         {label}{arrow}
       </th>
@@ -411,8 +418,12 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
           <h1>{t("nav.analytics")}</h1>
           <div className="meta">
             {analytics
-              ? `Range ${analytics.date_range[0]} – ${analytics.date_range[1]} (${analytics.days} days)` +
-                ` · Updated ${analytics.generated_at} · Source ${analytics.source || "~ local sessions"}`
+              ? t("dash.meta")
+                .replace("{from}", analytics.date_range[0])
+                .replace("{to}", analytics.date_range[1])
+                .replace("{days}", analytics.days)
+                .replace("{at}", analytics.generated_at)
+                .replace("{src}", analytics.source || "~ local sessions")
               : t("state.loading")}
           </div>
         </div>
@@ -461,6 +472,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
             </select>
           </label>
           <button
+            type="button"
             className="btn refresh-inline"
             title={t("tip.refresh")}
             disabled={refreshing}
@@ -534,6 +546,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
         <div className="card-head-row">
           <h2>{t("dash.dailyTokens")}</h2>
           <button
+            type="button"
             className="refresh-inline"
             onClick={() => setShowHourly((v) => !v)}
           >

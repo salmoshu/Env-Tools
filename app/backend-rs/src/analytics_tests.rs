@@ -144,7 +144,7 @@ fn aggregate_matches_python_contract() {
             kimi_line(ts, "deepseek/deepseek-v4-flash", 50, 0, 0, 0),
         ],
     );
-    std::fs::create_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
     std::fs::write(
         home.join("session_index.jsonl"),
         format!(r#"{{"sessionId":"session_a","workDir":"/w/a/projects/demo"}}

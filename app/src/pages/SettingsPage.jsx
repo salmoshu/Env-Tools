@@ -4,7 +4,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  fmtSpan, fmtTimestamp,
+  activateOnKeys, fmtSpan, fmtTimestamp,
   readThemePreference, writeThemePreference, applyTheme,
 } from "../utils.js";
 import { t, useLang, setLang, getLang } from "../i18n.js";
@@ -77,7 +77,10 @@ function DisplayPanel({ lastPayload }) {
       <div className="panel-hint">{t("settings.displayHint")}</div>
       <div
         className="display-list-item"
+        role="button"
+        tabIndex={0}
         onClick={() => setSelectedProviders(allSelected ? new Set() : new Set(knownProviders))}
+        onKeyDown={activateOnKeys(() => setSelectedProviders(allSelected ? new Set() : new Set(knownProviders)))}
       >
         <span className={`cb${allSelected ? " on" : selectedProviders.size > 0 ? " partial" : ""}`} />
         {t("settings.all")}
@@ -86,12 +89,20 @@ function DisplayPanel({ lastPayload }) {
         <div
           key={name}
           className="display-list-item"
+          role="button"
+          tabIndex={0}
           onClick={() => setSelectedProviders((prev) => {
             const next = new Set(prev);
             if (next.has(name)) next.delete(name); else next.add(name);
             persist(next);
             return next;
           })}
+          onKeyDown={activateOnKeys(() => setSelectedProviders((prev) => {
+            const next = new Set(prev);
+            if (next.has(name)) next.delete(name); else next.add(name);
+            persist(next);
+            return next;
+          }))}
         >
           <span className={`cb${selectedProviders.has(name) ? " on" : ""}`} />
           {name}
@@ -112,11 +123,18 @@ function ThemePanel() {
         <div
           key={value}
           className={`env-option${preference === value ? " selected" : ""}`}
+          role="button"
+          tabIndex={0}
           onClick={() => {
             setPreference(value);
             writeThemePreference(value);
             applyTheme(value);
           }}
+          onKeyDown={activateOnKeys(() => {
+            setPreference(value);
+            writeThemePreference(value);
+            applyTheme(value);
+          })}
         >
           <span className="radio" />{label}
         </div>
@@ -136,10 +154,16 @@ function LanguagePanel() {
         <div
           key={value}
           className={`env-option${lang === value ? " selected" : ""}`}
+          role="button"
+          tabIndex={0}
           onClick={() => {
             setLang(value);
             setLangState(value);
           }}
+          onKeyDown={activateOnKeys(() => {
+            setLang(value);
+            setLangState(value);
+          })}
         >
           <span className="radio" />{label}
         </div>
@@ -224,7 +248,7 @@ function MembershipPanel({ settings, onSaved }) {
       })}
       <div className={note.cls}>{note.text}</div>
       <div className="settings-actions">
-        <button className="settings-save" disabled={saving} onClick={save}>{t("state.save")}</button>
+        <button type="button" className="settings-save" disabled={saving} onClick={save}>{t("state.save")}</button>
       </div>
     </div>
   );
@@ -254,11 +278,11 @@ function LoginPanel({ currentSettings, lastPayload }) {
       <div className="panel-hint">{t("settings.loginHint")}</div>
       <div className="login-row">
         <div className="login-info"><div className="login-name">Kimi Code</div><div className="login-method">{t("settings.loginMethod")}</div></div>
-        <button className="login-btn" disabled={busy} onClick={() => login("kimi")}>{t("settings.loginBtn")}</button>
+        <button type="button" className="login-btn" disabled={busy} onClick={() => login("kimi")}>{t("settings.loginBtn")}</button>
       </div>
       <div className="login-row">
         <div className="login-info"><div className="login-name">OpenAI Codex</div><div className="login-method">{t("settings.loginMethod")}</div></div>
-        <button className="login-btn" disabled={busy} onClick={() => login("codex")}>{t("settings.loginBtn")}</button>
+        <button type="button" className="login-btn" disabled={busy} onClick={() => login("codex")}>{t("settings.loginBtn")}</button>
       </div>
       <div className={note.cls}>{note.text}</div>
     </div>
@@ -345,7 +369,7 @@ function ApiKeysPanel({ reloadKey }) {
       </div>
       <div className={note.cls}>{note.text}</div>
       <div className="settings-actions">
-        <button className="settings-save" disabled={saving} onClick={save}>{t("state.save")}</button>
+        <button type="button" className="settings-save" disabled={saving} onClick={save}>{t("state.save")}</button>
       </div>
     </div>
   );
@@ -380,12 +404,20 @@ function EnvironmentPanel({ settings, onSaved }) {
         <div
           key={env}
           className={`env-option${env === current ? " selected" : ""}`}
+          role="button"
+          tabIndex={0}
           onClick={() => {
             if (env === current) return;
             const values = { environment: env };
             if (env === "wsl" && distro) values.wsl_distro = distro;
             save(values);
           }}
+          onKeyDown={activateOnKeys(() => {
+            if (env === current) return;
+            const values = { environment: env };
+            if (env === "wsl" && distro) values.wsl_distro = distro;
+            save(values);
+          })}
         >
           <span className="radio" />{env}
         </div>
@@ -457,9 +489,9 @@ function UpdateSection() {
     <div style={{ marginTop: 10 }}>
       <div className="about-row"><span>{t("settings.update")}</span><strong>{status.text}</strong></div>
       <div className="settings-actions" style={{ justifyContent: "flex-start" }}>
-        <button className="settings-save" disabled={busy} onClick={check}>{t("settings.checkUpdates")}</button>
+        <button type="button" className="settings-save" disabled={busy} onClick={check}>{t("settings.checkUpdates")}</button>
         {status.available && (
-          <button className="settings-save" disabled={busy} onClick={install}>
+          <button type="button" className="settings-save" disabled={busy} onClick={install}>
             {progress ? `Upgrading ${progress}` : t("settings.downloadInstall")}
           </button>
         )}
@@ -516,7 +548,7 @@ export default function SettingsPage({ lastPayload }) {
   return (
     <div className="app-body">
       <div className="settings-sidebar main-settings-nav">
-        <button className="settings-back" onClick={() => { window.location.hash = "#/dashboard"; }}>
+        <button type="button" className="settings-back" onClick={() => { window.location.hash = "#/dashboard"; }}>
           ← {t("nav.back")}
         </button>
         {PANEL_SECTIONS.map(([key, labelKey]) => {
@@ -529,7 +561,10 @@ export default function SettingsPage({ lastPayload }) {
             <div
               key={key}
               className={`side-item${activePanel === key ? " active" : ""}`}
+              role="button"
+              tabIndex={0}
               onClick={() => setActivePanel(key)}
+              onKeyDown={activateOnKeys(() => setActivePanel(key))}
             >
               {t(labelKey)}
             </div>

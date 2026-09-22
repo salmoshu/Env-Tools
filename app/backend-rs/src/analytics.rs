@@ -10,7 +10,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Local, TimeZone, Timelike};
+use chrono::{DateTime, Datelike, Local, TimeZone, Timelike};
 
 pub const RECORD_RETENTION_DAYS: i64 = 400;
 pub const SESSION_CAP: usize = 500;
@@ -80,8 +80,9 @@ pub(crate) fn parse_kimi_line(line: &str) -> Option<TurnRecord> {
         return None;
     }
     let ts = normalize_ts(rec.get("time")?.as_f64()? as i64)?;
-    let usage = rec.get("usage").cloned().unwrap_or(serde_json::json!({}));
-    let usage = if usage.is_object() { usage } else { serde_json::json!({}) };
+    // 借用而非克隆：usage 缺失/非对象按空对象计
+    let empty = serde_json::Value::Object(serde_json::Map::new());
+    let usage = rec.get("usage").filter(|u| u.is_object()).unwrap_or(&empty);
     Some(TurnRecord {
         ts,
         model: rec
@@ -200,34 +201,37 @@ fn wire_files(root: &Path, selector: impl Fn(&str) -> bool) -> Vec<PathBuf> {
     files
 }
 
-fn read_new_lines(path: &Path, offset: i64) -> (Vec<String>, i64, bool) {
+/// 读取自 offset 起新增的完整行文本（末尾未换行的半截行留待下次）。
+/// 返回 (文本, 新 offset, 是否截断重写)；无新增或读取失败时文本为空。
+fn read_new_lines(path: &Path, offset: i64) -> (String, i64, bool) {
     use std::io::{Read, Seek, SeekFrom};
     let size = match std::fs::metadata(path) {
         Ok(m) => m.len() as i64,
-        Err(_) => return (Vec::new(), offset, false),
+        Err(_) => return (String::new(), offset, false),
     };
     let restarted = size < offset;
     let start = if restarted { 0 } else { offset };
     if size == start {
-        return (Vec::new(), start, false);
+        return (String::new(), start, false);
     }
     let mut file = match std::fs::File::open(path) {
         Ok(f) => f,
-        Err(_) => return (Vec::new(), start, false),
+        Err(_) => return (String::new(), start, false),
     };
     if file.seek(SeekFrom::Start(start as u64)).is_err() {
-        return (Vec::new(), start, false);
+        return (String::new(), start, false);
     }
     let mut data = Vec::new();
     if file.read_to_end(&mut data).is_err() {
-        return (Vec::new(), start, false);
+        return (String::new(), start, false);
     }
     match data.iter().rposition(|b| *b == b'\n') {
-        Some(last) => {
-            let text = String::from_utf8_lossy(&data[..last]).to_string();
-            (text.split('\n').map(String::from).collect(), start + last as i64 + 1, restarted)
-        }
-        None => (Vec::new(), start, false),
+        Some(last) => (
+            String::from_utf8_lossy(&data[..last]).into_owned(),
+            start + last as i64 + 1,
+            restarted,
+        ),
+        None => (String::new(), start, false),
     }
 }
 
@@ -296,8 +300,7 @@ struct SessionRow {
     sid: String,
     project: String,
     work_dir: String,
-    agent: &'static str,
-    agent_totals: HashMap<String, i64>,
+    agent_totals: HashMap<&'static str, i64>,
     models: HashSet<String>,
     input: i64,
     output: i64,
@@ -346,7 +349,8 @@ impl AnalyticsState {
 
         for (source, root, session_id_of, selector) in sources {
             let files = wire_files(&root, selector);
-            let live: Vec<String> = files.iter().map(|p| p.to_string_lossy().to_string()).collect();
+            // HashSet：已登记文件 × 现存文件逐个 contains 是 O(n²)
+            let live: HashSet<String> = files.iter().map(|p| p.to_string_lossy().into_owned()).collect();
             for (key, state) in self.files.iter_mut() {
                 if state.source == source && !live.contains(key) && state.offset != -1 {
                     state.offset = -1;
@@ -369,7 +373,7 @@ impl AnalyticsState {
                     state.cwds.clear();
                     dirty = true;
                 }
-                let (lines, new_offset, restarted) = read_new_lines(&wire, state.offset);
+                let (text, new_offset, restarted) = read_new_lines(&wire, state.offset);
                 state.offset = new_offset;
                 if restarted {
                     state.records.clear();
@@ -378,7 +382,7 @@ impl AnalyticsState {
                 }
                 let session_id = session_id_of(&wire);
                 let mut current_model = String::new();
-                for line in &lines {
+                for line in text.split('\n') {
                     if source == Source::Kimi {
                         if let Some(mut record) = parse_kimi_line(line) {
                             record.sid = session_id.clone();
@@ -429,16 +433,18 @@ impl AnalyticsState {
         let mut daily: HashMap<String, Bucket> = HashMap::new();
         let mut hourly: Vec<Bucket> = vec![Bucket::default(); 24];
         let mut daily_model: HashMap<String, HashMap<String, i64>> = HashMap::new();
-        let mut daily_agent: HashMap<String, HashMap<String, i64>> = HashMap::new();
+        let mut daily_agent: HashMap<String, HashMap<&'static str, i64>> = HashMap::new();
         let mut daily_project: HashMap<String, HashMap<String, i64>> = HashMap::new();
         let mut model_total: HashMap<String, i64> = HashMap::new();
         let mut model_agent: HashMap<String, &'static str> = HashMap::new();
         let mut project_total: HashMap<(String, String), i64> = HashMap::new();
         let mut calendar: HashMap<String, (i64, i64)> = HashMap::new();
-        let mut agents_seen: HashSet<String> = HashSet::new();
-        let mut agent_totals: HashMap<String, i64> = HashMap::new();
-        let mut agent_requests: HashMap<String, i64> = HashMap::new();
+        let mut agents_seen: HashSet<&'static str> = HashSet::new();
+        let mut agent_totals: HashMap<&'static str, i64> = HashMap::new();
+        let mut agent_requests: HashMap<&'static str, i64> = HashMap::new();
         let mut sessions: HashMap<String, SessionRow> = HashMap::new();
+        // 日期格式化按天缓存：同一日期只在首次出现时 format
+        let mut date_cache: HashMap<i32, String> = HashMap::new();
 
         for state in self.files.values() {
             for record in &state.records {
@@ -455,9 +461,12 @@ impl AnalyticsState {
                     .timestamp_opt(record.ts, 0)
                     .single()
                     .unwrap_or_else(|| now.clone());
-                let date = date_string(local);
+                let date = date_cache
+                    .entry(local.date_naive().num_days_from_ce())
+                    .or_insert_with(|| date_string(local))
+                    .clone();
                 let total = record.input + record.output + record.cache_read + record.cache_creation;
-                agents_seen.insert(record_agent.to_string());
+                agents_seen.insert(record_agent);
                 let cell = calendar.entry(date.clone()).or_insert((0, 0));
                 cell.0 += total;
                 cell.1 += 1;
@@ -471,11 +480,11 @@ impl AnalyticsState {
                 bucket.cache_creation += record.cache_creation;
                 bucket.requests += 1;
                 bucket.total += total;
-                *agent_requests.entry(record_agent.to_string()).or_default() += 1;
+                *agent_requests.entry(record_agent).or_default() += 1;
                 *daily_agent
                     .entry(date.clone())
                     .or_default()
-                    .entry(record_agent.to_string())
+                    .entry(record_agent)
                     .or_default() += total;
                 if date == today {
                     let hour = &mut hourly[local.hour() as usize];
@@ -492,20 +501,20 @@ impl AnalyticsState {
                     .or_default() += total;
                 *model_total.entry(record.model.clone()).or_default() += total;
                 model_agent.entry(record.model.clone()).or_insert(record_agent);
+                let project = project_name(&work_dir);
                 *project_total
-                    .entry((project_name(&work_dir), work_dir.clone()))
+                    .entry((project.clone(), work_dir.clone()))
                     .or_default() += total;
                 *daily_project
                     .entry(date.clone())
                     .or_default()
-                    .entry(project_name(&work_dir).clone())
+                    .entry(project.clone())
                     .or_default() += total;
 
                 let session = sessions.entry(record.sid.clone()).or_insert_with(|| SessionRow {
                     sid: record.sid.clone(),
-                    project: project_name(&work_dir),
+                    project: project.clone(),
                     work_dir: work_dir.clone(),
-                    agent: record_agent,
                     agent_totals: HashMap::new(),
                     models: HashSet::new(),
                     input: 0,
@@ -518,7 +527,7 @@ impl AnalyticsState {
                     total: 0,
                 });
                 session.models.insert(record.model.clone());
-                *session.agent_totals.entry(record_agent.to_string()).or_default() += total;
+                *session.agent_totals.entry(record_agent).or_default() += total;
                 session.input += record.input;
                 session.output += record.output;
                 session.cache_read += record.cache_read;
@@ -530,9 +539,9 @@ impl AnalyticsState {
             }
         }
 
-        for (day, agents_of_day) in &daily_agent {
-            for (name, total) in agents_of_day {
-                *agent_totals.entry(name.clone()).or_default() += total;
+        for agents_of_day in daily_agent.values() {
+            for (&name, total) in agents_of_day {
+                *agent_totals.entry(name).or_default() += total;
             }
         }
 
@@ -560,7 +569,7 @@ impl AnalyticsState {
         models.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
         let model_names: Vec<String> = models.iter().map(|(m, _)| m.clone()).collect();
 
-        let mut rank: Vec<(String, i64)> = agent_totals.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        let mut rank: Vec<(&'static str, i64)> = agent_totals.iter().map(|(k, v)| (*k, *v)).collect();
         rank.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
         let agent_rank: Vec<serde_json::Value> = rank
             .iter()
@@ -605,8 +614,8 @@ impl AnalyticsState {
                     .agent_totals
                     .iter()
                     .max_by_key(|(_, total)| **total)
-                    .map(|(name, _)| name.clone())
-                    .unwrap_or_else(|| "kimi".into());
+                    .map(|(name, _)| *name)
+                    .unwrap_or("kimi");
                 serde_json::json!({
                     "session_id": session.sid,
                     "project": session.project,

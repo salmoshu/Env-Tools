@@ -4,7 +4,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  fmtSpan, isNewerVersion, levelClass, timeFractionOf, fmtReset,
+  activateOnKeys, fmtSpan, isNewerVersion, levelClass, timeFractionOf, fmtReset,
 } from "../utils.js";
 import { t, useLang } from "../i18n.js";
 
@@ -76,11 +76,11 @@ function UpgradeOverlay({ provider, payload, onClose }) {
         <div className="dialog-ver">v{info.current} → {info.latest}</div>
         {phase === "confirm" && (
           <div className="dialog-btns">
-            <button onClick={() => start([provider])}>Upgrade {provider}</button>
+            <button type="button" onClick={() => start([provider])}>Upgrade {provider}</button>
             {outdated.length > 1 && (
-              <button onClick={() => start(outdated)}>Upgrade all ({outdated.length})</button>
+              <button type="button" onClick={() => start(outdated)}>Upgrade all ({outdated.length})</button>
             )}
-            <button className="ghost" onClick={onClose}>Cancel</button>
+            <button type="button" className="ghost" onClick={onClose}>Cancel</button>
           </div>
         )}
         {phase === "running" && (
@@ -91,6 +91,7 @@ function UpgradeOverlay({ provider, payload, onClose }) {
             </div>
             <div className="dialog-btns">
               <button
+                type="button"
                 className="ghost"
                 onClick={async (event) => {
                   event.target.disabled = true;
@@ -111,7 +112,7 @@ function UpgradeOverlay({ provider, payload, onClose }) {
               {log.slice(-8).map((line, i) => <div key={i}>{line}</div>)}
             </div>
             <div className="dialog-btns">
-              <button className="ghost" onClick={onClose}>Close</button>
+              <button type="button" className="ghost" onClick={onClose}>Close</button>
             </div>
           </>
         )}
@@ -261,8 +262,11 @@ export default function Board({ lastPayload }) {
                 {info.current && info.latest && isNewerVersion(info.latest, info.current) ? (
                   <span
                     className="ver upgrade"
+                    role="button"
+                    tabIndex={0}
                     title="Click to upgrade"
                     onClick={() => setUpgradeProvider(account.provider)}
+                    onKeyDown={activateOnKeys(() => setUpgradeProvider(account.provider))}
                   >
                     v{info.current} <span className="new">→ {info.latest}</span>
                   </span>

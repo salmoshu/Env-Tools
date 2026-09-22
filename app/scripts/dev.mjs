@@ -52,7 +52,13 @@ const vite = spawn(process.execPath, [viteEntry, "--port", String(PORT), "--stri
   cwd: root,
   stdio: "inherit",
 });
-vite.on("exit", (code) => process.exit(code ?? 0));
+// vite 先死（strictPort 冲突、崩溃等）时把已拉起的 Electron 一起收掉：
+// 否则残留的窗口会靠单实例锁劫持下一次 pnpm dev（表现为“启动没反应”）
+let electron = null;
+vite.on("exit", (code) => {
+  if (electron) electron.kill();
+  process.exit(code ?? 0);
+});
 
 async function waitForServer() {
   for (let i = 0; i < 150; i++) {
@@ -75,7 +81,7 @@ if (!ready) {
 }
 console.log(`[dev] vite 就绪：${devUrl}，正在拉起 Electron…`);
 
-const electron = spawn(electronExe, [root], {
+electron = spawn(electronExe, [root], {
   cwd: root,
   stdio: "inherit",
   env: { ...process.env, VITE_DEV_SERVER_URL: devUrl },
@@ -88,6 +94,7 @@ electron.on("exit", (code) => {
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => {
     vite.kill();
+    if (electron) electron.kill();
     process.exit(0);
   });
 }

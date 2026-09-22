@@ -132,6 +132,17 @@ export function watchExternalTheme(onChange) {
   };
 }
 
+// div/span 伪按钮的键盘激活（Enter/Space），行为对齐原生 button；
+// 仅配合 role="button" + tabIndex 使用，避免屏幕阅读器语义缺失
+export function activateOnKeys(handler) {
+  return (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      handler(event);
+    }
+  };
+}
+
 // --- 全局悬浮提示框（图表 hover 共用） -----------------------------------------
 
 let tooltipEl = null;

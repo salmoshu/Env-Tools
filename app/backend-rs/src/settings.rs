@@ -7,7 +7,6 @@
 //! - `~/.deepseek/credentials.json`、`~/.glm/credentials.json`  API key（Electron 经 stdin 写入）
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -491,30 +490,29 @@ pub fn collect_versions() -> Value {
     let providers = ["Kimi Code", "OpenAI Codex"];
     let cache_path = version_cache_path();
     let mut cache = read_json(&cache_path).unwrap_or_else(|_| serde_json::json!({}));
-    let now = Instant::now();
+    // checked_at 落盘为 Unix 秒：跨进程可比（Instant 基准仅在当前进程有意义）
+    let now_epoch = chrono::Utc::now().timestamp() as f64;
     let mut versions = serde_json::Map::new();
     for provider in providers {
         let tool_command = if provider == "Kimi Code" { "kimi" } else { "codex" };
         let entry = cache.get(provider).cloned().unwrap_or_else(|| serde_json::json!({}));
         let current = detect_cli_version(tool_command)
             .or_else(|| entry.get("current").and_then(|v| v.as_str()).map(String::from));
-        let (latest, checked_at) = {
-            let age = entry
-                .get("checked_at")
-                .and_then(|v| v.as_f64())
-                .map(|stamp| Duration::from_secs_f64(stamp));
-            match age {
-                Some(age) if age < Duration::from_secs(VERSION_CHECK_INTERVAL) => (
-                    entry.get("latest").and_then(|v| v.as_str()).map(String::from),
-                    age,
-                ),
-                _ => {
-                    let latest = fetch_latest_version(provider).or_else(|| {
-                        entry.get("latest").and_then(|v| v.as_str()).map(String::from)
-                    });
-                    (latest, now.elapsed())
-                }
-            }
+        let cached_at = entry.get("checked_at").and_then(|v| v.as_f64());
+        let fresh = cached_at
+            .map(|stamp| now_epoch - stamp < VERSION_CHECK_INTERVAL as f64)
+            .unwrap_or(false);
+        let (latest, checked_at) = if fresh {
+            (
+                entry.get("latest").and_then(|v| v.as_str()).map(String::from),
+                cached_at.unwrap_or(now_epoch),
+            )
+        } else {
+            (
+                fetch_latest_version(provider)
+                    .or_else(|| entry.get("latest").and_then(|v| v.as_str()).map(String::from)),
+                now_epoch,
+            )
         };
         let mut info = serde_json::Map::new();
         if let Some(current) = &current {
@@ -531,10 +529,7 @@ pub fn collect_versions() -> Value {
         if let Some(latest) = &latest {
             cache_entry.insert("latest".into(), Value::String(latest.clone()));
         }
-        cache_entry.insert(
-            "checked_at".into(),
-            Value::from(checked_at.as_secs_f64()),
-        );
+        cache_entry.insert("checked_at".into(), Value::from(checked_at));
         cache[provider] = Value::Object(cache_entry);
     }
     let _ = write_private_json(&cache_path, &cache);

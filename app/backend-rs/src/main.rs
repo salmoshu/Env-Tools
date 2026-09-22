@@ -356,7 +356,7 @@ async fn main() {
     let state = AppState {
         cache: Arc::new(Cache::new()),
         analytics: Arc::new(std::sync::Mutex::new(HashMap::new())),
-        token: token.clone(),
+        token,
         last_activity: Arc::new(std::sync::atomic::AtomicU64::new(now_millis())),
     };
 
@@ -365,7 +365,10 @@ async fn main() {
     if idle_exit_secs > 0 {
         let state = state.clone();
         tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(Duration::from_secs(30));
+            // 小阈值（调试/烟测）按秒级检查，保证阈值附近及时退出；
+            // 常态大阈值保持 30s 慢检查
+            let tick_secs = if idle_exit_secs <= 30 { 1 } else { 30 };
+            let mut ticker = tokio::time::interval(Duration::from_secs(tick_secs));
             loop {
                 ticker.tick().await;
                 let last = state.last_activity.load(std::sync::atomic::Ordering::Relaxed);

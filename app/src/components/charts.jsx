@@ -5,6 +5,7 @@ import { useEffect, useRef } from "react";
 import {
   abbrev, bindChartTooltip, esc, fmt, fmtPct, niceMax, tipRow, tipTitle,
 } from "../utils.js";
+import { t } from "../i18n.js";
 
 const NS = "http://www.w3.org/2000/svg";
 
@@ -88,10 +89,13 @@ function buildStackedBars(container, labels, series, columnTip) {
 
 export function StackedBars({ labels, series, columnTip, className = "" }) {
   const ref = useRef(null);
+  // labels/series/columnTip 均为父组件渲染期新建引用，不能直接做依赖（等于每次重建）；
+  // 以数据序列化做 key：父组件无关重渲染（如刷新按钮动画）不再重建整棵 SVG
+  const dataKey = JSON.stringify([labels, series.map((s) => [s.color, s.data])]);
   useEffect(() => {
     if (!ref.current || !labels) return;
     buildStackedBars(ref.current, labels, series, columnTip);
-  });
+  }, [dataKey]);
   useEffect(() => bindChartTooltip(ref), []);
   return <div ref={ref} className={`chart ${className}`} />;
 }
@@ -303,7 +307,7 @@ export function ProjectBars({ items }) {
   const ref = useRef(null);
   useEffect(() => bindChartTooltip(ref), []);
   if (!items || !items.length) {
-    return <div className="status">No data</div>;
+    return <div className="status">{t("state.noData")}</div>;
   }
   const max = Math.max(1, ...items.map((item) => item.total));
   return (
@@ -327,7 +331,7 @@ export function ProjectBars({ items }) {
 
 export function CalendarHeatmap({ calendar }) {
   const ref = useRef(null);
-  const scrolledRight = useRef(false);
+  const prevRangeKey = useRef("");
   useEffect(() => {
     const container = ref.current;
     if (!container || !calendar) return;
@@ -408,12 +412,15 @@ export function CalendarHeatmap({ calendar }) {
     body.appendChild(cells);
     container.appendChild(monthsRow);
     container.appendChild(body);
-    // 默认滚动到最右：优先展示最近月份（有数据的区域），往左滚动查看历史
-    if (!scrolledRight.current) {
+    // 默认滚动到最右：优先展示最近月份（有数据的区域），往左滚动查看历史。
+    // 仅在时间范围变化（切换范围/目标/筛选）时重新定位；同范围的周期刷新
+    // 不打断用户已手动滚到的位置
+    const rangeKey = calendar.range ? calendar.range.join("|") : "";
+    if (prevRangeKey.current !== rangeKey) {
+      prevRangeKey.current = rangeKey;
       requestAnimationFrame(() => {
         container.scrollLeft = container.scrollWidth;
       });
-      scrolledRight.current = true;
     }
   }, [calendar]);
   useEffect(() => bindChartTooltip(ref), []);

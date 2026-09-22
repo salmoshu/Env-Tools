@@ -13,7 +13,7 @@ import Tools from "./pages/Tools.jsx";
 import SettingsPage from "./pages/SettingsPage.jsx";
 import { t, useLang } from "./i18n.js";
 import {
-  applyTheme, readThemePreference, resolvedTheme, watchExternalTheme,
+  activateOnKeys, applyTheme, readThemePreference, resolvedTheme, watchExternalTheme,
 } from "./utils.js";
 
 function currentRoute() {
@@ -74,13 +74,14 @@ export default function App() {
     <div className={isBoard ? "board-frame" : "app-frame"}>
       <Titlebar title={isBoard ? "AI Usage Monitor" : "Env-Tools"} version={version} envBadge={envBadge}>
         {isBoard ? (
-          <button className="btn" title={t("tip.expand")} onClick={() => window.api.openFullDashboard()}>
+          <button type="button" className="btn" title={t("tip.expand")} onClick={() => window.api.openFullDashboard()}>
             <ExpandIcon />
           </button>
         ) : null}
         <span className="btn-spacer" />
         {isBoard && (
           <button
+            type="button"
             className={`btn${pinned ? " active" : ""}`}
             title={t("tip.pin")}
             onClick={async () => setPinned(await window.api.togglePin())}
@@ -90,6 +91,7 @@ export default function App() {
         )}
         {isMain && (
           <button
+            type="button"
             className={`btn${isSettings ? " active" : ""}`}
             title={t("tip.settings")}
             onClick={() => navigate(isSettings ? "dashboard" : "settings")}
@@ -97,9 +99,10 @@ export default function App() {
             <GearIcon />
           </button>
         )}
-        <button className="btn" title={t("tip.minimize")} onClick={() => window.api.minimize()}>–</button>
+        <button type="button" className="btn" title={t("tip.minimize")} onClick={() => window.api.minimize()}>–</button>
         {isMain && (
           <button
+            type="button"
             className="btn"
             title={t("tip.maximize")}
             onClick={() => window.api.windowMaximizeToggle()}
@@ -107,7 +110,7 @@ export default function App() {
             <MaximizeIcon />
           </button>
         )}
-        <button className="btn close" title="Close" onClick={() => window.api.close()}>✕</button>
+        <button type="button" className="btn close" title={t("tip.close")} onClick={() => window.api.close()}>✕</button>
       </Titlebar>
 
       {isBoard ? (
@@ -119,21 +122,30 @@ export default function App() {
           <nav className="app-sidebar">
             <div
               className={`side-item nav${route === "dashboard" ? " active" : ""}`}
+              role="button"
+              tabIndex={0}
               onClick={() => navigate("dashboard")}
+              onKeyDown={activateOnKeys(() => navigate("dashboard"))}
               title={t("tip.analytics")}
             >
               <AnalyticsIcon /> {t("nav.analytics")}
             </div>
             <div
               className={`side-item nav${route === "tools" ? " active" : ""}`}
+              role="button"
+              tabIndex={0}
               onClick={() => navigate("tools")}
+              onKeyDown={activateOnKeys(() => navigate("tools"))}
               title={t("tip.tools")}
             >
               <ToolsIcon /> {t("nav.tools")}
             </div>
             <div
               className="side-item nav"
+              role="button"
+              tabIndex={0}
               onClick={() => window.api.openUsageBoard()}
+              onKeyDown={activateOnKeys(() => window.api.openUsageBoard())}
               title={t("tip.board")}
             >
               <BoardIcon /> {t("nav.board")}

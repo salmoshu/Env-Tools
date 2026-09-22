@@ -9,7 +9,7 @@
 // （Rust + axum，配额/分析/设置全原生）提供，python 引擎已移除。
 
 const { app, BrowserWindow, ipcMain } = require("electron");
-const { spawn } = require("child_process");
+const { spawn, execSync } = require("child_process");
 const os = require("os");
 const path = require("path");
 const fs = require("fs");
@@ -47,8 +47,8 @@ let mainWin = null;
 let boardWin = null;
 let refreshTimer = null;
 let usageFetchPromise = null;
-// Rust 后端（axum）状态：Electron 只负责拉起与健康探测，数据请求失败时
-// 自动回退 python 直连，不阻塞界面。
+// Rust 后端（axum）状态：Electron 只负责拉起与健康探测；后端不可用时
+// 请求降级为 ok:false 结构，由渲染层占位卡片呈现，不阻塞界面。
 let backendPort = 0;
 let backendChild = null;
 // 置顶期间周期性补挂 WS_EX_TOPMOST 的巡检定时器：
@@ -62,12 +62,17 @@ let programmaticResize = false;
 
 // --- Rust 后端（env-tools-api） ---------------------------------------------
 
-function wslBackendBinary() {
-  // WSL_MONITOR_SCRIPT 形如 <repo>/linux/ai-tools/usage-monitor/usage_monitor.py
+// WSL_MONITOR_SCRIPT 形如 <repo>/linux/ai-tools/usage-monitor/usage_monitor.py，
+// 由它反推 WSL 内的仓库根（后端二进制与安装脚本都按仓库相对路径定位）
+function wslRepoRoot() {
   const marker = "/linux/ai-tools/usage-monitor/usage_monitor.py";
   if (!WSL_MONITOR_SCRIPT.includes(marker)) return "";
-  const repo = WSL_MONITOR_SCRIPT.slice(0, WSL_MONITOR_SCRIPT.indexOf(marker));
-  return `${repo}/app/backend-rs/target/release/env-tools-api`;
+  return WSL_MONITOR_SCRIPT.slice(0, WSL_MONITOR_SCRIPT.indexOf(marker));
+}
+
+function wslBackendBinary() {
+  const repo = wslRepoRoot();
+  return repo ? `${repo}/app/backend-rs/target/release/env-tools-api` : "";
 }
 
 function nativeBackendBinary() {
@@ -158,7 +163,7 @@ function startBackend() {
     };
     backendChild.stdout.on("data", onData);
     backendChild.on("close", () => {
-      // 后端退出（或被单实例回收）后回到 python 直连模式
+      // 后端退出（或被单实例回收）后标记为不可用，后续请求走降级结构
       if (backendChild) backendPort = 0;
     });
     backendChild.on("error", () => {
@@ -202,6 +207,18 @@ async function backendJson(pathname, body = null, timeoutMs = SETTINGS_TIMEOUT_M
     return await backendFetch(pathname, timeoutMs, body);
   } catch (err) {
     return { ok: false, error: err.message };
+  }
+}
+
+// 带超时的 fetch：只负责拿到响应（不解析 body），超时/网络错误一律抛错，
+// 由调用方决定降级文案；SSH 隧道/agent 探测与更新检查共用
+async function fetchWithTimeout(url, { headers = {}, timeoutMs }) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { headers, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -395,11 +412,14 @@ async function focusWindow(getter, creator) {
   if (!created) return null;
   // 新窗口首屏数据由 did-finish-load 里的 pushUsage 补推
   await new Promise((resolve) => {
-    if (created.webContents.isLoading()) {
-      created.webContents.once("did-finish-load", resolve);
-    } else {
+    if (!created.webContents.isLoading()) {
       resolve();
+      return;
     }
+    created.webContents.once("did-finish-load", resolve);
+    // 加载失败（如 dist 未构建）时 did-finish-load 永不触发，
+    // 不放行的话 open-* 系列 IPC 会永远悬挂、发起方窗口卡在加载态
+    created.webContents.once("did-fail-load", resolve);
   });
   return created;
 }
@@ -566,13 +586,10 @@ async function ensureSshAgent(connection) {
   const existing = sshSessions.get(connection.host);
   if (existing) {
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 3000);
-      const res = await fetch(`http://127.0.0.1:${existing.localPort}/api/health`, {
+      const res = await fetchWithTimeout(`http://127.0.0.1:${existing.localPort}/api/health`, {
         headers: { "x-env-token": existing.token },
-        signal: controller.signal,
+        timeoutMs: 3000,
       });
-      clearTimeout(timer);
       if (res.ok) return { ok: true, ...existing };
     } catch {}
   }
@@ -620,13 +637,10 @@ async function ensureSshAgent(connection) {
   for (let attempt = 0; attempt < 8; attempt++) {
     await new Promise((r) => setTimeout(r, 1200));
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 3000);
-      const res = await fetch(`http://127.0.0.1:${localPort}/api/health`, {
+      const res = await fetchWithTimeout(`http://127.0.0.1:${localPort}/api/health`, {
         headers: { "x-env-token": token },
-        signal: controller.signal,
+        timeoutMs: 3000,
       });
-      clearTimeout(timer);
       if (res.ok) {
         sshSessions.set(connection.host, { localPort, token, tunnelChild });
         return { ok: true, localPort, token };
@@ -747,13 +761,10 @@ ipcMain.handle("get-usage", async (_event, targetId) => {
     const agent = await resolveTargetAgent(targetId);
     if (agent) {
       try {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 55000);
-        const res = await fetch(`${agent.base}/api/usage`, {
+        const res = await fetchWithTimeout(`${agent.base}/api/usage`, {
           headers: agent.headers,
-          signal: controller.signal,
+          timeoutMs: 55000,
         });
-        clearTimeout(timer);
         if (res.ok) return await res.json();
       } catch {}
     }
@@ -780,13 +791,10 @@ ipcMain.handle("get-analytics", async (_event, days, agent, targetId) => {
     const session = sshSessions.get(host);
     if (!session) return { ok: false, error: `SSH target ${host} is not connected — connect it in Tools first` };
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), ANALYTICS_TIMEOUT_MS);
-      const res = await fetch(`http://127.0.0.1:${session.localPort}/api/analytics${query}`, {
+      const res = await fetchWithTimeout(`http://127.0.0.1:${session.localPort}/api/analytics${query}`, {
         headers: { "x-env-token": session.token },
-        signal: controller.signal,
+        timeoutMs: ANALYTICS_TIMEOUT_MS,
       });
-      clearTimeout(timer);
       if (res.ok) return await res.json();
     } catch {}
     return { ok: false, error: `SSH agent for ${host} is unreachable (tunnel may have dropped)` };
@@ -972,11 +980,8 @@ function killInstallTree(child) {
 function repoScriptPath(relative) {
   // WSL 后端下 Electron 运行在 Windows 侧，仓库路径由后端脚本路径推导；
   // 本地运行直接拼 REPO_ROOT。relative 形如 "/setup.sh"、"/tools.sh"。
-  const marker = "/linux/ai-tools/usage-monitor/usage_monitor.py";
-  if (WSL_MONITOR_SCRIPT.includes(marker)) {
-    const repo = WSL_MONITOR_SCRIPT.slice(0, WSL_MONITOR_SCRIPT.indexOf(marker));
-    return `${repo}${relative}`;
-  }
+  const repo = wslRepoRoot();
+  if (repo) return `${repo}${relative}`;
   return path.join(REPO_ROOT, relative.replace(/^\//, ""));
 }
 
@@ -1231,24 +1236,18 @@ ipcMain.handle("update-check", async () => {
   try {
     let meta;
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 20000);
-      const res = await fetch(UPDATE_FEED, {
+      const res = await fetchWithTimeout(UPDATE_FEED, {
         headers: githubHeaders(),
-        signal: controller.signal,
+        timeoutMs: 20000,
       });
-      clearTimeout(timer);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       meta = await res.json();
     } catch (feedErr) {
       // 兜底：latest 短链延迟时，走公开 GitHub API 定位 latest.json
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 20000);
-      const api = await fetch("https://api.github.com/repos/salmoshu/Env-Tools/releases/latest", {
+      const api = await fetchWithTimeout("https://api.github.com/repos/salmoshu/Env-Tools/releases/latest", {
         headers: githubHeaders({ Accept: "application/vnd.github+json" }),
-        signal: controller.signal,
+        timeoutMs: 20000,
       });
-      clearTimeout(timer);
       if (!api.ok) {
         throw new Error(
           `feed HTTP ${String(feedErr.message || feedErr).slice(0, 40)}; api HTTP ${api.status}`,
