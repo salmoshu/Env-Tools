@@ -7,6 +7,7 @@ import {
   activateOnKeys, fmtSpan, isNewerVersion, levelClass, timeFractionOf, fmtReset,
 } from "../utils.js";
 import { t, useLang } from "../i18n.js";
+import { useInstallState, setInstallRunning, setInstallResult } from "../installState.js";
 import UpgradeOverlay from "../components/UpgradeOverlay.jsx";
 
 const DISPLAY_SELECTION_KEY = "ai-usage-monitor.display-providers";
@@ -21,8 +22,8 @@ export default function Board({ lastPayload }) {
   const [dismissedErrors, setDismissedErrors] = useState({});
   const [fatalErrorDismissed, setFatalErrorDismissed] = useState("");
   const [upgradeProvider, setUpgradeProvider] = useState(null);
-  const [upgrading, setUpgrading] = useState(null); // { targets, startedAt }
-  const [upgradeResult, setUpgradeResult] = useState(null); // { ok, error }
+  const install = useInstallState();
+  const upgrading = install.running;
   const [compact, setCompact] = useState(false);
   const [pinned, setPinned] = useState(false);
   useLang();
@@ -88,19 +89,16 @@ export default function Board({ lastPayload }) {
 
   // 升级执行（确认后异步进行；卡片显示动态提醒，结果落入升级提示条）
   const beginUpgrade = useCallback(async (targets) => {
-    if (upgrading) return;
-    setUpgrading({ targets, startedAt: Date.now() });
-    setUpgradeResult(null);
+    if (install.running) return;
+    setInstallRunning({ label: targets.join(", "), kind: "upgrade" });
     try {
       const data = (lastPayload && lastPayload.data) || {};
       const result = await window.api.upgrade(targets, data.environment, data.windows_setup_script);
-      setUpgradeResult({ ok: Boolean(result && result.ok), error: result && result.error });
+      setInstallResult({ ok: Boolean(result && result.ok), error: result && result.error });
     } catch (err) {
-      setUpgradeResult({ ok: false, error: String(err.message || err) });
-    } finally {
-      setUpgrading(null);
+      setInstallResult({ ok: false, error: String(err.message || err) });
     }
-  }, [upgrading, lastPayload]);
+  }, [install.running, lastPayload]);
 
   useEffect(() => {
     const onResize = () => {
@@ -151,9 +149,9 @@ export default function Board({ lastPayload }) {
 
   return (
     <>
-      {upgradeResult && !upgrading ? (
-        <div className={`upgrade-toast${upgradeResult.ok ? "" : " err"}`}>
-          {upgradeResult.ok ? t("upgrade.done") : `${t("upgrade.failed")}: ${upgradeResult.error || ""}`}
+      {install.result && !install.running ? (
+        <div className={`upgrade-toast${install.result.ok ? "" : " err"}`}>
+          {install.result.ok ? t("upgrade.done") : `${t("upgrade.failed")}: ${install.result.error || ""}`}
         </div>
       ) : null}
       <div className={`content${compact ? " compact" : ""}`}>

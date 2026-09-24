@@ -15,6 +15,7 @@ import {
 import { RefreshIcon } from "../components/Titlebar.jsx";
 import UpgradeOverlay from "../components/UpgradeOverlay.jsx";
 import { t, useLang } from "../i18n.js";
+import { useInstallState, setInstallRunning, setInstallResult } from "../installState.js";
 
 const ANALYTICS_REFRESH_MS = 5 * 60 * 1000;
 const DAYS_KEY = "ai-usage-monitor.analytics-days";
@@ -248,8 +249,9 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
   });
   const [trendAnalytics, setTrendAnalytics] = useState(null);
   const [upgradeProvider, setUpgradeProvider] = useState(null);
-  const [upgrading, setUpgrading] = useState(null); // { targets, startedAt }
-  const [upgradeResult, setUpgradeResult] = useState(null); // { ok, error }
+  // 升级状态来自全局 installState：切页后"升级中…"徽章与结果提示都还在
+  const install = useInstallState();
+  const upgrading = install.running;
   const analyticsBusy = useRef(false);
   useLang();
 
@@ -432,21 +434,19 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
 
   // 升级执行（确认后异步进行；卡片显示动态提醒，结果落入升级提示条）
   const beginUpgrade = useCallback(async (targets) => {
-    if (upgrading) return;
-    setUpgrading({ targets, startedAt: Date.now() });
-    setUpgradeResult(null);
+    if (install.running) return;
+    setInstallRunning({ label: targets.join(", "), kind: "upgrade" });
     try {
       const data = (usagePayload && usagePayload.data) || {};
       const result = await window.api.upgrade(targets, data.environment, data.windows_setup_script);
-      setUpgradeResult({ ok: Boolean(result && result.ok), error: result && result.error });
+      setInstallResult({ ok: Boolean(result && result.ok), error: result && result.error });
     } catch (err) {
-      setUpgradeResult({ ok: false, error: String(err.message || err) });
+      setInstallResult({ ok: false, error: String(err.message || err) });
     } finally {
-      setUpgrading(null);
       // 升级完成后刷新用量数据（版本号变化）
       if (onRefresh) onRefresh();
     }
-  }, [upgrading, usagePayload, onRefresh]);
+  }, [install.running, usagePayload, onRefresh]);
 
   const rows = (analytics && analytics.sessions || []).slice()
     .sort((a, b) => ((a[sessionsSort.key] || 0) - (b[sessionsSort.key] || 0)) * sessionsSort.dir)
@@ -554,9 +554,9 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
       <div className={`error-card${analyticsError ? "" : " hidden"}`} style={{ margin: "0 0 12px" }}>
         {analyticsError}
       </div>
-      {upgradeResult && !upgrading ? (
+      {install.result && !install.running ? (
         <div className={`upgrade-toast${upgradeResult.ok ? "" : " err"}`}>
-          {upgradeResult.ok ? t("upgrade.done") : `${t("upgrade.failed")}: ${upgradeResult.error || ""}`}
+          {install.result.ok ? t("upgrade.done") : `${t("upgrade.failed")}: ${install.result.error || ""}`}
         </div>
       ) : null}
 

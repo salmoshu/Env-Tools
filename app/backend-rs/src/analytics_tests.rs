@@ -52,6 +52,27 @@ fn codex_cumulative_only_line_is_skipped() {
 }
 
 #[test]
+fn codex_meta_cwd_accepts_both_layouts() {
+    // 旧版 CLI / Zed：顶层 type，cwd 直接在 payload（无 payload.type）
+    let legacy = r#"{"timestamp":"2026-09-24T08:05:57.850Z","type":"session_meta","payload":{"session_id":"01a07c1f","id":"01a0d273","cwd":"/home/winchell/E-Wagon","originator":"zed"}}"#;
+    assert_eq!(
+        crate::analytics::parse_codex_meta_cwd(legacy).as_deref(),
+        Some("/home/winchell/E-Wagon")
+    );
+    // 新版 CLI：payload.type == "session_meta"
+    let wrapped = r#"{"timestamp":"2026-09-24T08:05:57.850Z","type":"event_msg","payload":{"type":"session_meta","cwd":"D:\\projects\\Env-Tools"}}"#;
+    assert_eq!(
+        crate::analytics::parse_codex_meta_cwd(wrapped).as_deref(),
+        Some("D:\\projects\\Env-Tools")
+    );
+    // 非 session_meta 行 / 空 cwd 一律拒绝
+    let other = r#"{"timestamp":"2026-09-24T08:05:57.850Z","type":"event_msg","payload":{"type":"token_count"}}"#;
+    assert!(crate::analytics::parse_codex_meta_cwd(other).is_none());
+    let empty_cwd = r#"{"type":"session_meta","payload":{"cwd":""}}"#;
+    assert!(crate::analytics::parse_codex_meta_cwd(empty_cwd).is_none());
+}
+
+#[test]
 fn kimi_line_normalizes_millis_and_rejects_out_of_range() {
     // 毫秒时间戳按秒解释
     let ms_line = r#"{"type":"usage.record","usageScope":"turn","time":1789000005700,"model":"m1","usage":{"inputOther":1}}"#;

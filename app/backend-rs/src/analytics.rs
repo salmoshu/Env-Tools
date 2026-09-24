@@ -144,16 +144,23 @@ pub(crate) fn parse_codex_token_line(line: &str, model: &str, sid: &str) -> Opti
     })
 }
 
-fn parse_codex_meta_cwd(line: &str) -> Option<String> {
+pub(crate) fn parse_codex_meta_cwd(line: &str) -> Option<String> {
     if !line.contains("\"session_meta\"") {
         return None;
     }
     let rec: serde_json::Value = serde_json::from_str(line).ok()?;
     let payload = rec.get("payload")?;
-    if payload.get("type")?.as_str()? != "session_meta" {
+    // 两种实际存在的格式：CLI 新版 payload.type == "session_meta"；
+    // CLI 旧版 / Zed 写的是顶层 type == "session_meta"，cwd 直接在 payload 里
+    let is_meta = rec.get("type").and_then(|v| v.as_str()) == Some("session_meta")
+        || payload.get("type").and_then(|v| v.as_str()) == Some("session_meta");
+    if !is_meta {
         return None;
     }
-    let cwd = payload.get("cwd")?.as_str()?;
+    let cwd = payload
+        .get("cwd")
+        .or_else(|| rec.get("cwd"))
+        .and_then(|v| v.as_str())?;
     if cwd.is_empty() {
         return None;
     }

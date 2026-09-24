@@ -4,6 +4,7 @@
 // 交互式 bash 以保留 NVM/PATH），输出按行流式滚动；openssh 额外提供状态查看。
 
 import { useEffect, useRef, useState } from "react";
+import { useInstallState, setInstallRunning, setInstallResult, clearInstallLog } from "../installState.js";
 
 const COMPONENTS = [
   {
@@ -53,9 +54,13 @@ export default function Tools({ lastPayload }) {
     return "windows";
   });
   const [showRemote, setShowRemote] = useState(false);
-  const [running, setRunning] = useState(null); // { label }
-  const [log, setLog] = useState([]);
-  const [result, setResult] = useState(null); // { ok, error }
+  // 运行状态与日志来自全局 installState：切页后回来仍在（升级/安装常驻）
+  const install = useInstallState();
+  const running = install.running;
+  const log = install.log;
+  const result = install.result;
+  const setRunning = setInstallRunning;
+  const clearTerm = clearInstallLog;
   const [statuses, setStatuses] = useState({});
   const [backend, setBackend] = useState(null);
   const [sshList, setSshList] = useState([]);
@@ -76,11 +81,6 @@ export default function Tools({ lastPayload }) {
         if (result && result.connections) setSshList(result.connections);
       } catch {}
     })();
-    return window.api.onInstallProgress(({ line }) => {
-      if (!line) return;
-      setLog((prev) => [...prev.slice(-200), line]);
-      if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
-    });
   }, []);
 
   const selectTab = (tab) => {
@@ -130,16 +130,13 @@ export default function Tools({ lastPayload }) {
       await refreshSshStatus();
       return;
     }
-    setRunning({ label });
-    setLog([]);
-    setResult(null);
+    setInstallRunning({ label });
+    clearInstallLog();
     try {
       const result = await window.api.runComponent(actionKey, platformTab, windowsSetupScript);
-      setResult(result);
+      setInstallResult({ ok: Boolean(result && result.ok), error: result && result.error });
     } catch (err) {
-      setResult({ ok: false, error: String(err.message || err) });
-    } finally {
-      setRunning(null);
+      setInstallResult({ ok: false, error: String(err.message || err) });
     }
   };
 
@@ -321,7 +318,7 @@ export default function Tools({ lastPayload }) {
             </button>
           )}
           {!running && log.length > 0 && (
-            <button type="button" className="term-btn" onClick={() => { setLog([]); setResult(null); }}>
+            <button type="button" className="term-btn" onClick={clearTerm}>
               Clear
             </button>
           )}
