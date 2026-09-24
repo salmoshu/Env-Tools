@@ -995,12 +995,17 @@ function windowsSetupScriptFor(kind, windowsSetupScript) {
 }
 
 // PowerShell 安装子进程统一封装：输出按 UTF-8 编码，中文系统的错误文案
-// 不再因 GBK 字节被界面按 UTF-8 解码而变成乱码；尾随参数由 PowerShell
-// 自动拼接到命令行（组件名 / --kimi 等简单 token，无引号转义风险）。
+// 不再因 GBK 字节被界面按 UTF-8 解码而变成乱码。尾随参数并入 & 调用行：
+// 组件名（nodejs 等）作为位置参数原样传递；-- 开头的开关转为 PowerShell
+// 开关形式（--kimi → -kimi），否则脚本无可绑定位置参数会报
+// PositionalParameterNotFound。
 function psInstallArgs(script, rest) {
   const quoted = `'${String(script).replace(/'/g, "''")}'`;
+  const tail = rest
+    .map((arg) => (arg.startsWith("--") ? "-" + arg.slice(2) : arg))
+    .join(" ");
   return ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
-    `[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; & ${quoted}`, ...rest];
+    `[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; & ${quoted}${tail ? " " + tail : ""}`];
 }
 
 function aiToolsSpec(flags, environment, windowsSetupScript) {
