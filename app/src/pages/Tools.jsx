@@ -42,9 +42,16 @@ const COMPONENTS = [
   },
 ];
 
+const TAB_KEY = "tools.platform-tab";
+
 export default function Tools({ lastPayload }) {
-  const [platformTab, setPlatformTab] = useState("windows");
-  const [tabTouched, setTabTouched] = useState(false);
+  const [platformTab, setPlatformTab] = useState(() => {
+    try {
+      const stored = localStorage.getItem(TAB_KEY);
+      if (stored === "windows" || stored === "wsl") return stored;
+    } catch {}
+    return "windows";
+  });
   const [showRemote, setShowRemote] = useState(false);
   const [running, setRunning] = useState(null); // { label }
   const [log, setLog] = useState([]);
@@ -76,12 +83,10 @@ export default function Tools({ lastPayload }) {
     });
   }, []);
 
-  // 用户未手动切换 Tab 时，跟随数据源环境（windows/wsl）自动选择
-  useEffect(() => {
-    if (tabTouched) return;
-    if (environment === "wsl") setPlatformTab("wsl");
-    else if (environment === "windows") setPlatformTab("windows");
-  }, [environment, tabTouched]);
+  const selectTab = (tab) => {
+    setPlatformTab(tab);
+    try { localStorage.setItem(TAB_KEY, tab); } catch {}
+  };
 
   const saveSsh = async (list) => {
     const result = await window.api.sshSave(list);
@@ -158,7 +163,7 @@ export default function Tools({ lastPayload }) {
           role="tab"
           aria-selected={platformTab === "windows"}
           className={`tools-tab${platformTab === "windows" ? " active" : ""}`}
-          onClick={() => { setPlatformTab("windows"); setTabTouched(true); }}
+          onClick={() => selectTab("windows")}
         >
           Windows
         </button>
@@ -167,7 +172,7 @@ export default function Tools({ lastPayload }) {
           role="tab"
           aria-selected={platformTab === "wsl"}
           className={`tools-tab${platformTab === "wsl" ? " active" : ""}`}
-          onClick={() => { setPlatformTab("wsl"); setTabTouched(true); }}
+          onClick={() => selectTab("wsl")}
         >
           WSL
         </button>
@@ -291,39 +296,50 @@ export default function Tools({ lastPayload }) {
         <div className="about-row"><span>Script</span><strong className="about-path">{backend && backend.detail ? backend.detail.script : "—"}</strong></div>
       </div>
 
-      {(running || result || log.length > 0) && (
-        <div className="overlay" style={{ alignItems: "flex-end", paddingBottom: 30 }}>
-          <div className="dialog wide">
-            <div className="dialog-title">{running ? running.label : "Install finished"}</div>
-            {running && <div className="dialog-msg">Running the setup script… you can cancel below.</div>}
-            {!running && result && (
-              <div className="dialog-msg">
-                {result.ok ? "Done." : `Failed: ${result.error || "unknown error"}`}
-              </div>
-            )}
-            <div className="install-log" ref={logRef}>
-              {log.slice(-60).map((line, i) => <div key={i}>{line}</div>)}
-            </div>
-            <div className="dialog-btns">
-              {running ? (
-                <button
-                  type="button"
-                  className="ghost"
-                  onClick={async (event) => {
-                    event.target.disabled = true;
-                    event.target.textContent = "Cancelling …";
-                    try { await window.api.cancelInstall(); } catch {}
-                  }}
-                >
-                  Cancel
-                </button>
-              ) : (
-                <button type="button" className="ghost" onClick={() => { setLog([]); setResult(null); }}>Close</button>
-              )}
-            </div>
-          </div>
+      {/* 终端风格安装日志面板：不再使用弹框蒙版 */}
+      <section className="card tools-terminal">
+        <div className="term-head">
+          <span className="term-dot" />
+          <span className="term-title">install log</span>
+          <span className={`term-status${result && !result.ok ? " err" : ""}${running ? " run" : ""}`}>
+            {running
+              ? `● ${running.label}`
+              : result
+                ? result.ok ? "✓ done" : `✗ failed: ${result.error || "unknown error"}`
+                : log.length ? "— finished" : "idle"}
+          </span>
+          <span className="term-spacer" />
+          {running && (
+            <button
+              type="button"
+              className="term-btn"
+              onClick={async () => {
+                try { await window.api.cancelInstall(); } catch {}
+              }}
+            >
+              Cancel
+            </button>
+          )}
+          {!running && log.length > 0 && (
+            <button type="button" className="term-btn" onClick={() => { setLog([]); setResult(null); }}>
+              Clear
+            </button>
+          )}
         </div>
-      )}
+        <div className="term-body" ref={logRef}>
+          {log.length === 0 && !running ? (
+            <div className="term-line dim">ready — pick an install action above, logs stream here.</div>
+          ) : (
+            log.map((line, i) => {
+              const lowered = line.toLowerCase();
+              const cls = /error|fail|失败|err\]/.test(lowered) ? " err"
+                : /^result\|/.test(line) || /success|done|已是最新|安装完成/.test(lowered) ? " ok" : "";
+              return <div className={`term-line${cls}`} key={i}>{line}</div>;
+            })
+          )}
+          {running && <div className="term-line dim">▋</div>}
+        </div>
+      </section>
     </div>
   );
 }
