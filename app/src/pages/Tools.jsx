@@ -1,6 +1,7 @@
 // Tools 页：Env-Tools 其它组件（nodejs / kdesk / openssh / ai-tools）的图形化
-// 安装与升级入口。动作统一跑仓库根的 setup 脚本（WSL 内交互式 bash 以保留
-// NVM/PATH），输出按行流式滚动；openssh 额外提供状态查看。
+// 安装与升级入口。v0.7.11 起按平台 Tab（Windows / WSL）分区管理，不再混排；
+// Remote targets 收进 "+" 按钮展开。动作统一跑仓库根的 setup 脚本（WSL 内
+// 交互式 bash 以保留 NVM/PATH），输出按行流式滚动；openssh 额外提供状态查看。
 
 import { useEffect, useRef, useState } from "react";
 
@@ -42,6 +43,9 @@ const COMPONENTS = [
 ];
 
 export default function Tools({ lastPayload }) {
+  const [platformTab, setPlatformTab] = useState("windows");
+  const [tabTouched, setTabTouched] = useState(false);
+  const [showRemote, setShowRemote] = useState(false);
   const [running, setRunning] = useState(null); // { label }
   const [log, setLog] = useState([]);
   const [result, setResult] = useState(null); // { ok, error }
@@ -72,6 +76,13 @@ export default function Tools({ lastPayload }) {
     });
   }, []);
 
+  // 用户未手动切换 Tab 时，跟随数据源环境（windows/wsl）自动选择
+  useEffect(() => {
+    if (tabTouched) return;
+    if (environment === "wsl") setPlatformTab("wsl");
+    else if (environment === "windows") setPlatformTab("windows");
+  }, [environment, tabTouched]);
+
   const saveSsh = async (list) => {
     const result = await window.api.sshSave(list);
     if (result && result.connections) setSshList(result.connections);
@@ -85,10 +96,7 @@ export default function Tools({ lastPayload }) {
       setSshNote(result && result.ok
         ? `Connected: ${host} (agent reachable via localhost tunnel)`
         : `Failed: ${(result && result.error) || "unknown error"}`);
-      const targets = await window.api.listTargets();
-      if (targets && targets.targets) {
-        // 刷新 Dashboard 侧的目标列表（同一持久化数据）
-      }
+      await window.api.listTargets();
     } catch (err) {
       setSshNote(`Failed: ${err.message || err}`);
     } finally {
@@ -99,7 +107,7 @@ export default function Tools({ lastPayload }) {
   const refreshSshStatus = async () => {
     setStatuses((prev) => ({ ...prev, openssh: { busy: true } }));
     try {
-      const result = await window.api.componentStatus("openssh", environment);
+      const result = await window.api.componentStatus("openssh", platformTab);
       setStatuses((prev) => ({ ...prev, openssh: { output: result.output || result.error || "" } }));
     } catch (err) {
       setStatuses((prev) => ({ ...prev, openssh: { output: String(err.message || err) } }));
@@ -107,9 +115,9 @@ export default function Tools({ lastPayload }) {
   };
 
   useEffect(() => {
-    // 进入页面自动拉一次 openssh 状态（失败静默，按钮可手动重试）
+    // 切换平台 Tab 时刷新 openssh 状态（失败静默，按钮可手动重试）
     refreshSshStatus();
-  }, [environment]);
+  }, [platformTab]);
 
   const run = async (actionKey, label) => {
     if (running) return;
@@ -121,7 +129,7 @@ export default function Tools({ lastPayload }) {
     setLog([]);
     setResult(null);
     try {
-      const result = await window.api.runComponent(actionKey, environment, windowsSetupScript);
+      const result = await window.api.runComponent(actionKey, platformTab, windowsSetupScript);
       setResult(result);
     } catch (err) {
       setResult({ ok: false, error: String(err.message || err) });
@@ -129,6 +137,9 @@ export default function Tools({ lastPayload }) {
       setRunning(null);
     }
   };
+
+  const visibleComponents = COMPONENTS.filter((component) =>
+    component.platforms.includes(platformTab));
 
   return (
     <div className="page">
@@ -141,113 +152,139 @@ export default function Tools({ lastPayload }) {
         </div>
       </header>
 
-      <div className="tools-grid">
-        {COMPONENTS.map((component) => {
-          const platformOk = component.platforms.includes(environment === "windows" ? "windows" : "linux")
-            || (component.platforms.includes("windows") && environment === "windows");
-          const disabledByPlatform = environment === "windows" && !component.platforms.includes("windows");
-          return (
-            <div className="tool-card" key={component.key}>
-              <div className="tool-head">
-                <span className="tool-name">{component.name}</span>
-                <span className="tool-platform">
-                  {component.platforms.includes("windows") && component.platforms.includes("linux")
-                    ? "Windows · Linux"
-                    : component.platforms.includes("windows") ? "Windows only" : "Linux"}
-                </span>
-              </div>
-              <div className="tool-desc">{component.desc}</div>
-              {component.key === "openssh" && statuses.openssh && statuses.openssh.output ? (
-                <div className="tool-status">{statuses.openssh.output}</div>
-              ) : null}
-              <div className="tool-actions">
-                {component.actions.map((action) => (
-                  <button
-                    type="button"
-                    key={action.key}
-                    className={`tool-btn${action.ghost ? " ghost" : ""}`}
-                    disabled={Boolean(running) || disabledByPlatform}
-                    title={disabledByPlatform ? "Switch the data source to Windows to manage this component" : undefined}
-                    onClick={() => run(action.key, action.label)}
-                  >
-                    {running && running.label === action.label ? "Running…" : action.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          );
-        })}
+      <div className="tools-tabs" role="tablist">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={platformTab === "windows"}
+          className={`tools-tab${platformTab === "windows" ? " active" : ""}`}
+          onClick={() => { setPlatformTab("windows"); setTabTouched(true); }}
+        >
+          Windows
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={platformTab === "wsl"}
+          className={`tools-tab${platformTab === "wsl" ? " active" : ""}`}
+          onClick={() => { setPlatformTab("wsl"); setTabTouched(true); }}
+        >
+          WSL
+        </button>
+        <span className="tools-tabs-spacer" />
+        <button
+          type="button"
+          className={`tools-tab tools-add${showRemote ? " active" : ""}`}
+          title="Remote targets (SSH)"
+          onClick={() => setShowRemote((v) => !v)}
+        >
+          +
+        </button>
       </div>
 
-      <section className="card">
-        <h2>Remote targets (SSH)</h2>
-        <div className="panel-hint">
-          Register an SSH host, then Connect: the app uploads its agent to
-          <code> ~/.local/share/env-tools/</code> on that host and tunnels it to
-          localhost — the host then appears in the Analytics Target selector.
-          Requires key-based SSH access (no password prompts).
-        </div>
-        {sshList.map((c) => (
-          <div className="login-row" key={c.host}>
-            <div className="login-info">
-              <div className="login-name">{c.user ? `${c.user}@` : ""}{c.host}</div>
-              <div className="login-method">port {c.port}</div>
+      {showRemote && (
+        <section className="card tools-remote">
+          <h2>Remote targets (SSH)</h2>
+          <div className="panel-hint">
+            Register an SSH host, then Connect: the app uploads its agent to
+            <code> ~/.local/share/env-tools/</code> on that host and tunnels it to
+            localhost — the host then appears in the Analytics Target selector.
+            Requires key-based SSH access (no password prompts).
+          </div>
+          {sshList.map((c) => (
+            <div className="login-row" key={c.host}>
+              <div className="login-info">
+                <div className="login-name">{c.user ? `${c.user}@` : ""}{c.host}</div>
+                <div className="login-method">port {c.port}</div>
+              </div>
+              <button
+                type="button"
+                className="login-btn"
+                disabled={Boolean(sshBusy)}
+                onClick={() => connectSsh(c.host)}
+              >
+                {sshBusy === c.host ? "Connecting…" : "Connect"}
+              </button>
+              <button
+                type="button"
+                className="login-btn"
+                style={{ background: "transparent", color: "var(--faint)", borderColor: "var(--border)" }}
+                onClick={async () => {
+                  await window.api.sshDisconnect(c.host);
+                  await saveSsh(sshList.filter((item) => item.host !== c.host));
+                }}
+              >
+                Remove
+              </button>
             </div>
+          ))}
+          <div className="membership-inputs" style={{ marginTop: 8, flexWrap: "wrap" }}>
+            <input
+              className="key-input" style={{ flex: "2", minWidth: 140 }} placeholder="host (required)"
+              value={sshForm.host}
+              onChange={(e) => setSshForm({ ...sshForm, host: e.target.value })}
+            />
+            <input
+              className="key-input" style={{ flex: "0 0 80px" }} placeholder="port"
+              value={sshForm.port}
+              onChange={(e) => setSshForm({ ...sshForm, port: e.target.value })}
+            />
+            <input
+              className="key-input" style={{ flex: "1", minWidth: 110 }} placeholder="user (optional)"
+              value={sshForm.user}
+              onChange={(e) => setSshForm({ ...sshForm, user: e.target.value })}
+            />
             <button
               type="button"
               className="login-btn"
-              disabled={Boolean(sshBusy)}
-              onClick={() => connectSsh(c.host)}
-            >
-              {sshBusy === c.host ? "Connecting…" : "Connect"}
-            </button>
-            <button
-              type="button"
-              className="login-btn"
-              style={{ background: "transparent", color: "var(--faint)", borderColor: "var(--border)" }}
+              disabled={!sshForm.host.trim()}
               onClick={async () => {
-                await window.api.sshDisconnect(c.host);
-                await saveSsh(sshList.filter((item) => item.host !== c.host));
+                await saveSsh([...sshList, {
+                  host: sshForm.host.trim(),
+                  port: Number(sshForm.port) || 22,
+                  user: sshForm.user.trim(),
+                }]);
+                setSshForm({ host: "", port: "22", user: "" });
               }}
             >
-              Remove
+              Add
             </button>
           </div>
+          {sshNote ? <div className="settings-note" style={{ marginTop: 6 }}>{sshNote}</div> : null}
+        </section>
+      )}
+
+      <div className="tools-grid">
+        {visibleComponents.map((component) => (
+          <div className="tool-card" key={component.key}>
+            <div className="tool-head">
+              <span className="tool-name">{component.name}</span>
+              <span className="tool-platform">
+                {component.platforms.includes("windows") && component.platforms.includes("linux")
+                  ? "Windows · Linux"
+                  : component.platforms.includes("windows") ? "Windows only" : "Linux"}
+              </span>
+            </div>
+            <div className="tool-desc">{component.desc}</div>
+            {component.key === "openssh" && statuses.openssh && statuses.openssh.output ? (
+              <div className="tool-status">{statuses.openssh.output}</div>
+            ) : null}
+            <div className="tool-actions">
+              {component.actions.map((action) => (
+                <button
+                  type="button"
+                  key={action.key}
+                  className={`tool-btn${action.ghost ? " ghost" : ""}`}
+                  disabled={Boolean(running)}
+                  onClick={() => run(action.key, action.label)}
+                >
+                  {running && running.label === action.label ? "Running…" : action.label}
+                </button>
+              ))}
+            </div>
+          </div>
         ))}
-        <div className="membership-inputs" style={{ marginTop: 8, flexWrap: "wrap" }}>
-          <input
-            className="key-input" style={{ flex: "2", minWidth: 140 }} placeholder="host (required)"
-            value={sshForm.host}
-            onChange={(e) => setSshForm({ ...sshForm, host: e.target.value })}
-          />
-          <input
-            className="key-input" style={{ flex: "0 0 80px" }} placeholder="port"
-            value={sshForm.port}
-            onChange={(e) => setSshForm({ ...sshForm, port: e.target.value })}
-          />
-          <input
-            className="key-input" style={{ flex: "1", minWidth: 110 }} placeholder="user (optional)"
-            value={sshForm.user}
-            onChange={(e) => setSshForm({ ...sshForm, user: e.target.value })}
-          />
-          <button
-            type="button"
-            className="login-btn"
-            disabled={!sshForm.host.trim()}
-            onClick={async () => {
-              await saveSsh([...sshList, {
-                host: sshForm.host.trim(),
-                port: Number(sshForm.port) || 22,
-                user: sshForm.user.trim(),
-              }]);
-              setSshForm({ host: "", port: "22", user: "" });
-            }}
-          >
-            Add
-          </button>
-        </div>
-        {sshNote ? <div className="settings-note" style={{ marginTop: 6 }}>{sshNote}</div> : null}
-      </section>
+      </div>
 
       <div className="card" style={{ marginTop: 14 }}>
         <h2>Runtime</h2>

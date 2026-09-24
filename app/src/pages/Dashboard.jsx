@@ -122,13 +122,13 @@ function QuotaCard({ account, versions, onUpgrade }) {
         const applicable = resetCredits.applicable_available_count;
         if (available == null && applicable == null) return null;
         const parts = [];
-        if (available != null) parts.push(`${available} remaining`);
+        if (available != null) parts.push(t("dash.resetRemaining").replace("{n}", String(available)));
         if (applicable != null) {
-          parts.push(Number(applicable) > 0 ? `${applicable} usable now` : "not usable until limit reached");
+          parts.push(Number(applicable) > 0 ? t("dash.resetUsableNow") : t("dash.resetAfterLimit"));
         }
         return (
           <div className={`limit-resets${Number(applicable) > 0 ? " ready" : ""}`}>
-            Reset chance: {parts.join(" · ")}
+            {t("dash.resetChances")}: {parts.join(" · ")}
           </div>
         );
       })()}

@@ -721,3 +721,39 @@ td b { font-weight: 600; }
   border: 1px solid var(--accent-border);
 }
 .error-boundary-btn:hover { background: var(--accent-hover); }
+
+/* --- v0.7.11：组件管理平台 Tab + 远程入口 --- */
+.tools-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 0 14px;
+}
+.tools-tab {
+  height: 30px;
+  padding: 0 18px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--dim);
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.tools-tab:hover { background: var(--hover); color: var(--text); }
+.tools-tab.active {
+  background: rgba(110, 168, 254, 0.14);
+  border-color: rgba(110, 168, 254, 0.45);
+  color: var(--accent);
+}
+.tools-tabs-spacer { flex: 1; }
+.tools-tab.tools-add {
+  width: 30px;
+  padding: 0;
+  font-size: 16px;
+  font-weight: 500;
+  border-radius: 50%;
+  line-height: 1;
+}
+.tools-remote { margin-bottom: 14px; }
