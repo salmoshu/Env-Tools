@@ -1,6 +1,6 @@
 [package]
 name = "env-tools-api"
-version = "0.7.9"
+version = "0.7.10"
 edition = "2021"
 description = "Env-Tools desktop local API gateway (axum): analytics/usage relay with single-flight caching"
 

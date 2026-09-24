@@ -994,13 +994,23 @@ function windowsSetupScriptFor(kind, windowsSetupScript) {
     /\\windows\\ai-tools\\setup_ai_tools\.ps1$/i, "\\setup.ps1");
 }
 
+// PowerShell 安装子进程统一封装：输出按 UTF-8 编码，中文系统的错误文案
+// 不再因 GBK 字节被界面按 UTF-8 解码而变成乱码；尾随参数由 PowerShell
+// 自动拼接到命令行（组件名 / --kimi 等简单 token，无引号转义风险）。
+function psInstallArgs(script, rest) {
+  const quoted = `'${String(script).replace(/'/g, "''")}'`;
+  return ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+    `[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; & ${quoted}`, ...rest];
+}
+
 function aiToolsSpec(flags, environment, windowsSetupScript) {
   if (environment === "windows" && WSL_BACKEND) {
     const script = windowsSetupScriptFor("ai-tools", windowsSetupScript);
     if (!script) return null;
     return {
       command: "powershell.exe",
-      args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, ...flags],
+      args: psInstallArgs(script, flags),
+      script,
     };
   }
   if (WSL_BACKEND) {
@@ -1017,15 +1027,18 @@ function aiToolsSpec(flags, environment, windowsSetupScript) {
     };
   }
   if (process.platform === "win32") {
+    const script = path.join(REPO_ROOT, "windows", "ai-tools", "setup_ai_tools.ps1");
     return {
       command: "powershell.exe",
-      args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-        path.join(REPO_ROOT, "windows", "ai-tools", "setup_ai_tools.ps1"), ...flags],
+      args: psInstallArgs(script, flags),
+      script,
     };
   }
+  const script = path.join(REPO_ROOT, "linux", "ai-tools", "setup_ai_tools.sh");
   return {
     command: "bash",
-    args: [path.join(REPO_ROOT, "linux", "ai-tools", "setup_ai_tools.sh"), ...flags],
+    args: [script, ...flags],
+    script,
   };
 }
 
@@ -1036,7 +1049,8 @@ function componentSpec(component, environment, windowsSetupScript) {
     if (!script) return null;
     return {
       command: "powershell.exe",
-      args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, component],
+      args: psInstallArgs(script, [component]),
+      script,
     };
   }
   if (WSL_BACKEND) {
@@ -1051,13 +1065,15 @@ function componentSpec(component, environment, windowsSetupScript) {
     };
   }
   if (process.platform === "win32") {
+    const script = path.join(REPO_ROOT, "setup.ps1");
     return {
       command: "powershell.exe",
-      args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-        path.join(REPO_ROOT, "setup.ps1"), component],
+      args: psInstallArgs(script, [component]),
+      script,
     };
   }
-  return { command: "bash", args: [path.join(REPO_ROOT, "setup.sh"), component] };
+  const script = path.join(REPO_ROOT, "setup.sh");
+  return { command: "bash", args: [script, component], script };
 }
 
 function installSpec(kind, targets, environment, windowsSetupScript) {
@@ -1084,6 +1100,15 @@ function startInstall(runKey, spec) {
   return new Promise((resolve) => {
     if (installChild) {
       resolve({ ok: false, error: "another install is already running" });
+      return;
+    }
+    // 负载缺失（如 kdesk 数百 MB 厂商包不随应用分发）给明确提示，
+    // 而不是让 PowerShell 报一串乱码的 "文件不存在" 后挂进交互模式
+    if (spec.script && !fs.existsSync(spec.script)) {
+      resolve({
+        ok: false,
+        error: `component payload not bundled with this app package: ${spec.script}`,
+      });
       return;
     }
     const child = spawn(spec.command, spec.args, {

@@ -75,6 +75,27 @@ if (platformArg === "win32") {
   fs.chmodSync(backend, 0o755);
 }
 
+// 3.5 组件安装脚本负载随包分发：安装后 electron 侧 REPO_ROOT 解析为
+// <pkg>/resources（main.js 按 __dirname/../.. 推导），Tools 组件安装与看板
+// agent 升级直接调用这些脚本，此处按仓库同构布局复制到 resources/ 下。
+// kdesk 负载数百 MB（厂商安装包/快照/壁纸缓存）不随包分发；各组件脚本的
+// log/ 运行目录同样排除。main.js 对缺失负载会给出明确提示而非乱码报错。
+const repoRoot = path.resolve(root, "..");
+const resourcesDir = path.join(pkgDir, "resources");
+for (const file of ["setup.ps1", "setup.sh", "tools.ps1", "tools.sh", "VERSION"]) {
+  fs.copyFileSync(path.join(repoRoot, file), path.join(resourcesDir, file));
+}
+const payloadFilter = (src) => {
+  const rel = path.relative(repoRoot, src).replace(/\\/g, "/");
+  if (/(^|\/)log(\/|$)/.test(rel)) return false;
+  if (rel.startsWith("windows/kdesk")) return false;
+  return true;
+};
+for (const dir of ["completion", "linux", "windows"]) {
+  fs.cpSync(path.join(repoRoot, dir), path.join(resourcesDir, dir), { recursive: true, filter: payloadFilter });
+}
+console.log("[package] component install scripts bundled into resources/");
+
 // 4. 压缩 / 安装器
 const version = JSON.parse(fs.readFileSync(path.join(root, "package.json"))).version;
 const archiveBase = `env-tools-desktop-v${version}-${platformArg}-x64`;
