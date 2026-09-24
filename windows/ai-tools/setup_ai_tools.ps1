@@ -283,15 +283,27 @@ $kimiWorker = {
         return
     }
     "LOG|kimi|安装/更新中: 官方安装器 (install.ps1)，当前 $beforeText"
-    # 子进程是全新 PowerShell 会话，需同样启用 TLS 1.2 并绕开系统代理
-    & powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; [System.Net.WebRequest]::DefaultWebProxy = `$null; irm https://code.kimi.com/kimi-code/install.ps1 | iex" 2>&1 | ForEach-Object {
-        $s = "$_" -replace '\x1b\[[0-9;]*m', '' -replace "`r", ''
-        if ($s.Trim()) { "LOG|kimi|$s" }
+    # 子进程是全新 PowerShell 会话，需同样启用 TLS 1.2 并绕开系统代理。
+    # 瞬时 DNS/网络抖动（如 cdn.kimi.com 解析失败）自动重试，最多 3 次。
+    $installerExit = 1
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        if ($attempt -gt 1) {
+            "LOG|kimi|第 $attempt 次重试（前一次失败：网络/DNS 瞬时错误）"
+            Start-Sleep -Seconds 5
+        }
+        & powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; [System.Net.WebRequest]::DefaultWebProxy = `$null; irm https://code.kimi.com/kimi-code/install.ps1 | iex" 2>&1 | ForEach-Object {
+            $s = "$_" -replace '\x1b\[[0-9;]*m', '' -replace "`r", ''
+            if ($s.Trim()) { "LOG|kimi|$s" }
+        }
+        $installerExit = $LASTEXITCODE
+        if ($installerExit -eq 0) { break }
+        "LOG|kimi|install.ps1 exit=$installerExit (attempt $attempt/3)"
     }
-    if ($LASTEXITCODE -ne 0) {
-        "LOG|kimi|ERROR: 安装失败 (install.ps1 exit=$LASTEXITCODE)"
+    if ($installerExit -ne 0) {
+        "LOG|kimi|ERROR: 安装失败 (install.ps1 exit=$installerExit，已重试 3 次)"
         "RESULT|kimi|FAIL|$beforeText|"
         return
+    }
     }
     $after = Get-KimiVersion
     $afterText = if ($after) { $after } else { '未知' }
