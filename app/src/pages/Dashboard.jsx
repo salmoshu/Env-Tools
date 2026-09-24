@@ -555,7 +555,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
         {analyticsError}
       </div>
       {install.result && !install.running ? (
-        <div className={`upgrade-toast${upgradeResult.ok ? "" : " err"}`}>
+        <div className={`upgrade-toast${install.result.ok ? "" : " err"}`}>
           {install.result.ok ? t("upgrade.done") : `${t("upgrade.failed")}: ${install.result.error || ""}`}
         </div>
       ) : null}
