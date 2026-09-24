@@ -140,5 +140,15 @@ pub fn collect_all() -> (Vec<Value>, Vec<Value>) {
     }
     push_result(&mut accounts, &mut errors, "DeepSeek", deepseek::collect());
     push_result(&mut accounts, &mut errors, "GLM", glm::collect());
+
+    // 一个 provider 只出一张卡的兜底：已有账号卡片时丢弃其错误条目，
+    // 防止任何路径同时产出账号与错误导致前端双卡
+    let with_account: std::collections::HashSet<String> = accounts
+        .iter()
+        .filter_map(|a| a.get("provider").and_then(|v| v.as_str()).map(String::from))
+        .collect();
+    errors.retain(|e| {
+        !with_account.contains(e.get("provider").and_then(|v| v.as_str()).unwrap_or(""))
+    });
     (accounts, errors)
 }

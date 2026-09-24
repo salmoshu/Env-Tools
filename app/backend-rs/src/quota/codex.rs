@@ -140,9 +140,9 @@ pub fn collect(homes: &[PathBuf], errors: &mut Vec<Value>) -> Option<Value> {
             } else {
                 err
             };
-            errors.push(serde_json::json!({ "provider": "OpenAI Codex", "error": message }));
-            // 配额接口失败但存在手动会员配置时，额外推一个最小账户：
-            // error 条目照常进 errors，会员到期信息仍能在前端卡片展示
+            // 配额接口失败但存在手动会员配置时，返回一个最小账户（会员到期仍在
+            // 前端展示）。一个 provider 只出一张卡：此时不再推送错误条目，
+            // 否则前端会同时渲染账号卡片与错误占位卡片。
             let mut account = serde_json::json!({
                 "provider": "OpenAI Codex",
                 "plan": "unknown",
@@ -150,8 +150,10 @@ pub fn collect(homes: &[PathBuf], errors: &mut Vec<Value>) -> Option<Value> {
                 "fetched_at": fetched_now(),
             });
             if attach_manual_membership(&mut account, "openai") {
+                eprintln!("[codex] quota fetch failed, serving minimal account with manual membership: {message}");
                 Some(account)
             } else {
+                errors.push(serde_json::json!({ "provider": "OpenAI Codex", "error": message }));
                 None
             }
         }
