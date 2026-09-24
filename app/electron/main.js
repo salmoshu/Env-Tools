@@ -1179,7 +1179,10 @@ ipcMain.handle("upgrade-agents", (_event, providers, environment, windowsSetupSc
   return startInstall("upgrade", spec);
 });
 ipcMain.handle("run-component", (_event, component, environment, windowsSetupScript) => {
-  const spec = installSpec(String(component), component, environment, windowsSetupScript);
+  // kimi/codex 是 ai-tools 组件的子开关（setup.ps1 的 Component 参数不接受它们），
+  // 走 aiToolsSpec 生成 --kimi/--codex 标志，与看板升级同一条链路
+  const kind = component === "kimi" || component === "codex" ? "ai-tools" : String(component);
+  const spec = installSpec(kind, component, environment, windowsSetupScript);
   if (!spec) return Promise.resolve({ ok: false, error: "no installable target for this component" });
   return startInstall(`component:${component}`, spec);
 });
