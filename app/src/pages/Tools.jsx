@@ -260,9 +260,7 @@ export default function Tools({ lastPayload }) {
             <div className="tool-head">
               <span className="tool-name">{component.name}</span>
               <span className="tool-platform">
-                {component.platforms.includes("windows") && component.platforms.includes("linux")
-                  ? "Windows · Linux"
-                  : component.platforms.includes("windows") ? "Windows only" : "Linux"}
+                {platformTab === "windows" ? "Windows" : "Linux"}
               </span>
             </div>
             <div className="tool-desc">{component.desc}</div>
