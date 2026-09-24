@@ -26,7 +26,14 @@ function killStaleVite() {
   if (process.platform !== "win32") return;
   let out = "";
   try {
-    out = execSync(`netstat -ano -p tcp | findstr ":${PORT} "`, { encoding: "utf8" });
+    // 同时查 TCPv4 与 TCPv6：vite 绑 localhost 时可能落在 [::1]
+    const v4 = execSync(`netstat -ano -p tcp | findstr ":${PORT} "`, { encoding: "utf8" });
+    let v6 = "";
+    try {
+      v6 = execSync(`netstat -ano -p tcpv6 | findstr ":${PORT} "`, { encoding: "utf8" });
+    } catch {}
+    out = `${v4}
+${v6}`;
   } catch {
     return; // 端口空闲
   }
