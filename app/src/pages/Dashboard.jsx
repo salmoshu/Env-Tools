@@ -61,7 +61,7 @@ function MembershipLine({ account }) {
   );
 }
 
-function QuotaCard({ account, versions, onUpgrade }) {
+function QuotaCard({ account, versions, onUpgrade, upgrading }) {
   const updated = account.fetched_at
     ? new Date(account.fetched_at).toLocaleTimeString("en-GB", { hour12: false })
     : "";
@@ -89,6 +89,9 @@ function QuotaCard({ account, versions, onUpgrade }) {
           <span className="qver">v{info.current}</span>
         ) : null}
         <span className="plan">{account.plan || "unknown"}</span>
+        {upgrading && upgrading.targets.includes(account.provider) ? (
+          <span className="upgrading-badge"><span className="spin-dot" />{t("upgrade.runningBadge")}</span>
+        ) : null}
         <span className="qupdated">{updated}</span>
       </div>
       <MembershipLine account={account} />
@@ -245,6 +248,8 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
   });
   const [trendAnalytics, setTrendAnalytics] = useState(null);
   const [upgradeProvider, setUpgradeProvider] = useState(null);
+  const [upgrading, setUpgrading] = useState(null); // { targets, startedAt }
+  const [upgradeResult, setUpgradeResult] = useState(null); // { ok, error }
   const analyticsBusy = useRef(false);
   useLang();
 
@@ -425,6 +430,24 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
     wowHtml = <span className={up ? "up" : "down"}>{up ? "+" : ""}{percent}%</span>;
   }
 
+  // 升级执行（确认后异步进行；卡片显示动态提醒，结果落入升级提示条）
+  const beginUpgrade = useCallback(async (targets) => {
+    if (upgrading) return;
+    setUpgrading({ targets, startedAt: Date.now() });
+    setUpgradeResult(null);
+    try {
+      const data = (usagePayload && usagePayload.data) || {};
+      const result = await window.api.upgrade(targets, data.environment, data.windows_setup_script);
+      setUpgradeResult({ ok: Boolean(result && result.ok), error: result && result.error });
+    } catch (err) {
+      setUpgradeResult({ ok: false, error: String(err.message || err) });
+    } finally {
+      setUpgrading(null);
+      // 升级完成后刷新用量数据（版本号变化）
+      if (onRefresh) onRefresh();
+    }
+  }, [upgrading, usagePayload, onRefresh]);
+
   const rows = (analytics && analytics.sessions || []).slice()
     .sort((a, b) => ((a[sessionsSort.key] || 0) - (b[sessionsSort.key] || 0)) * sessionsSort.dir)
     .slice(0, 200);
@@ -531,6 +554,11 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
       <div className={`error-card${analyticsError ? "" : " hidden"}`} style={{ margin: "0 0 12px" }}>
         {analyticsError}
       </div>
+      {upgradeResult && !upgrading ? (
+        <div className={`upgrade-toast${upgradeResult.ok ? "" : " err"}`}>
+          {upgradeResult.ok ? t("upgrade.done") : `${t("upgrade.failed")}: ${upgradeResult.error || ""}`}
+        </div>
+      ) : null}
 
       <div className="kpi-row">
         <div className="kpi-card">
@@ -567,6 +595,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
               account={account}
               versions={versions}
               onUpgrade={setUpgradeProvider}
+              upgrading={upgrading}
             />
           ))}
           {(usagePayload && !usagePayload.error ? shownErrors : []).map((err) => (
@@ -763,6 +792,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
           provider={upgradeProvider}
           payload={usagePayload || { data: {} }}
           onClose={() => setUpgradeProvider(null)}
+          onStart={(targets) => beginUpgrade(targets)}
         />
       )}
       </div>

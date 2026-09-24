@@ -44,6 +44,7 @@ const DICT = {
     "upgrade.cancelling": "Cancelling …",
     "upgrade.close": "Close",
     "upgrade.running": "Upgrading",
+    "upgrade.runningBadge": "Upgrading…",
     "upgrade.done": "Upgrade finished",
     "upgrade.failed": "Upgrade failed",
     // Dashboard
@@ -188,6 +189,7 @@ const DICT = {
     "upgrade.cancelling": "正在取消 …",
     "upgrade.close": "关闭",
     "upgrade.running": "正在升级",
+    "upgrade.runningBadge": "升级中…",
     "upgrade.done": "升级完成",
     "upgrade.failed": "升级失败",
     "dash.target": "数据目标",

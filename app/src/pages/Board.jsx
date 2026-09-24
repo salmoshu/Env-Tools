@@ -21,6 +21,8 @@ export default function Board({ lastPayload }) {
   const [dismissedErrors, setDismissedErrors] = useState({});
   const [fatalErrorDismissed, setFatalErrorDismissed] = useState("");
   const [upgradeProvider, setUpgradeProvider] = useState(null);
+  const [upgrading, setUpgrading] = useState(null); // { targets, startedAt }
+  const [upgradeResult, setUpgradeResult] = useState(null); // { ok, error }
   const [compact, setCompact] = useState(false);
   const [pinned, setPinned] = useState(false);
   useLang();
@@ -84,6 +86,22 @@ export default function Board({ lastPayload }) {
     return () => {};
   }, []);
 
+  // 升级执行（确认后异步进行；卡片显示动态提醒，结果落入升级提示条）
+  const beginUpgrade = useCallback(async (targets) => {
+    if (upgrading) return;
+    setUpgrading({ targets, startedAt: Date.now() });
+    setUpgradeResult(null);
+    try {
+      const data = (lastPayload && lastPayload.data) || {};
+      const result = await window.api.upgrade(targets, data.environment, data.windows_setup_script);
+      setUpgradeResult({ ok: Boolean(result && result.ok), error: result && result.error });
+    } catch (err) {
+      setUpgradeResult({ ok: false, error: String(err.message || err) });
+    } finally {
+      setUpgrading(null);
+    }
+  }, [upgrading, lastPayload]);
+
   useEffect(() => {
     const onResize = () => {
       const natural = document.body.offsetHeight;
@@ -133,6 +151,11 @@ export default function Board({ lastPayload }) {
 
   return (
     <>
+      {upgradeResult && !upgrading ? (
+        <div className={`upgrade-toast${upgradeResult.ok ? "" : " err"}`}>
+          {upgradeResult.ok ? t("upgrade.done") : `${t("upgrade.failed")}: ${upgradeResult.error || ""}`}
+        </div>
+      ) : null}
       <div className={`content${compact ? " compact" : ""}`}>
         {lastPayload && lastPayload.error && fatalErrorDismissed !== lastPayload.error && (
           <div className="error-card">{lastPayload.error}</div>
@@ -165,6 +188,9 @@ export default function Board({ lastPayload }) {
                   <span className="ver">v{info.current}</span>
                 ) : null}
                 <span className="plan">{account.plan || "unknown"}</span>
+                {upgrading && upgrading.targets.includes(account.provider) ? (
+                  <span className="upgrading-badge"><span className="spin-dot" />{t("upgrade.runningBadge")}</span>
+                ) : null}
                 <span className="updated">{updated}</span>
               </div>
               {membership && membership.error ? (
@@ -280,6 +306,7 @@ export default function Board({ lastPayload }) {
           provider={upgradeProvider}
           payload={lastPayload || { data: {} }}
           onClose={() => setUpgradeProvider(null)}
+          onStart={(targets) => beginUpgrade(targets)}
         />
       )}
     </>
