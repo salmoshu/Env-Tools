@@ -304,11 +304,9 @@ $kimiWorker = {
         "RESULT|kimi|FAIL|$beforeText|"
         return
     }
-    }
     $after = Get-KimiVersion
     $afterText = if ($after) { $after } else { '未知' }
     "LOG|kimi|完成: $beforeText -> $afterText"
-    "RESULT|kimi|OK|$beforeText|$afterText"
 }
 
 # --- 输出机制 ----------------------------------------------------------------------
