@@ -90,7 +90,7 @@ export default function Board({ lastPayload }) {
   // 升级执行（确认后异步进行；卡片显示动态提醒，结果落入升级提示条）
   const beginUpgrade = useCallback(async (targets) => {
     if (install.running) return;
-    setInstallRunning({ label: targets.join(", "), kind: "upgrade" });
+    setInstallRunning({ label: targets.join(", "), kind: "upgrade", targets });
     try {
       const data = (lastPayload && lastPayload.data) || {};
       const result = await window.api.upgrade(targets, data.environment, data.windows_setup_script);
@@ -186,7 +186,7 @@ export default function Board({ lastPayload }) {
                   <span className="ver">v{info.current}</span>
                 ) : null}
                 <span className="plan">{account.plan || "unknown"}</span>
-                {upgrading && upgrading.targets.includes(account.provider) ? (
+                {upgrading && Array.isArray(upgrading.targets) && upgrading.targets.includes(account.provider) ? (
                   <span className="upgrading-badge"><span className="spin-dot" />{t("upgrade.runningBadge")}</span>
                 ) : null}
                 <span className="updated">{updated}</span>
