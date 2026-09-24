@@ -566,7 +566,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
               key={account.provider}
               account={account}
               versions={versions}
-              onUpgrade={target === "local" ? setUpgradeProvider : null}
+              onUpgrade={setUpgradeProvider}
             />
           ))}
           {(usagePayload && !usagePayload.error ? shownErrors : []).map((err) => (
