@@ -956,9 +956,10 @@ const COMPONENT_FLAGS = {
   kimi: "--kimi",
   codex: "--codex",
 };
-// 下载速度不可控（code.kimi.com 可能被限速到几十 KB/s），给足 20min；
-// 完全停滞由 setup 脚本自检（60s 无进展）提前中止，不会真等满超时
-const INSTALL_TIMEOUT_MS = 20 * 60 * 1000;
+// 下载速度不可控（code.kimi.com 可能被限速到几十 KB/s），且官方安装器在
+// tar 包不完整时会回退下载 152MB 裸二进制，慢速链路全程可达 40 分钟以上，
+// 给足 60min；完全停滞由 setup 脚本自检提前中止，不会真等满超时
+const INSTALL_TIMEOUT_MS = 60 * 60 * 1000;
 // 当前在跑的安装子进程，供"取消"终止；一次只允许一个
 let installChild = null;
 let installCancelled = false;
