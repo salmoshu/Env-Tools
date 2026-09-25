@@ -479,6 +479,11 @@ impl AnalyticsState {
         let mut agent_totals: HashMap<&'static str, i64> = HashMap::new();
         let mut agent_requests: HashMap<&'static str, i64> = HashMap::new();
         let mut sessions: HashMap<String, SessionRow> = HashMap::new();
+        // 近窗速率（token 速率统计）：最近 15 / 60 分钟的 token 总量
+        let now_sec = now.timestamp();
+        let mut recent15_tokens = 0i64;
+        let mut recent15_requests = 0i64;
+        let mut recent60_tokens = 0i64;
         // 日期格式化按天缓存：同一日期只在首次出现时 format
         let mut date_cache: HashMap<i32, String> = HashMap::new();
 
@@ -502,6 +507,13 @@ impl AnalyticsState {
                     .or_insert_with(|| date_string(local))
                     .clone();
                 let total = record.input + record.output + record.cache_read + record.cache_creation;
+                if record.ts >= now_sec - 3600 {
+                    recent60_tokens += total;
+                    if record.ts >= now_sec - 900 {
+                        recent15_tokens += total;
+                        recent15_requests += 1;
+                    }
+                }
                 agents_seen.insert(record_agent);
                 let cell = calendar.entry(date.clone()).or_insert((0, 0));
                 cell.0 += total;
@@ -757,6 +769,13 @@ impl AnalyticsState {
                     (total_cache_read as f64 / denominator as f64 * 10000.0).round() / 10000.0
                 } else { 0.0 },
                 "active_sessions": sessions.len(),
+                "rate": {
+                    "tokens_15m": recent15_tokens,
+                    "requests_15m": recent15_requests,
+                    "tokens_60m": recent60_tokens,
+                    "per_minute_15m": (recent15_tokens as f64 / 15.0 * 100.0).round() / 100.0,
+                    "per_minute_60m": (recent60_tokens as f64 / 60.0 * 100.0).round() / 100.0,
+                },
             },
         })
     }

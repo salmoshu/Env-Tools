@@ -587,6 +587,26 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
           <div className="kpi-label">{t("dash.kpiSessions")}</div>
           <div className="kpi-value">{fmt(kpi.active_sessions)}</div>
         </div>
+        <div className="kpi-card">
+          <div className="kpi-label">{t("dash.kpiRate")}</div>
+          <div className="kpi-value">
+            {(() => {
+              const rate = kpi.rate || {};
+              const use15 = (rate.tokens_15m || 0) > 0;
+              const perMin = use15 ? (rate.per_minute_15m || 0) : (rate.per_minute_60m || 0);
+              return `${abbrev(Math.round(perMin))}/min`;
+            })()}
+          </div>
+          <div className="kpi-sub">
+            {(() => {
+              const rate = kpi.rate || {};
+              const use15 = (rate.tokens_15m || 0) > 0;
+              return use15
+                ? `${t("dash.rateWindow15")} · ${fmt(rate.requests_15m || 0)} req`
+                : (rate.tokens_60m || 0) > 0 ? t("dash.rateWindow60") : t("state.noData");
+            })()}
+          </div>
+        </div>
       </div>
 
       <section className="block">
