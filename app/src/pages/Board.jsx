@@ -7,7 +7,7 @@ import {
   activateOnKeys, fmtSpan, isNewerVersion, levelClass, timeFractionOf, fmtReset,
 } from "../utils.js";
 import { t, useLang } from "../i18n.js";
-import { useInstallState, setInstallRunning, setInstallResult } from "../installState.js";
+import { useInstallState, setInstallRunning, setInstallResult, dismissInstallResult } from "../installState.js";
 import UpgradeOverlay from "../components/UpgradeOverlay.jsx";
 
 const DISPLAY_SELECTION_KEY = "ai-usage-monitor.display-providers";
@@ -121,6 +121,14 @@ export default function Board({ lastPayload }) {
     fitWindow();
   });
 
+  // 升级结果提示条自动消失：成功 4s、失败 10s（也可手动 ×）
+  useEffect(() => {
+    if (!install.result || install.running) return;
+    const ms = install.result.ok ? 4000 : 10000;
+    const timer = setTimeout(() => dismissInstallResult(), ms);
+    return () => clearTimeout(timer);
+  }, [install.result, install.running]);
+
   const data = lastPayload && lastPayload.data;
   const accounts = ((data && data.accounts) || [])
     .filter((a) => selectedProviders.has(a.provider));
@@ -152,6 +160,7 @@ export default function Board({ lastPayload }) {
       {install.result && !install.running ? (
         <div className={`upgrade-toast${install.result.ok ? "" : " err"}`}>
           {install.result.ok ? t("upgrade.done") : `${t("upgrade.failed")}: ${install.result.error || ""}`}
+          <button type="button" className="toast-close" onClick={() => dismissInstallResult()}>×</button>
         </div>
       ) : null}
       <div className={`content${compact ? " compact" : ""}`}>

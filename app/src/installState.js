@@ -38,6 +38,11 @@ export function setInstallResult(result) {
   for (const notify of listeners) notify();
 }
 
+export function dismissInstallResult() {
+  state = { ...state, result: null };
+  for (const notify of listeners) notify();
+}
+
 export function clearInstallLog() {
   state = { ...state, log: [], result: null };
   for (const notify of listeners) notify();

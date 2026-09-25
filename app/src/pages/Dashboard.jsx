@@ -15,7 +15,7 @@ import {
 import { RefreshIcon } from "../components/Titlebar.jsx";
 import UpgradeOverlay from "../components/UpgradeOverlay.jsx";
 import { t, useLang } from "../i18n.js";
-import { useInstallState, setInstallRunning, setInstallResult } from "../installState.js";
+import { useInstallState, setInstallRunning, setInstallResult, dismissInstallResult } from "../installState.js";
 
 const ANALYTICS_REFRESH_MS = 5 * 60 * 1000;
 const DAYS_KEY = "ai-usage-monitor.analytics-days";
@@ -316,6 +316,14 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
     return () => clearInterval(timer);
   }, [days, agent, target, requestAnalytics]);
 
+  // 升级结果提示条自动消失：成功 4s、失败 10s（也可手动 ×）
+  useEffect(() => {
+    if (!install.result || install.running) return;
+    const ms = install.result.ok ? 4000 : 10000;
+    const timer = setTimeout(() => dismissInstallResult(), ms);
+    return () => clearTimeout(timer);
+  }, [install.result, install.running]);
+
   // 年度趋势需要 12 个月数据：单独拉取，避免影响主视图的 days 选择
   useEffect(() => {
     if (trendGran !== "year") return;
@@ -557,6 +565,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
       {install.result && !install.running ? (
         <div className={`upgrade-toast${install.result.ok ? "" : " err"}`}>
           {install.result.ok ? t("upgrade.done") : `${t("upgrade.failed")}: ${install.result.error || ""}`}
+          <button type="button" className="toast-close" onClick={() => dismissInstallResult()}>×</button>
         </div>
       ) : null}
 
