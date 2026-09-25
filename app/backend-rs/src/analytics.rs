@@ -266,6 +266,35 @@ fn date_string(moment: DateTime<Local>) -> String {
     moment.format("%Y-%m-%d").to_string()
 }
 
+/// 路径规范化：统一分隔符、小写盘符；Windows 直读的 WSL UNC
+/// （\\wsl.localhost\<distro>\home\u\X）映射为 WSL 内形态（/home/u/X），
+/// 盘符路径 D:\a\b 映射为 /mnt-d/a/b——同一物理目录无论从哪一侧访问，
+/// 都落在同一路径键上，跨源汇总不再产生重复项目条目。
+fn normalize_work_dir(work_dir: &str) -> String {
+    let mut text = work_dir.trim().replace('\\', "/");
+    if text.is_empty() {
+        return text;
+    }
+    let lower = text.to_lowercase();
+    // WSL UNC：//wsl.localhost/<distro>/home/<user>/... → /home/<user>/...
+    for prefix in ["//wsl.localhost/", "//wsl$/"] {
+        if lower.starts_with(prefix) {
+            let rest = &text[prefix.len()..];
+            if let Some(idx) = rest.find('/') {
+                return format!("/{}", &rest[idx + 1..]);
+            }
+        }
+    }
+    // 盘符路径：D:/a/b → /mnt-d/a/b（Windows 与 WSL /mnt/d 两侧统一）
+    let bytes = text.as_bytes();
+    if text.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
+        let drive = (bytes[0] as char).to_ascii_lowercase();
+        let rest = &text[2..];
+        return format!("/mnt/{}{}", drive, rest);
+    }
+    text
+}
+
 fn project_name(work_dir: &str) -> String {
     if work_dir.is_empty() || work_dir == "(unknown)" {
         return "(unknown)".into();
@@ -509,8 +538,9 @@ impl AnalyticsState {
                 *model_total.entry(record.model.clone()).or_default() += total;
                 model_agent.entry(record.model.clone()).or_insert(record_agent);
                 let project = project_name(&work_dir);
+                let normalized = normalize_work_dir(&work_dir);
                 *project_total
-                    .entry((project.clone(), work_dir.clone()))
+                    .entry((project.clone(), normalized.clone()))
                     .or_default() += total;
                 *daily_project
                     .entry(date.clone())
@@ -589,8 +619,20 @@ impl AnalyticsState {
             })
             .collect();
 
-        let mut project_rank: Vec<((String, String), i64)> =
-            project_total.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        // 排名按项目名合并：同一项目跨检出/跨路径的 token 汇总为一条
+        //（路径取贡献最大的那个），避免 Top projects 出现同名多行
+        let mut merged: HashMap<String, (String, i64)> = HashMap::new();
+        for ((name, path), total) in &project_total {
+            let entry = merged.entry(name.clone()).or_insert_with(|| (path.clone(), 0));
+            entry.1 += total;
+            if *total > entry.1 - total {
+                entry.0 = path.clone();
+            }
+        }
+        let mut project_rank: Vec<((String, String), i64)> = merged
+            .into_iter()
+            .map(|(name, (path, total))| ((name, path), total))
+            .collect();
         project_rank.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
 
         // 每日 top 项目（悬浮提示用）：date → [{name, total}] 前 5
