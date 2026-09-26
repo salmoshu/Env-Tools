@@ -590,27 +590,25 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
         <div className="kpi-card">
           <div className="kpi-label">{t("dash.kpiRate")}</div>
           {(() => {
-            const rate = kpi.rate || {};
-            const use15 = (rate.tokens_15m || 0) > 0;
-            const windowSec = use15 ? 900 : 3600;
-            const byProject = (use15 ? rate.by_project_15m : rate.by_project_60m) || [];
-            const fmtRate = (tokens) => {
-              const v = tokens / windowSec;
-              return v > 0 && v < 100 ? v.toFixed(1) : abbrev(Math.round(v));
-            };
-            if (!byProject.length) {
+            const latest = (kpi.rate || {}).latest_sessions || [];
+            if (!latest.length) {
               return <div className="kpi-sub">{t("state.noData")}</div>;
             }
+            const fmtRate = (v) => (v >= 100 ? abbrev(Math.round(v)) : v.toFixed(1));
             return (
               <>
-                <div className="kpi-sub">
-                  {use15 ? t("dash.rateWindow15") : t("dash.rateWindow60")}
-                </div>
+                <div className="kpi-sub">{t("dash.rateLatestHint")}</div>
                 <div className="rate-rows">
-                  {byProject.slice(0, 6).map((item) => (
-                    <div className="rate-row" key={item.name}>
-                      <span className="rate-name" title={item.name}>{item.name}</span>
-                      <span className="rate-val">{fmtRate(item.tokens)} tok/s</span>
+                  {latest.map((item) => (
+                    <div
+                      className="rate-row"
+                      key={item.project}
+                      title={`${item.project} · ${item.agent} · ${t("dash.rateEndedAgo").replace("{d}", fmtSpan(item.ended_ago_seconds || 0))}`}
+                    >
+                      <span className="rate-name">{item.project}</span>
+                      <span className="rate-val">
+                        {item.rate != null ? `${fmtRate(item.rate)} tok/s` : "—"}
+                      </span>
                     </div>
                   ))}
                 </div>

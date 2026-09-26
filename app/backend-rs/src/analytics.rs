@@ -617,6 +617,51 @@ impl AnalyticsState {
                 .collect()
         };
 
+        // 顶部速率卡数据：最近活跃的两个项目，各自取最新会话的速率
+        //（会话 token / 会话时长，与 Sessions 表 Rate 列同口径）。
+        // 业界面板惯例：会话级 TPS 用于体验视图，滑窗 TPM 用于配额视图。
+        let mut latest_by_project: HashMap<&String, &SessionRow> = HashMap::new();
+        for session in sessions.values() {
+            match latest_by_project.get(&session.project) {
+                Some(prev) if prev.last >= session.last => {}
+                _ => {
+                    latest_by_project.insert(&session.project, session);
+                }
+            }
+        }
+        let mut latest_sessions: Vec<serde_json::Value> = latest_by_project
+            .values()
+            .map(|s| {
+                let dominant = s
+                    .agent_totals
+                    .iter()
+                    .max_by_key(|(_, total)| **total)
+                    .map(|(name, _)| *name)
+                    .unwrap_or("kimi");
+                serde_json::json!({
+                    "project": s.project,
+                    "agent": dominant,
+                    "rate": if s.last > s.first {
+                        serde_json::json!(
+                            (s.total as f64 / (s.last - s.first) as f64 * 100.0).round() / 100.0
+                        )
+                    } else {
+                        serde_json::Value::Null
+                    },
+                    "total": s.total,
+                    "last": s.last,
+                    "ended_ago_seconds": (now_sec - s.last).max(0),
+                })
+            })
+            .collect();
+        latest_sessions.sort_by(|a, b| {
+            b["last"]
+                .as_i64()
+                .unwrap_or(0)
+                .cmp(&a["last"].as_i64().unwrap_or(0))
+        });
+        latest_sessions.truncate(2);
+
         let daily_out: Vec<serde_json::Value> = day_list
             .iter()
             .map(|day| {
@@ -807,6 +852,7 @@ impl AnalyticsState {
                     "tokens_60m": recent60_tokens,
                     "by_project_15m": rate15_rows,
                     "by_project_60m": rate60_rows,
+                    "latest_sessions": latest_sessions,
                 },
             },
         })
