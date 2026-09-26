@@ -773,8 +773,8 @@ impl AnalyticsState {
                     "tokens_15m": recent15_tokens,
                     "requests_15m": recent15_requests,
                     "tokens_60m": recent60_tokens,
-                    "per_minute_15m": (recent15_tokens as f64 / 15.0 * 100.0).round() / 100.0,
-                    "per_minute_60m": (recent60_tokens as f64 / 60.0 * 100.0).round() / 100.0,
+                    "per_second_15m": (recent15_tokens as f64 / 900.0 * 100.0).round() / 100.0,
+                    "per_second_60m": (recent60_tokens as f64 / 3600.0 * 100.0).round() / 100.0,
                 },
             },
         })

@@ -593,8 +593,10 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
             {(() => {
               const rate = kpi.rate || {};
               const use15 = (rate.tokens_15m || 0) > 0;
-              const perMin = use15 ? (rate.per_minute_15m || 0) : (rate.per_minute_60m || 0);
-              return `${abbrev(Math.round(perMin))}/min`;
+              const perSec = use15 ? (rate.per_second_15m || 0) : (rate.per_second_60m || 0);
+              // 小速率保留 1 位小数，大速率紧凑缩写
+              const text = perSec > 0 && perSec < 100 ? perSec.toFixed(1) : abbrev(Math.round(perSec));
+              return `${text} tok/s`;
             })()}
           </div>
           <div className="kpi-sub">
