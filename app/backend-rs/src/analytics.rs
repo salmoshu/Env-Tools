@@ -479,11 +479,14 @@ impl AnalyticsState {
         let mut agent_totals: HashMap<&'static str, i64> = HashMap::new();
         let mut agent_requests: HashMap<&'static str, i64> = HashMap::new();
         let mut sessions: HashMap<String, SessionRow> = HashMap::new();
-        // 近窗速率（token 速率统计）：最近 15 / 60 分钟的 token 总量
+        // 近窗速率（token 速率统计）：最近 15 / 60 分钟的 token 总量，
+        // 并按项目分桶（分项目速率，与 Top projects 同名口径一致）
         let now_sec = now.timestamp();
         let mut recent15_tokens = 0i64;
         let mut recent15_requests = 0i64;
         let mut recent60_tokens = 0i64;
+        let mut recent15_by_project: HashMap<String, i64> = HashMap::new();
+        let mut recent60_by_project: HashMap<String, i64> = HashMap::new();
         // 日期格式化按天缓存：同一日期只在首次出现时 format
         let mut date_cache: HashMap<i32, String> = HashMap::new();
 
@@ -509,9 +512,12 @@ impl AnalyticsState {
                 let total = record.input + record.output + record.cache_read + record.cache_creation;
                 if record.ts >= now_sec - 3600 {
                     recent60_tokens += total;
+                    let pname = project_name(&work_dir).to_string();
+                    *recent60_by_project.entry(pname.clone()).or_default() += total;
                     if record.ts >= now_sec - 900 {
                         recent15_tokens += total;
                         recent15_requests += 1;
+                        *recent15_by_project.entry(pname).or_default() += total;
                     }
                 }
                 agents_seen.insert(record_agent);
@@ -593,6 +599,23 @@ impl AnalyticsState {
                 *agent_totals.entry(name).or_default() += total;
             }
         }
+
+        // 分项目速率排行（降序，前 8）：serde_json::json! 宏内无法写泛型参数，
+        // 在宏外预计算为 Value 数组
+        let rate15_rows: Vec<serde_json::Value> = {
+            let mut rows: Vec<(String, i64)> = recent15_by_project.into_iter().collect();
+            rows.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+            rows.into_iter().take(8)
+                .map(|(name, tokens)| serde_json::json!({ "name": name, "tokens": tokens }))
+                .collect()
+        };
+        let rate60_rows: Vec<serde_json::Value> = {
+            let mut rows: Vec<(String, i64)> = recent60_by_project.into_iter().collect();
+            rows.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+            rows.into_iter().take(8)
+                .map(|(name, tokens)| serde_json::json!({ "name": name, "tokens": tokens }))
+                .collect()
+        };
 
         let daily_out: Vec<serde_json::Value> = day_list
             .iter()
@@ -775,6 +798,8 @@ impl AnalyticsState {
                     "tokens_60m": recent60_tokens,
                     "per_second_15m": (recent15_tokens as f64 / 900.0 * 100.0).round() / 100.0,
                     "per_second_60m": (recent60_tokens as f64 / 3600.0 * 100.0).round() / 100.0,
+                    "by_project_15m": rate15_rows,
+                    "by_project_60m": rate60_rows,
                 },
             },
         })

@@ -589,25 +589,41 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
         </div>
         <div className="kpi-card">
           <div className="kpi-label">{t("dash.kpiRate")}</div>
-          <div className="kpi-value">
-            {(() => {
-              const rate = kpi.rate || {};
-              const use15 = (rate.tokens_15m || 0) > 0;
-              const perSec = use15 ? (rate.per_second_15m || 0) : (rate.per_second_60m || 0);
-              // 小速率保留 1 位小数，大速率紧凑缩写
-              const text = perSec > 0 && perSec < 100 ? perSec.toFixed(1) : abbrev(Math.round(perSec));
-              return `${text} tok/s`;
-            })()}
-          </div>
-          <div className="kpi-sub">
-            {(() => {
-              const rate = kpi.rate || {};
-              const use15 = (rate.tokens_15m || 0) > 0;
-              return use15
-                ? `${t("dash.rateWindow15")} · ${fmt(rate.requests_15m || 0)} req`
-                : (rate.tokens_60m || 0) > 0 ? t("dash.rateWindow60") : t("state.noData");
-            })()}
-          </div>
+          {(() => {
+            const rate = kpi.rate || {};
+            const use15 = (rate.tokens_15m || 0) > 0;
+            const perSec = use15 ? (rate.per_second_15m || 0) : (rate.per_second_60m || 0);
+            const windowSec = use15 ? 900 : 3600;
+            const byProject = (use15 ? rate.by_project_15m : rate.by_project_60m) || [];
+            const fmtRate = (tokens) => {
+              const v = tokens / windowSec;
+              return v > 0 && v < 100 ? v.toFixed(1) : abbrev(Math.round(v));
+            };
+            return (
+              <>
+                <div className="kpi-value">
+                  {perSec > 0 ? `${perSec > 0 && perSec < 100 ? perSec.toFixed(1) : abbrev(Math.round(perSec))} tok/s` : "—"}
+                </div>
+                <div className="kpi-sub">
+                  {perSec > 0
+                    ? (use15
+                      ? `${t("dash.rateWindow15")} · ${fmt(rate.requests_15m || 0)} req`
+                      : t("dash.rateWindow60"))
+                    : t("state.noData")}
+                </div>
+                {byProject.length >= 2 && (
+                  <div className="rate-rows">
+                    {byProject.slice(0, 5).map((item) => (
+                      <div className="rate-row" key={item.name}>
+                        <span className="rate-name" title={item.name}>{item.name}</span>
+                        <span className="rate-val">{fmtRate(item.tokens)} tok/s</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            );
+          })()}
         </div>
       </div>
 

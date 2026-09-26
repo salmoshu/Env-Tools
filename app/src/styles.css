@@ -825,3 +825,16 @@ td b { font-weight: 600; }
   cursor: pointer; padding: 0 2px; line-height: 1; opacity: 0.7;
 }
 .toast-close:hover { opacity: 1; }
+
+/* --- 速率卡内的分项目排行 --- */
+.rate-rows { margin-top: 7px; display: grid; gap: 3px; }
+.rate-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; font-size: 10px; color: var(--dim);
+}
+.rate-row .rate-name {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.rate-row .rate-val {
+  font-variant-numeric: tabular-nums; color: var(--accent); flex-shrink: 0;
+}
