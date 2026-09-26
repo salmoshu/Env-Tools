@@ -702,6 +702,9 @@ export default function SettingsPage({ lastPayload }) {
           <div className={panel("language")}>
             <LanguagePanel />
           </div>
+          <div className={panel("weekstart")}>
+            <WeekStartPanel settings={settings} />
+          </div>
           <div className={panel("membership")}>
             <MembershipPanel
               settings={settings}

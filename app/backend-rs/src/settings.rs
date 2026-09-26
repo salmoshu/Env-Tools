@@ -180,6 +180,12 @@ pub fn settings_payload() -> Value {
         wsl_distros.first().cloned().unwrap_or_default()
     };
     let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default();
+    // 周起点（趋势按周分桶用）：monday（默认）| sunday
+    let week_start = settings
+        .get("week_start")
+        .and_then(|v| v.as_str())
+        .filter(|v| *v == "monday" || *v == "sunday")
+        .unwrap_or("monday");
     serde_json::json!({
         "ok": true,
         "version": crate::APP_VERSION,
@@ -188,6 +194,7 @@ pub fn settings_payload() -> Value {
         "wsl_distros": wsl_distros,
         "wsl_distro": wsl_distro,
         "membership": membership_settings(),
+        "week_start": week_start,
         "script": exe,
     })
 }
@@ -197,7 +204,7 @@ pub fn update_settings(payload: &Value) -> Result<Value, String> {
     if !payload.is_object() {
         return Err("Settings must be a JSON object".into());
     }
-    let allowed = ["environment", "wsl_distro", "membership"];
+    let allowed = ["environment", "wsl_distro", "membership", "week_start"];
     let mut settings = load_settings();
     let obj = settings.as_object_mut().unwrap();
     for key in payload.as_object().unwrap().keys() {
@@ -208,6 +215,13 @@ pub fn update_settings(payload: &Value) -> Result<Value, String> {
     let mut membership_result: Option<Value> = None;
     if let Some(membership) = payload.get("membership") {
         membership_result = Some(update_membership_config(membership)?);
+    }
+    if let Some(value) = payload.get("week_start") {
+        let value = value.as_str().unwrap_or("");
+        if value != "monday" && value != "sunday" {
+            return Err(format!("Invalid week_start '{value}' (use monday or sunday)"));
+        }
+        obj.insert("week_start".into(), Value::String(value.to_string()));
     }
     let available = available_environments();
     let wsl_distros = available_wsl_distros();
