@@ -171,6 +171,17 @@ fn kimi_homes(aggregate: bool, wsl_distro: Option<&str>) -> Vec<PathBuf> {
     homes
 }
 
+fn zcode_homes(aggregate: bool, wsl_distro: Option<&str>) -> Vec<PathBuf> {
+    if let Some(distro) = wsl_distro {
+        return settings::wsl_distro_homes(distro);
+    }
+    let mut homes = vec![settings::local_home()];
+    if aggregate {
+        homes.extend(settings::wsl_homes());
+    }
+    homes
+}
+
 fn codex_homes(aggregate: bool, wsl_distro: Option<&str>) -> Vec<PathBuf> {
     if let Some(distro) = wsl_distro {
         return settings::wsl_distro_homes(distro)
@@ -247,7 +258,12 @@ async fn analytics(
                 let engine = engines.entry(scope.clone()).or_default();
                 let scan_started = std::time::Instant::now();
                 let distro = wsl_distro.as_deref();
-                let dirty = engine.scan(&kimi_homes(aggregate, distro), &codex_homes(aggregate, distro), now_sec);
+                let dirty = engine.scan(
+                    &kimi_homes(aggregate, distro),
+                    &codex_homes(aggregate, distro),
+                    &zcode_homes(aggregate, distro),
+                    now_sec,
+                );
                 let payload = engine.aggregate(days, &agent, now);
                 drop(engines);
                 let engine_note = format!(

@@ -100,11 +100,11 @@ fn scan_is_incremental_and_survives_truncation_and_deletion() {
     write_file(&wire, &[kimi_line(1_789_000_000, "m1", 100, 50, 200, 10)]);
 
     let mut state = AnalyticsState::default();
-    assert!(state.scan(&[home.join(".kimi-code")], &[], 1_789_100_000));
+    assert!(state.scan(&[home.join(".kimi-code")], &[], &[], 1_789_100_000));
     assert_eq!(state.files.values().next().unwrap().records.len(), 1);
 
     // 无新增：不产生重复记录
-    assert!(!state.scan(&[home.join(".kimi-code")], &[], 1_789_100_000));
+    assert!(!state.scan(&[home.join(".kimi-code")], &[], &[], 1_789_100_000));
     assert_eq!(state.files.values().next().unwrap().records.len(), 1);
 
     // 追加后只读新增部分
@@ -112,19 +112,19 @@ fn scan_is_incremental_and_survives_truncation_and_deletion() {
     content.push_str(&kimi_line(1_789_001_000, "m1", 1, 0, 0, 0));
     content.push('\n');
     std::fs::write(&wire, &content).unwrap();
-    assert!(state.scan(&[home.join(".kimi-code")], &[], 1_789_100_000));
+    assert!(state.scan(&[home.join(".kimi-code")], &[], &[], 1_789_100_000));
     assert_eq!(state.files.values().next().unwrap().records.len(), 2);
 
     // 截断重写：旧记录作废
     std::fs::write(&wire, kimi_line(1_789_002_000, "m1", 5, 0, 0, 0) + "\n").unwrap();
-    assert!(state.scan(&[home.join(".kimi-code")], &[], 1_789_100_000));
+    assert!(state.scan(&[home.join(".kimi-code")], &[], &[], 1_789_100_000));
     let records = &state.files.values().next().unwrap().records;
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].ts, 1_789_002_000);
 
     // 文件删除：记录保留（历史不缩水）
     std::fs::remove_file(&wire).unwrap();
-    state.scan(&[home.join(".kimi-code")], &[], 1_789_100_000);
+    state.scan(&[home.join(".kimi-code")], &[], &[], 1_789_100_000);
     assert_eq!(state.files.values().next().unwrap().offset, -1);
     assert_eq!(state.files.values().next().unwrap().records.len(), 1);
 }
@@ -174,7 +174,7 @@ fn aggregate_matches_python_contract() {
     .unwrap();
 
     let mut state = AnalyticsState::default();
-    state.scan(&[home.join(".kimi-code")], &[], 1_789_100_000);
+    state.scan(&[home.join(".kimi-code")], &[], &[], 1_789_100_000);
 
     let now = chrono::Local
         .with_ymd_and_hms(2026, 9, 16, 12, 0, 0)

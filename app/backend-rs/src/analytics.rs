@@ -20,6 +20,8 @@ pub const AGENTS: [&str; 5] = ["all", "kimi", "codex", "glm", "deepseek"];
 pub enum Source {
     Kimi,
     Codex,
+    /// ZCode（~/.zcode/cli/db/db.sqlite 的 model_usage，模型经 BigModel/GLM）
+    ZCode,
 }
 
 #[derive(Clone)]
@@ -35,7 +37,8 @@ pub struct TurnRecord {
 
 #[derive(Clone)]
 pub struct FileState {
-    /// 已解析到的字节位置；-1 表示文件已消失（记录保留，避免历史缩水）
+    /// 已解析到的字节位置；-1 表示文件已消失（记录保留，避免历史缩水）。
+    /// zcode 数据源（SQLite）下语义为 model_usage 的 rowid 水位
     pub offset: i64,
     pub records: Vec<TurnRecord>,
     pub source: Source,
@@ -266,6 +269,102 @@ fn date_string(moment: DateTime<Local>) -> String {
     moment.format("%Y-%m-%d").to_string()
 }
 
+/// 扫描 ZCode 用量库：把 db.sqlite（含 -wal/-shm）复制到临时目录后只读打开，
+/// 返回 (新 rowid 水位, session_id → 项目目录, 新增记录)。rowid 单调递增，
+/// 作为增量水位比 TEXT 主键 id 可靠。任何失败都让水位保持不变，下次重扫。
+fn scan_zcode_db(
+    db_path: &Path,
+    watermark: i64,
+) -> Result<(i64, Vec<(String, String)>, Vec<TurnRecord>), String> {
+    use rusqlite::OpenFlags;
+
+    let temp_dir = std::env::temp_dir().join("env-tools-zcode-scan");
+    std::fs::create_dir_all(&temp_dir).map_err(|err| err.to_string())?;
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in db_path.to_string_lossy().as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    let work = temp_dir.join(format!("db-{hash:016x}"));
+    std::fs::create_dir_all(&work).map_err(|err| err.to_string())?;
+    let copy_path = work.join("db.sqlite");
+    std::fs::copy(db_path, &copy_path).map_err(|err| err.to_string())?;
+    for extra in ["-wal", "-shm"] {
+        let from = PathBuf::from(format!("{}{}", db_path.display(), extra));
+        if from.is_file() {
+            let _ = std::fs::copy(&from, work.join(format!("db.sqlite{extra}")));
+        }
+    }
+    let conn = rusqlite::Connection::open_with_flags(
+        &copy_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .map_err(|err| err.to_string())?;
+
+    let mut cwds: Vec<(String, String)> = Vec::new();
+    {
+        let mut stmt = conn
+            .prepare("SELECT id, directory FROM session WHERE directory IS NOT NULL AND directory != ''")
+            .map_err(|err| err.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                ))
+            })
+            .map_err(|err| err.to_string())?;
+        for row in rows {
+            if let Ok((sid, dir)) = row {
+                cwds.push((sid, dir));
+            }
+        }
+    }
+
+    let mut records: Vec<TurnRecord> = Vec::new();
+    let mut new_watermark = watermark;
+    {
+        let mut stmt = conn
+            .prepare(
+                "SELECT rowid, session_id, model_id, completed_at, \
+                 input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens \
+                 FROM model_usage WHERE rowid > ?1 AND completed_at IS NOT NULL ORDER BY rowid",
+            )
+            .map_err(|err| err.to_string())?;
+        let rows = stmt
+            .query_map([watermark], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, i64>(7)?,
+                ))
+            })
+            .map_err(|err| err.to_string())?;
+        for row in rows {
+            let (rowid, sid, model, completed_ms, input, output, cache_read, cache_creation) =
+                row.map_err(|err| err.to_string())?;
+            records.push(TurnRecord {
+                ts: completed_ms,
+                model,
+                input: input.max(0),
+                output: output.max(0),
+                cache_read: cache_read.max(0),
+                cache_creation: cache_creation.max(0),
+                sid,
+            });
+            if rowid > new_watermark {
+                new_watermark = rowid;
+            }
+        }
+    }
+    Ok((new_watermark, cwds, records))
+}
+
 /// 路径规范化：统一分隔符、小写盘符；Windows 直读的 WSL UNC
 /// （\\wsl.localhost\<distro>\home\u\X）映射为 WSL 内形态（/home/u/X），
 /// 盘符路径 D:\a\b 映射为 /mnt-d/a/b——同一物理目录无论从哪一侧访问，
@@ -316,6 +415,9 @@ pub fn agent_of(source: Source, model: &str) -> &'static str {
         "deepseek"
     } else if source == Source::Codex {
         "codex"
+    } else if source == Source::ZCode {
+        // ZCode 走 BigModel/GLM Coding Plan，非 GLM 命名的模型也归 glm
+        "glm"
     } else {
         "kimi"
     }
@@ -353,7 +455,13 @@ impl AnalyticsState {
     /// 文件截断重写时丢弃该文件旧记录从头统计；文件消失时保留历史记录
     /// （offset 置 -1），同路径再次出现时替换，避免重复统计。
     /// kimi/codex 各自接受多个家目录（本机 + WSL UNC），会话按绝对路径天然合并。
-    pub fn scan(&mut self, kimi_homes: &[PathBuf], codex_homes: &[PathBuf], now: i64) -> bool {
+    pub fn scan(
+        &mut self,
+        kimi_homes: &[PathBuf],
+        codex_homes: &[PathBuf],
+        zcode_homes: &[PathBuf],
+        now: i64,
+    ) -> bool {
         let cutoff = now - RECORD_RETENTION_DAYS * 86400;
         let mut dirty = !self.scanned;
         self.scanned = true;
@@ -453,6 +561,61 @@ impl AnalyticsState {
                 }
             }
         }
+
+        // --- ZCode 数据源：~/.zcode/cli/db/db.sqlite（SQLite，复制后只读） ---
+        // 增量水位 = model_usage 的 rowid；session 表提供 sid → 项目目录。
+        for home in zcode_homes {
+            let db_path = home.join(".zcode").join("cli").join("db").join("db.sqlite");
+            if !db_path.is_file() {
+                continue;
+            }
+            let key = db_path.to_string_lossy().to_string();
+            if !self.files.contains_key(&key) {
+                self.files.insert(
+                    key.clone(),
+                    FileState {
+                        offset: 0,
+                        records: Vec::new(),
+                        source: Source::ZCode,
+                        cwds: HashMap::new(),
+                    },
+                );
+                dirty = true;
+            }
+            let watermark = self.files.get(&key).unwrap().offset;
+            match scan_zcode_db(&db_path, watermark) {
+                Ok((new_watermark, cwds, records)) => {
+                    let state = self.files.get_mut(&key).unwrap();
+                    if state.offset == 0 && !records.is_empty() {
+                        dirty = true;
+                    }
+                    for (sid, dir) in cwds {
+                        state.cwds.insert(sid, dir);
+                    }
+                    if !records.is_empty() {
+                        state.records.extend(records);
+                        dirty = true;
+                    }
+                    if new_watermark > state.offset {
+                        state.offset = new_watermark;
+                    }
+                    let before = state.records.len();
+                    state.records.retain_mut(|record| match normalize_ts(record.ts) {
+                        Some(ts) if ts >= cutoff => {
+                            record.ts = ts;
+                            true
+                        }
+                        _ => false,
+                    });
+                    if state.records.len() != before {
+                        dirty = true;
+                    }
+                }
+                Err(err) => {
+                    eprintln!("[analytics] zcode db scan failed ({}): {err}", db_path.display());
+                }
+            }
+        }
         dirty
     }
 
@@ -496,7 +659,7 @@ impl AnalyticsState {
                 if agent != "all" && record_agent != agent {
                     continue;
                 }
-                let work_dir = if state.source == Source::Codex {
+                let work_dir = if matches!(state.source, Source::Codex | Source::ZCode) {
                     state.cwds.get(&record.sid).cloned().unwrap_or_else(|| "(unknown)".into())
                 } else {
                     self.session_index.get(&record.sid).cloned().unwrap_or_else(|| "(unknown)".into())

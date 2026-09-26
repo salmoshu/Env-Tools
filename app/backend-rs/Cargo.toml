@@ -10,6 +10,7 @@ chrono = "0.4"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "time", "io-util"] }
 serde_json = "1"
 ureq = { version = "2", default-features = false, features = ["tls", "gzip", "json"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
 # apply-update 子命令解压升级包用（替代运行时 powershell Expand-Archive / tar 调用）；
 # default-features 精简：zip 仅 deflate，flate2 用纯 Rust 后端，tar 无扩展属性
 zip = { version = "2", default-features = false, features = ["deflate"] }
