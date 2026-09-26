@@ -460,7 +460,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
     .sort((a, b) => ((a[sessionsSort.key] || 0) - (b[sessionsSort.key] || 0)) * sessionsSort.dir)
     .slice(0, 200);
   const header = (key, label, left = false) => {
-    const sortable = ["first", "last", "total"].includes(key);
+    const sortable = ["first", "last", "total", "rate"].includes(key);
     const arrow = sessionsSort.key === key ? (sessionsSort.dir < 0 ? " ▼" : " ▲") : "";
     return (
       <th
@@ -592,35 +592,28 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
           {(() => {
             const rate = kpi.rate || {};
             const use15 = (rate.tokens_15m || 0) > 0;
-            const perSec = use15 ? (rate.per_second_15m || 0) : (rate.per_second_60m || 0);
             const windowSec = use15 ? 900 : 3600;
             const byProject = (use15 ? rate.by_project_15m : rate.by_project_60m) || [];
             const fmtRate = (tokens) => {
               const v = tokens / windowSec;
               return v > 0 && v < 100 ? v.toFixed(1) : abbrev(Math.round(v));
             };
+            if (!byProject.length) {
+              return <div className="kpi-sub">{t("state.noData")}</div>;
+            }
             return (
               <>
-                <div className="kpi-value">
-                  {perSec > 0 ? `${perSec > 0 && perSec < 100 ? perSec.toFixed(1) : abbrev(Math.round(perSec))} tok/s` : "—"}
-                </div>
                 <div className="kpi-sub">
-                  {perSec > 0
-                    ? (use15
-                      ? `${t("dash.rateWindow15")} · ${fmt(rate.requests_15m || 0)} req`
-                      : t("dash.rateWindow60"))
-                    : t("state.noData")}
+                  {use15 ? t("dash.rateWindow15") : t("dash.rateWindow60")}
                 </div>
-                {byProject.length >= 2 && (
-                  <div className="rate-rows">
-                    {byProject.slice(0, 5).map((item) => (
-                      <div className="rate-row" key={item.name}>
-                        <span className="rate-name" title={item.name}>{item.name}</span>
-                        <span className="rate-val">{fmtRate(item.tokens)} tok/s</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
+                <div className="rate-rows">
+                  {byProject.slice(0, 6).map((item) => (
+                    <div className="rate-row" key={item.name}>
+                      <span className="rate-name" title={item.name}>{item.name}</span>
+                      <span className="rate-val">{fmtRate(item.tokens)} tok/s</span>
+                    </div>
+                  ))}
+                </div>
               </>
             );
           })()}
@@ -806,6 +799,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                 {header("first", "Start", true)}
                 {header("last", "End", true)}
                 {header("total", "Total")}
+                {header("rate", "Rate")}
               </tr>
             </thead>
             <tbody>
@@ -828,6 +822,11 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                   <td className="l mono">{fmtTimestamp(session.first)}</td>
                   <td className="l mono">{fmtTimestamp(session.last)}</td>
                   <td><b>{fmt(session.total)}</b></td>
+                  <td className="mono">
+                    {session.rate != null
+                      ? `${session.rate >= 100 ? abbrev(Math.round(session.rate)) : session.rate.toFixed(1)} tok/s`
+                      : "—"}
+                  </td>
                 </tr>
               ))}
             </tbody>

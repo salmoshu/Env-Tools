@@ -714,6 +714,15 @@ impl AnalyticsState {
                     "first": session.first,
                     "last": session.last,
                     "total": session.total,
+                    // 会话速率：token / 会话时长（秒）；单条记录会话时长为 0，
+                    // 无法折算速率，返回 null 由前端显示 "—"
+                    "rate": if session.last > session.first {
+                        serde_json::json!(
+                            (session.total as f64 / (session.last - session.first) as f64 * 100.0).round() / 100.0
+                        )
+                    } else {
+                        serde_json::Value::Null
+                    },
                 })
             })
             .collect();
@@ -796,8 +805,6 @@ impl AnalyticsState {
                     "tokens_15m": recent15_tokens,
                     "requests_15m": recent15_requests,
                     "tokens_60m": recent60_tokens,
-                    "per_second_15m": (recent15_tokens as f64 / 900.0 * 100.0).round() / 100.0,
-                    "per_second_60m": (recent60_tokens as f64 / 3600.0 * 100.0).round() / 100.0,
                     "by_project_15m": rate15_rows,
                     "by_project_60m": rate60_rows,
                 },
