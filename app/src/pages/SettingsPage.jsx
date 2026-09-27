@@ -596,6 +596,84 @@ function UpdateSection() {
   );
 }
 
+function WeekStartPanel({ settings }) {
+  const [value, setValue] = useState("monday");
+  const [note, setNote] = useState({ cls: "settings-note", text: "" });
+  useEffect(() => {
+    setValue((settings && settings.week_start) || "monday");
+  }, [settings]);
+  const save = async (next) => {
+    setValue(next);
+    setNote({ cls: "settings-note", text: t("state.saving") });
+    try {
+      const result = await window.api.setSettings({ week_start: next });
+      if (!result || !result.ok) throw new Error((result && result.error) || "unknown error");
+      setNote({ cls: "settings-note ok", text: t("state.saved") });
+    } catch (err) {
+      setNote({ cls: "settings-note error", text: `${t("state.saveFailed")}: ${err.message || err}` });
+    }
+  };
+  const options = [
+    ["monday", t("settings.weekMonday")],
+    ["sunday", t("settings.weekSunday")],
+  ];
+  return (
+    <div className="panel" id="panel-weekstart">
+      <div className="panel-title">{t("settings.week")}</div>
+      <div className="panel-hint">{t("settings.weekHint")}</div>
+      {options.map(([key, label]) => (
+        <div
+          key={key}
+          className={`env-option${value === key ? " selected" : ""}`}
+          onClick={() => value !== key && save(key)}
+        >
+          <span className="radio" />{label}
+        </div>
+      ))}
+      <div className={note.cls}>{note.text}</div>
+    </div>
+  );
+}
+
+function SpeedModePanel({ settings }) {
+  const [value, setValue] = useState("gen");
+  const [note, setNote] = useState({ cls: "settings-note", text: "" });
+  useEffect(() => {
+    setValue((settings && settings.speed_mode) || "gen");
+  }, [settings]);
+  const save = async (next) => {
+    setValue(next);
+    setNote({ cls: "settings-note", text: t("state.saving") });
+    try {
+      const result = await window.api.setSettings({ speed_mode: next });
+      if (!result || !result.ok) throw new Error((result && result.error) || "unknown error");
+      setNote({ cls: "settings-note ok", text: t("state.saved") });
+    } catch (err) {
+      setNote({ cls: "settings-note error", text: `${t("state.saveFailed")}: ${err.message || err}` });
+    }
+  };
+  const options = [
+    ["gen", t("settings.speedGen")],
+    ["throughput", t("settings.speedThroughput")],
+  ];
+  return (
+    <div className="panel" id="panel-speedmode">
+      <div className="panel-title">{t("settings.speed")}</div>
+      <div className="panel-hint">{t("settings.speedHint")}</div>
+      {options.map(([key, label]) => (
+        <div
+          key={key}
+          className={`env-option${value === key ? " selected" : ""}`}
+          onClick={() => value !== key && save(key)}
+        >
+          <span className="radio" />{label}
+        </div>
+      ))}
+      <div className={note.cls}>{note.text}</div>
+    </div>
+  );
+}
+
 function AboutPanel({ settings, backend }) {
   return (
     <div className="panel" id="panel-about">
@@ -619,6 +697,8 @@ const PANEL_GROUPS = [
       ["theme", "settings.theme"],
       ["language", "settings.language"],
       ["display", "settings.display"],
+      ["weekstart", "settings.week"],
+      ["speedmode", "settings.speed"],
     ],
   },
   {
@@ -704,6 +784,9 @@ export default function SettingsPage({ lastPayload }) {
           </div>
           <div className={panel("weekstart")}>
             <WeekStartPanel settings={settings} />
+          </div>
+          <div className={panel("speedmode")}>
+            <SpeedModePanel settings={settings} />
           </div>
           <div className={panel("membership")}>
             <MembershipPanel

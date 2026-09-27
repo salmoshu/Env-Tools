@@ -186,6 +186,12 @@ pub fn settings_payload() -> Value {
         .and_then(|v| v.as_str())
         .filter(|v| *v == "monday" || *v == "sunday")
         .unwrap_or("monday");
+    // 速度口径：gen = 纯生成速度 TPOT（默认）| throughput = 输出 ÷ 会话总时长
+    let speed_mode = settings
+        .get("speed_mode")
+        .and_then(|v| v.as_str())
+        .filter(|v| *v == "gen" || *v == "throughput")
+        .unwrap_or("gen");
     serde_json::json!({
         "ok": true,
         "version": crate::APP_VERSION,
@@ -195,6 +201,7 @@ pub fn settings_payload() -> Value {
         "wsl_distro": wsl_distro,
         "membership": membership_settings(),
         "week_start": week_start,
+        "speed_mode": speed_mode,
         "script": exe,
     })
 }
@@ -204,7 +211,7 @@ pub fn update_settings(payload: &Value) -> Result<Value, String> {
     if !payload.is_object() {
         return Err("Settings must be a JSON object".into());
     }
-    let allowed = ["environment", "wsl_distro", "membership", "week_start"];
+    let allowed = ["environment", "wsl_distro", "membership", "week_start", "speed_mode"];
     let mut settings = load_settings();
     let obj = settings.as_object_mut().unwrap();
     for key in payload.as_object().unwrap().keys() {
@@ -215,6 +222,13 @@ pub fn update_settings(payload: &Value) -> Result<Value, String> {
     let mut membership_result: Option<Value> = None;
     if let Some(membership) = payload.get("membership") {
         membership_result = Some(update_membership_config(membership)?);
+    }
+    if let Some(value) = payload.get("speed_mode") {
+        let value = value.as_str().unwrap_or("");
+        if value != "gen" && value != "throughput" {
+            return Err(format!("Invalid speed_mode '{value}' (use gen or throughput)"));
+        }
+        obj.insert("speed_mode".into(), Value::String(value.to_string()));
     }
     if let Some(value) = payload.get("week_start") {
         let value = value.as_str().unwrap_or("");

@@ -248,7 +248,19 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
     try { return localStorage.getItem(TREND_KEY) || "day"; } catch { return "day"; }
   });
   const [trendAnalytics, setTrendAnalytics] = useState(null);
+  // 周起点与速度口径（设置页）：趋势分桶边界与 Speed 列/速率卡的计算方式
+  const [weekStart, setWeekStart] = useState("monday");
+  const [speedMode, setSpeedMode] = useState("gen");
   const [upgradeProvider, setUpgradeProvider] = useState(null);
+
+  useEffect(() => {
+    window.api.getSettings().then((result) => {
+      if (result && result.ok) {
+        if (result.week_start) setWeekStart(result.week_start);
+        if (result.speed_mode) setSpeedMode(result.speed_mode);
+      }
+    }).catch(() => {});
+  }, []);
   // 升级状态来自全局 installState：切页后"升级中…"徽章与结果提示都还在
   const install = useInstallState();
   const upgrading = install.running;
@@ -401,7 +413,9 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
     for (let i = 0; i < list.length; i++) {
       const day = new Date(`${list[i]}T00:00:00`);
       acc += rows[i]?.total || 0;
-      const boundary = trendGran === "week" ? day.getDay() === 1 : day.getDate() === 1;
+      const boundary = trendGran === "week"
+        ? day.getDay() === (weekStart === "sunday" ? 0 : 1)
+        : day.getDate() === 1;
       if (boundary && i > 0 && i > bucketStartIdx) {
         flush(bucketStartIdx, i - 1);
         bucketStartIdx = i;
@@ -409,7 +423,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
       if (i === list.length - 1) flush(bucketStartIdx, i);
     }
     return { labels, values, tips };
-  }, [trendSource, trendGran]);
+  }, [trendSource, trendGran, weekStart]);
 
   const dailyChart = daily && (
     <StackedBars
@@ -608,8 +622,12 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                       <span className="rate-name">{item.project}</span>
                       <span className="rate-val">
                         {(() => {
-                          const v = item.gen_rate != null ? item.gen_rate : item.rate;
-                          return v != null ? `${fmtRate(v)} tok/s${item.gen_rate != null ? "*" : ""}` : "—";
+                          const useGen = speedMode === "gen";
+                          const v = useGen
+                            ? (item.gen_rate != null ? item.gen_rate : item.rate)
+                            : item.rate;
+                          const marked = useGen && item.gen_rate != null;
+                          return v != null ? `${fmtRate(v)} tok/s${marked ? "*" : ""}` : "—";
                         })()}
                       </span>
                     </div>
@@ -785,7 +803,9 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
       <section className="card">
         <h2>{t("dash.sessions")}</h2>
         <div className="table-hint">{t("dash.sessionsHint")}</div>
-        <div className="table-hint" style={{ opacity: 0.7 }}>{t("dash.speedHint")}</div>
+        <div className="table-hint" style={{ opacity: 0.7 }}>
+          {speedMode === "gen" ? t("dash.speedHint") : t("dash.speedHintThroughput")}
+        </div>
         <div className="table-wrap">
           <table>
             <thead>
@@ -826,9 +846,13 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                   <td><b>{fmt(session.total)}</b></td>
                   <td className="mono">
                     {(() => {
-                      const v = session.gen_rate != null ? session.gen_rate : session.rate;
+                      const useGen = speedMode === "gen";
+                      const v = useGen
+                        ? (session.gen_rate != null ? session.gen_rate : session.rate)
+                        : session.rate;
                       if (v == null) return "—";
-                      return `${v >= 100 ? abbrev(Math.round(v)) : v.toFixed(1)} tok/s${session.gen_rate != null ? "*" : ""}`;
+                      const marked = useGen && session.gen_rate != null;
+                      return `${v >= 100 ? abbrev(Math.round(v)) : v.toFixed(1)} tok/s${marked ? "*" : ""}`;
                     })()}
                   </td>
                 </tr>
