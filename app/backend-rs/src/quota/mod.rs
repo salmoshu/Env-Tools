@@ -1,4 +1,4 @@
-//! 四家配额采集引擎（v0.6.1 起原生实现，口径与 usage_monitor.py 一致）。
+//! 四家配额采集引擎（v0.6.1 起原生实现，口径与原 Python 实现一致）。
 //!
 //! - Kimi / Codex：本地 OAuth 凭证发现 + 到期刷新 + 用量接口（kimi.rs / codex.rs）
 //! - DeepSeek / GLM：API key 直连（deepseek.rs / glm.rs）

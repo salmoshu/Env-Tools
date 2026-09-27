@@ -1,5 +1,5 @@
 //! GLM（智谱）：API key 直连配额 + 订阅查询
-//!（口径同 usage_monitor.py normalize_glm / normalize_glm_subscription）。
+//!（口径同原 Python 实现 normalize_glm / normalize_glm_subscription）。
 
 use chrono::{DateTime, Local, NaiveDateTime, TimeZone};
 use serde_json::Value;

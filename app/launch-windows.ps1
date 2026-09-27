@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$SourceDir = "",
     [string]$Distro = "",
     [string]$MonitorScript = "",
@@ -139,7 +139,7 @@ try {
         $Distro = $sourceInfo.Distro
     }
     if (-not $MonitorScript) {
-        $MonitorScript = "$($sourceInfo.LinuxPath -replace '/app$', '')/linux/ai-tools/usage-monitor/usage_monitor.py"
+        $MonitorScript = "$($sourceInfo.LinuxPath -replace '/app$', '')/app/backend-rs/Cargo.toml"
     }
 
     $installedDistros = @(wsl.exe --list --quiet 2>$null) -replace "`0", "" | ForEach-Object { $_.Trim() } | Where-Object { $_ }
@@ -245,7 +245,7 @@ try {
 
     $env:AI_USAGE_MONITOR_BACKEND = "wsl"
     $env:AI_USAGE_MONITOR_WSL_DISTRO = $Distro
-    $env:AI_USAGE_MONITOR_WSL_SCRIPT = $MonitorScript
+    $env:ENV_TOOLS_WSL_REPO_MARK = $MonitorScript
     Write-LauncherLog "Launching native Electron (distro=$Distro, script=$MonitorScript)"
     Start-Process -FilePath $electronPath -ArgumentList @($appDir) -WorkingDirectory $appDir
 } catch {

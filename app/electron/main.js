@@ -16,7 +16,7 @@ const fs = require("fs");
 
 const REPO_ROOT = path.join(__dirname, "..", "..");
 // v0.7.0 起数据引擎全部原生（env-tools-api），python 引擎不再是依赖；
-// WSL 启动器仍以 usage_monitor.py 路径标记 WSL 内的仓库位置。
+// WSL 启动器以仓库锚点文件路径标记 WSL 内的仓库位置。
 const BACKEND_BINARY = path.join(
   REPO_ROOT, "app", "backend-rs", "target", "release", "env-tools-api");
 const BACKEND_PORT_DEFAULT = 8747;
@@ -34,7 +34,9 @@ const MIN_CONTENT_HEIGHT = 140;
 const IS_WSL = Boolean(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP);
 const WSL_BACKEND = process.env.AI_USAGE_MONITOR_BACKEND === "wsl";
 let WSL_DISTRO = process.env.AI_USAGE_MONITOR_WSL_DISTRO || "";
-const WSL_MONITOR_SCRIPT = process.env.AI_USAGE_MONITOR_WSL_SCRIPT || "";
+// WSL 仓库锚点路径（现为 <repo>/app/backend-rs/Cargo.toml）；
+// 兼容旧启动器传入的 usage_monitor.py 路径与旧环境变量名。
+const WSL_REPO_MARK = process.env.ENV_TOOLS_WSL_REPO_MARK || process.env.AI_USAGE_MONITOR_WSL_SCRIPT || "";
 // 开发模式（pnpm dev）：vite dev server 地址由 scripts/dev.mjs 注入，
 // 窗口改走热更新；生产/常规启动仍加载 dist/ 静态产物
 const DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL || "";
@@ -62,12 +64,13 @@ let programmaticResize = false;
 
 // --- Rust 后端（env-tools-api） ---------------------------------------------
 
-// WSL_MONITOR_SCRIPT 形如 <repo>/linux/ai-tools/usage-monitor/usage_monitor.py，
+// WSL_REPO_MARK 形如 <repo>/app/backend-rs/Cargo.toml（或旧版 usage_monitor.py 路径），
 // 由它反推 WSL 内的仓库根（后端二进制与安装脚本都按仓库相对路径定位）
 function wslRepoRoot() {
-  const marker = "/linux/ai-tools/usage-monitor/usage_monitor.py";
-  if (!WSL_MONITOR_SCRIPT.includes(marker)) return "";
-  return WSL_MONITOR_SCRIPT.slice(0, WSL_MONITOR_SCRIPT.indexOf(marker));
+  for (const mark of ["/app/backend-rs/Cargo.toml", "/linux/ai-tools/usage-monitor/usage_monitor.py"]) {
+    if (WSL_REPO_MARK.includes(mark)) return WSL_REPO_MARK.slice(0, WSL_REPO_MARK.indexOf(mark));
+  }
+  return "";
 }
 
 function wslBackendBinary() {
@@ -88,7 +91,7 @@ function nativeBackendBinary() {
 
 function backendSpec() {
   if (WSL_BACKEND) {
-    if (process.platform !== "win32" || !WSL_DISTRO || !WSL_MONITOR_SCRIPT) return null;
+    if (process.platform !== "win32" || !WSL_DISTRO || !WSL_REPO_MARK) return null;
     const binary = wslBackendBinary();
     if (!binary) return null;
     return {
@@ -1044,7 +1047,7 @@ function aiToolsSpec(flags, environment, windowsSetupScript) {
     };
   }
   if (WSL_BACKEND) {
-    if (!WSL_DISTRO || !WSL_MONITOR_SCRIPT) return null;
+    if (!WSL_DISTRO || !WSL_REPO_MARK) return null;
     // wsl.exe --exec 默认不读 .bashrc，会绕过 NVM 并调到系统 npm/node，
     // 交互式 bash 会加载用户的 NVM/PATH；位置参数传脚本和参数，不拼 shell 字符串。
     return {
@@ -1084,7 +1087,7 @@ function componentSpec(component, environment, windowsSetupScript) {
     };
   }
   if (WSL_BACKEND) {
-    if (!WSL_DISTRO || !WSL_MONITOR_SCRIPT) return null;
+    if (!WSL_DISTRO || !WSL_REPO_MARK) return null;
     return {
       command: "wsl.exe",
       args: [

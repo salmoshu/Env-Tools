@@ -1,4 +1,4 @@
-//! DeepSeek：API key 直连余额查询（口径同 usage_monitor.py normalize_deepseek）。
+//! DeepSeek：API key 直连余额查询（口径同原 Python 实现 normalize_deepseek）。
 
 use serde_json::Value;
 

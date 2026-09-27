@@ -58,7 +58,7 @@ function Update-SessionPath {
 # PowerShell 5.1 默认不协商 TLS 1.2，访问 code.kimi.com 需要先启用（同官方 install.ps1）
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 # 系统代理（Clash/v2ray 等本地代理）对 code.kimi.com 会 TLS EOF，脚本内 web 请求一律直连
-# （与 linux/ai-tools/usage-monitor 的约定一致：kimi 接口默认不走代理）
+# （约定：kimi 接口默认不走代理）
 [System.Net.WebRequest]::DefaultWebProxy = $null
 
 function Test-Npm {

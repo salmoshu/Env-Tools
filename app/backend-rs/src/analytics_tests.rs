@@ -1,4 +1,4 @@
-//! 原生分析引擎测试：与 usage_monitor.py 的 test_usage_monitor.AnalyticsTests
+//! 原生分析引擎测试：与原 Python 实现的 AnalyticsTests
 //! 口径一一对应（时间戳规整、Codex 增量拆分、agent 归因、聚合、增量扫描）。
 
 use std::path::Path;

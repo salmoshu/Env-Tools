@@ -1,4 +1,4 @@
-//! 会话用量分析引擎（v0.4.0 起原生实现，口径与 usage_monitor.py 的
+//! 会话用量分析引擎（v0.4.0 起原生实现，口径与原 Python 实现的
 //! --analytics 完全一致）。
 //!
 //! 扫描 Kimi Code（~/.kimi-code/sessions/**/wire.jsonl 的 turn 级

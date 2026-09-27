@@ -1,7 +1,7 @@
 //! Env-Tools 桌面应用的本地 API 网关（Rust + axum）。
 //!
 //! Electron 主进程拉起本服务，渲染层的数据请求统一走这里。v0.7.0 起数据
-//! 引擎全部原生实现，不再依赖 usage_monitor.py：
+//! 引擎全部原生实现，不再依赖 Python：
 //! - `GET /api/health`                     健康检查（含版本号）
 //! - `GET /api/analytics?days=&agent=&aggregate=`  会话用量分析（原生引擎；
 //!   aggregate=1 时合并本机与 WSL 家目录的会话数据）

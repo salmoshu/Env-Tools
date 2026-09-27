@@ -2,10 +2,7 @@
 # 功能与 Linux 的 tools.sh 一致；Linux 请使用 tools.sh。
 #
 # 用法:
-#   tools.ps1 ai-tools --usage [usage 参数...]
 #   tools.ps1 openssh --status
-#
-# usage monitor 随本项目分发（linux/ai-tools/usage-monitor，跨平台），不依赖外部项目。
 
 [CmdletBinding()]
 param(
@@ -29,13 +26,9 @@ function Show-Usage {
 用法: tools.ps1 <应用> <操作> [参数...]
 
 应用与操作:
-  ai-tools --usage [参数...]  查看 Kimi / Codex / DeepSeek / GLM 余量
   openssh --status            查看 sshd 服务状态与监听端口
 
 示例:
-  tools.ps1 ai-tools --usage
-  tools.ps1 ai-tools --usage --provider codex
-  tools.ps1 ai-tools --usage --json
   tools.ps1 openssh --status
 '@
 }
@@ -43,42 +36,6 @@ function Show-Usage {
 function Die([string]$Message) {
     [Console]::Error.WriteLine("ERROR: $Message")
     exit 1
-}
-
-function Find-Python {
-    # 依次尝试 py 启动器 / python / python3，用 --version 验证可用
-    # （排除 Microsoft Store 的 python.exe 占位 shim）
-    foreach ($spec in @(@('py', '-3'), @('python'), @('python3'))) {
-        $exe = $spec[0]
-        $pre = @($spec | Select-Object -Skip 1)
-        if (Get-Command $exe -ErrorAction SilentlyContinue) {
-            & $exe @pre --version *> $null
-            if ($LASTEXITCODE -eq 0) {
-                return @{ Exe = $exe; Pre = $pre }
-            }
-        }
-    }
-    return $null
-}
-
-function Invoke-AiTools([string[]]$OpArgs) {
-    $operation = if ($OpArgs.Count -gt 0) { $OpArgs[0] } else { '' }
-    $extra = @($OpArgs | Select-Object -Skip 1)
-
-    switch ($operation) {
-        '--usage' {
-            $monitor = Join-Path $root 'linux\ai-tools\usage-monitor\usage_monitor.py'
-            if (-not (Test-Path $monitor)) { Die "余量监控程序不存在: $monitor" }
-            $py = Find-Python
-            if (-not $py) { Die '未找到 python，无法运行余量监控（可安装 python.org 的 Python 3）。' }
-            # 与 tools.sh 保持一致：无额外参数时默认持续监控
-            if ($extra.Count -eq 0) { $extra = @('--watch') }
-            & $py.Exe @($py.Pre) $monitor @extra
-            exit $LASTEXITCODE
-        }
-        { $_ -in @('--help', '-h', 'help', '') } { Show-Usage }
-        default { Die "ai-tools 不支持操作 '$operation'（当前支持: --usage）" }
-    }
 }
 
 function Invoke-OpenSsh([string[]]$OpArgs) {
@@ -136,8 +93,7 @@ if (-not $Application) {
 }
 
 switch ($Application) {
-    'ai-tools' { Invoke-AiTools $Rest }
     'openssh'  { Invoke-OpenSsh $Rest }
     { $_ -in @('--help', '-h', 'help') } { Show-Usage }
-    default { Die "未知应用 '$Application'（当前支持: ai-tools / openssh）" }
+    default { Die "未知应用 '$Application'（当前支持: openssh）" }
 }

@@ -1,4 +1,4 @@
-//! 设置、凭据与 CLI 版本的原生实现（v0.7.0 起取代 usage_monitor.py 的对应部分）。
+//! 设置、凭据与 CLI 版本的原生实现（v0.7.0 起取代原 Python 实现的对应部分）。
 //!
 //! 存储位置与 Python 版保持一致，避免升级后丢失配置：
 //! - `~/.config/ai-usage-monitor/settings.json`  数据源环境（environment/wsl_distro）

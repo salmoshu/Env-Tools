@@ -1,5 +1,5 @@
 //! DeepSeek / GLM 配额引擎测试：夹具与期望值与
-//! usage_monitor.py 的 test_usage_monitor 同名用例一一对应。
+//! 与原 Python 实现的同名用例一一对应。
 
 use crate::quota::{
     normalize_deepseek, normalize_glm, normalize_glm_subscription, normalize_reset_status,

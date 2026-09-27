@@ -1,4 +1,4 @@
-# Env-Tools 桌面应用（Windows）启动脚本
+﻿# Env-Tools 桌面应用（Windows）启动脚本
 #
 # v0.6.0 起 Windows 原生模式开箱即用：配额引擎脚本与分析 agent 都随包分发
 # （包内内嵌独立 Python，无需安装）。WSL 变为可选目标——Target 选择器里连接
@@ -50,8 +50,8 @@ if ($WslRepo.StartsWith("~")) {
 }
 $WslRepo = $WslRepo.TrimEnd('/')
 
-# 解析并校验数据引擎脚本确实存在（校验失败给出明确指引，而不是启动后配额一直为空）
-$script = (wsl.exe -d $Distro --exec bash -c "wslpath -a -u '$WslRepo/linux/ai-tools/usage-monitor/usage_monitor.py' 2>/dev/null" |
+# 解析并校验仓库锚点确实存在（校验失败给出明确指引，而不是启动后配额一直为空）
+$script = (wsl.exe -d $Distro --exec bash -c "wslpath -a -u '$WslRepo/app/backend-rs/Cargo.toml' 2>/dev/null" |
     Out-String).Trim() -replace "`0", ""
 if (-not $script) {
     Write-Error "Cannot resolve the Env-Tools repo path inside '$Distro'. Deploy the repo (setup.sh) or pass -WslRepo."
@@ -59,13 +59,13 @@ if (-not $script) {
 }
 $exists = (wsl.exe -d $Distro --exec bash -c "test -f '$script' && echo yes || echo no" | Out-String).Trim() -replace "`0", ""
 if ($exists -ne "yes") {
-    Write-Error "usage_monitor.py not found at '$script' in '$Distro'. Is the Env-Tools repo deployed there?"
+    Write-Error "Env-Tools repo anchor not found at '$script' in '$Distro'. Is the Env-Tools repo deployed there?"
     exit 1
 }
 
 $env:AI_USAGE_MONITOR_BACKEND = "wsl"
 $env:AI_USAGE_MONITOR_WSL_DISTRO = $Distro
-$env:AI_USAGE_MONITOR_WSL_SCRIPT = $script
+$env:ENV_TOOLS_WSL_REPO_MARK = $script
 
 Write-Host "Starting Env-Tools (WSL mode: distro=$Distro, script=$script)"
 Start-Process -FilePath $exe -WorkingDirectory $PSScriptRoot

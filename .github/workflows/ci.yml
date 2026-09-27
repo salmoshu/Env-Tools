@@ -10,12 +10,6 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-      - name: Python unit tests (usage_monitor CLI)
-        working-directory: linux/ai-tools/usage-monitor
-        run: python -m unittest test_usage_monitor -v
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
