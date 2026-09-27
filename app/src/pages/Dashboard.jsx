@@ -626,8 +626,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                           const v = useGen
                             ? (item.gen_rate != null ? item.gen_rate : item.rate)
                             : item.rate;
-                          const marked = useGen && item.gen_rate != null;
-                          return v != null ? `${fmtRate(v)} tok/s${marked ? "*" : ""}` : "—";
+                          return v != null ? `${fmtRate(v)} tok/s` : "—";
                         })()}
                       </span>
                     </div>
@@ -851,8 +850,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                         ? (session.gen_rate != null ? session.gen_rate : session.rate)
                         : session.rate;
                       if (v == null) return "—";
-                      const marked = useGen && session.gen_rate != null;
-                      return `${v >= 100 ? abbrev(Math.round(v)) : v.toFixed(1)} tok/s${marked ? "*" : ""}`;
+                      return `${v >= 100 ? abbrev(Math.round(v)) : v.toFixed(1)} tok/s`;
                     })()}
                   </td>
                 </tr>
