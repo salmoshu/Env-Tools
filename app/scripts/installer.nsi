@@ -64,7 +64,8 @@ FunctionEnd
 ; 安装/升级前确保旧进程已退出，否则 File /r 会静默写失败产出残缺安装。
 ; 流程：先等最多 10s（自升级场景应用正在自退出）→ 仍锁定则
 ;   静默模式：taskkill 强杀后再等最多 15s，仍锁 → Abort（不产出残缺包）
-;   交互模式：提示用户关闭，RETRY 重新探测，CANCEL → Abort
+;   交互模式：提示后点“重试”即 taskkill 强杀（后台引擎 env-tools-api 无窗口，
+;   用户无法手动关闭，必须代杀）→ 等最多 15s，仍锁 → 再次询问
 Function .onInit
   IfFileExists "$INSTDIR\${APPNAME}.exe" 0 init_done
   StrCpy $R0 0
@@ -79,10 +80,18 @@ init_sleep:
 init_still_locked:
   IfSilent init_kill init_ask
 init_ask:
-  MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "检测到 Env-Tools 正在运行。$\r$\n请先关闭 Env-Tools 后点击“重试”，或点击“取消”中止安装。" IDRETRY init_retry IDCANCEL init_abort
+  MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "检测到 Env-Tools 正在运行（含后台数据引擎）。$\r$\n点击“重试”将自动结束这些进程并继续，或点击“取消”中止安装。" IDRETRY init_retry IDCANCEL init_abort
 init_retry:
+  Call KillRunning
   StrCpy $R0 0
-  Goto init_wait
+init_retry_wait:
+  Call ProbeLocks
+  IntCmp $R9 0 init_done
+  IntOp $R0 $R0 + 1
+  IntCmp $R0 15 0 init_retry_sleep init_ask
+init_retry_sleep:
+  Sleep 1000
+  Goto init_retry_wait
 init_abort:
   Abort
 init_kill:
@@ -100,7 +109,7 @@ init_done:
 FunctionEnd
 
 ; 卸载前同样的进程守卫：Env-Tools 运行中卸载会删不干净。
-; 静默卸载直接 taskkill 强杀（等 15s，仍锁 → Abort）。
+; 静默卸载直接 taskkill 强杀；交互模式点“重试”同样代杀（同 .onInit）。
 Function un.onInit
   IfFileExists "$INSTDIR\${APPNAME}.exe" 0 uninit_done
   StrCpy $R0 0
@@ -115,10 +124,18 @@ uninit_sleep:
 uninit_still_locked:
   IfSilent uninit_kill uninit_ask
 uninit_ask:
-  MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "检测到 Env-Tools 正在运行。$\r$\n请先关闭 Env-Tools 后点击“重试”，或点击“取消”中止卸载。" IDRETRY uninit_retry IDCANCEL uninit_abort
+  MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "检测到 Env-Tools 正在运行（含后台数据引擎）。$\r$\n点击“重试”将自动结束这些进程并继续，或点击“取消”中止卸载。" IDRETRY uninit_retry IDCANCEL uninit_abort
 uninit_retry:
+  Call un.KillRunning
   StrCpy $R0 0
-  Goto uninit_wait
+uninit_retry_wait:
+  Call un.ProbeLocks
+  IntCmp $R9 0 uninit_done
+  IntOp $R0 $R0 + 1
+  IntCmp $R0 15 0 uninit_retry_sleep uninit_ask
+uninit_retry_sleep:
+  Sleep 1000
+  Goto uninit_retry_wait
 uninit_abort:
   Abort
 uninit_kill:
