@@ -4,7 +4,7 @@
 # - 已安装时直接进入配置流程：备份并改写 sshd_config 端口、生成主机密钥、
 #   修复 ACL、注册 sshd 服务、配置防火墙、启动并验证监听
 # - 默认端口 2222（本机 WSL 占用 TCP 22，Windows sshd 避让，详见 docs/openssh-notes.md）
-# 需要管理员权限运行（由根目录 setup.ps1 统一提权；单独运行时脚本会自行请求 UAC）。
+# 需要管理员权限运行（由 scripts/setup.ps1 统一提权；单独运行时脚本会自行请求 UAC）。
 # 用法:
 #   setup_openssh.ps1                          # 默认端口 2222
 #   setup_openssh.ps1 -Port 2223               # 自定义端口

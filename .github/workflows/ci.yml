@@ -29,4 +29,4 @@ jobs:
           pnpm install
           pnpm exec vite build
       - name: Shell syntax check (bash entrypoints)
-        run: for f in setup.sh tools.sh; do bash -n "$f"; done
+        run: for f in scripts/setup.sh scripts/tools.sh; do bash -n "$f"; done

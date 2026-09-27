@@ -86,7 +86,8 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltinRole]::Administra
     exit
 }
 
-$root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$root = Split-Path -Parent $scriptDir  # 仓库根（脚本已收纳进 scripts/）
 
 $envtoolsVersionFile = Join-Path $root 'VERSION'
 if (Test-Path $envtoolsVersionFile) {

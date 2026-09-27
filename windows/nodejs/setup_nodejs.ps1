@@ -2,7 +2,7 @@
 # - 已安装 Node.js 时直接跳过
 # - 优先使用 winget 安装 OpenJS.NodeJS.LTS
 # - 无 winget 时回退为便携版：下载官方 LTS zip 解压到 <project>\runtime 并写入用户 PATH
-# 需要管理员权限运行（由根目录 setup.ps1 统一提权）。
+# 需要管理员权限运行（由 scripts/setup.ps1 统一提权）。
 
 $dir = Split-Path -Parent $MyInvocation.MyCommand.Path
 

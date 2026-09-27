@@ -122,7 +122,7 @@ if ($portable) {
 Remove-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'KdeskAutoDeploy' -ErrorAction SilentlyContinue
 
 # elevated scheduled task at logon: no UAC prompts ever again.
-# Runs THIS full setup (equivalent to `setup.ps1 kdesk`) at every logon, so each
+# Runs THIS full setup (equivalent to `scripts/setup.ps1 kdesk`) at every logon, so each
 # boot gets snapshot restore + update block + optimizer, not just the light deploy.
 $setupScript = $PSCommandPath
 schtasks /Create /TN 'KdeskAutoDeploy' /TR "powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$setupScript`"" /SC ONLOGON /RL HIGHEST /F

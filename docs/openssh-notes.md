@@ -13,7 +13,7 @@
 - `linux/openssh/setup_openssh.sh`：包管理器安装（apt/dnf/yum/pacman）+ 启动，
   有 systemd 用 `systemctl enable --now`，无 systemd（旧版 WSL）回退 `service`。
 - 日志：各自的 `log/setup.log`。
-- 状态查询：Linux 用 `./tools.sh openssh --status`，Windows 用 `tools.ps1 openssh --status`
+- 状态查询：Linux 用 `./scripts/tools.sh openssh --status`，Windows 用 `scripts/tools.ps1 openssh --status`
   （Windows 部署脚本结尾也会打印一次状态）。
 
 ## 端口约定：WSL 占 22，Windows 用 2222
@@ -39,16 +39,16 @@ Cannot bind any address
 
 ```powershell
 # Windows（PowerShell，自动提权）
-setup.ps1 openssh                  # 默认端口 2222
-setup.ps1 openssh -Port 2223       # 自定义端口
-setup.ps1 openssh -FirewallProfile Any   # 所有网络类型放行（公用网络慎用）
+scripts/setup.ps1 openssh                  # 默认端口 2222
+scripts/setup.ps1 openssh -Port 2223       # 自定义端口
+scripts/setup.ps1 openssh -FirewallProfile Any   # 所有网络类型放行（公用网络慎用）
 ```
 
 ```bash
 # Linux
-./setup.sh openssh                 # 默认端口 22
-./setup.sh openssh --port 2222     # 自定义端口
-./tools.sh openssh --status        # 查看服务状态与监听端口
+./scripts/setup.sh openssh                 # 默认端口 22
+./scripts/setup.sh openssh --port 2222     # 自定义端口
+./scripts/tools.sh openssh --status        # 查看服务状态与监听端口
 ```
 
 ## Windows 侧行为细节（继承自原一键部署工具）
@@ -66,4 +66,4 @@ setup.ps1 openssh -FirewallProfile Any   # 所有网络类型放行（公用网�
 - `windows/openssh/setup_openssh.ps1` 必须保存为 **UTF-8 带 BOM**（Windows PowerShell
   5.1 对无 BOM 的 .ps1 按 GBK 解码，中文字符串会乱码，详见 docs/kdesk-notes.md 坑 2）。
 - 登录用 Windows 账户密码，不是 Windows Hello PIN。
-- `setup.ps1` / `setup.sh` 带工具参数时请只指定一个组件，参数会透传给该组件脚本。
+- `scripts/setup.ps1` / `scripts/setup.sh` 带工具参数时请只指定一个组件，参数会透传给该组件脚本。

@@ -13,7 +13,8 @@ param(
     [string[]]$Rest
 )
 
-$root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$root = Split-Path -Parent $scriptDir  # 仓库根（脚本已收纳进 scripts/）
 
 $envtoolsVersionFile = Join-Path $root 'VERSION'
 if (Test-Path $envtoolsVersionFile) {
@@ -52,7 +53,7 @@ function Invoke-OpenSsh([string[]]$OpArgs) {
                 if ($cmd) { $sshd = $cmd.Source }
             }
             if (-not $sshd) {
-                Write-Host 'sshd: 未安装（可用 setup.ps1 openssh 部署）'
+                Write-Host 'sshd: 未安装（可用 scripts/setup.ps1 openssh 部署）'
                 exit 1
             }
             $version = (Get-Item $sshd).VersionInfo.ProductVersion

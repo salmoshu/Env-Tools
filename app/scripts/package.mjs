@@ -82,8 +82,10 @@ if (platformArg === "win32") {
 // log/ 运行目录同样排除。main.js 对缺失负载会给出明确提示而非乱码报错。
 const repoRoot = path.resolve(root, "..");
 const resourcesDir = path.join(pkgDir, "resources");
-for (const file of ["setup.ps1", "setup.sh", "tools.ps1", "tools.sh", "VERSION"]) {
-  fs.copyFileSync(path.join(repoRoot, file), path.join(resourcesDir, file));
+fs.copyFileSync(path.join(repoRoot, "VERSION"), path.join(resourcesDir, "VERSION"));
+fs.mkdirSync(path.join(resourcesDir, "scripts"), { recursive: true });
+for (const file of ["setup.ps1", "setup.sh", "tools.ps1", "tools.sh"]) {
+  fs.copyFileSync(path.join(repoRoot, "scripts", file), path.join(resourcesDir, "scripts", file));
 }
 const payloadFilter = (src) => {
   const rel = path.relative(repoRoot, src).replace(/\\/g, "/");
@@ -91,7 +93,7 @@ const payloadFilter = (src) => {
   if (rel.startsWith("windows/kdesk")) return false;
   return true;
 };
-for (const dir of ["completion", "linux", "windows"]) {
+for (const dir of ["linux", "windows"]) {
   fs.cpSync(path.join(repoRoot, dir), path.join(resourcesDir, dir), { recursive: true, filter: payloadFilter });
 }
 console.log("[package] component install scripts bundled into resources/");

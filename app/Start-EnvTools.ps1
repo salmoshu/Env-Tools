@@ -37,7 +37,7 @@ if (-not (Get-Command wsl.exe -ErrorAction SilentlyContinue)) {
 if (-not $Distro) {
     $list = (wsl.exe --list --quiet 2>$null) -replace "`0", "" | ForEach-Object { $_.Trim() } | Where-Object { $_ }
     if (-not $list) {
-        Write-Error "No WSL distro found. Deploy the Env-Tools repo first (run setup.sh inside a distro)."
+        Write-Error "No WSL distro found. Deploy the Env-Tools repo first (run scripts/setup.sh inside a distro)."
         exit 1
     }
     $Distro = $list | Select-Object -First 1
@@ -54,7 +54,7 @@ $WslRepo = $WslRepo.TrimEnd('/')
 $script = (wsl.exe -d $Distro --exec bash -c "wslpath -a -u '$WslRepo/app/backend-rs/Cargo.toml' 2>/dev/null" |
     Out-String).Trim() -replace "`0", ""
 if (-not $script) {
-    Write-Error "Cannot resolve the Env-Tools repo path inside '$Distro'. Deploy the repo (setup.sh) or pass -WslRepo."
+    Write-Error "Cannot resolve the Env-Tools repo path inside '$Distro'. Deploy the repo (scripts/setup.sh) or pass -WslRepo."
     exit 1
 }
 $exists = (wsl.exe -d $Distro --exec bash -c "test -f '$script' && echo yes || echo no" | Out-String).Trim() -replace "`0", ""

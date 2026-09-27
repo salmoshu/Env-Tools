@@ -5,12 +5,13 @@
 #   ./tools.sh openssh --status
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"  # 仓库根（脚本已收纳进 scripts/）
 
 # 在 Windows 的 Git Bash / MSYS 下运行时，转交给 PowerShell 入口
 case "$(uname -s)" in
     MINGW*|MSYS*|CYGWIN*)
-        exec powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$ROOT/tools.ps1" "$@"
+        exec powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$SCRIPT_DIR/tools.ps1" "$@"
         ;;
 esac
 
@@ -51,7 +52,7 @@ run_openssh() {
                 done
             fi
             if [ -z "$sshd_bin" ]; then
-                echo 'sshd: 未安装（可用 ./setup.sh openssh 部署）'
+                echo 'sshd: 未安装（可用 ./scripts/setup.sh openssh 部署）'
                 exit 1
             fi
             echo "sshd: $sshd_bin ($("$sshd_bin" -V 2>&1 | head -1 || echo '版本未知'))"

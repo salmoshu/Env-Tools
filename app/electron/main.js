@@ -1007,7 +1007,7 @@ function killInstallTree(child) {
 
 function repoScriptPath(relative) {
   // WSL 后端下 Electron 运行在 Windows 侧，仓库路径由后端脚本路径推导；
-  // 本地运行直接拼 REPO_ROOT。relative 形如 "/setup.sh"、"/tools.sh"。
+  // 本地运行直接拼 REPO_ROOT。relative 形如 "/scripts/setup.sh"。
   const repo = wslRepoRoot();
   if (repo) return `${repo}${relative}`;
   return path.join(REPO_ROOT, relative.replace(/^\//, ""));
@@ -1093,19 +1093,19 @@ function componentSpec(component, environment, windowsSetupScript) {
       args: [
         "-d", WSL_DISTRO, "--exec", "bash", "-ic",
         'exec bash "$1" "${@:2}"', "env-tools-install",
-        repoScriptPath("/setup.sh"), component,
+        repoScriptPath("/scripts/setup.sh"), component,
       ],
     };
   }
   if (process.platform === "win32") {
-    const script = path.join(REPO_ROOT, "setup.ps1");
+    const script = path.join(REPO_ROOT, "scripts", "setup.ps1");
     return {
       command: "powershell.exe",
       args: psInstallArgs(script, [component]),
       script,
     };
   }
-  const script = path.join(REPO_ROOT, "setup.sh");
+  const script = path.join(REPO_ROOT, "scripts", "setup.sh");
   return { command: "bash", args: [script, component], script };
 }
 
@@ -1241,9 +1241,9 @@ ipcMain.handle("component-status", async (_event, component, environment) => {
       }
       spec = { command: "wsl.exe", args: ["-d", WSL_DISTRO, "--exec", "bash", "-ic",
         'exec bash "$1" "${@:2}"', "env-tools-status",
-        repoScriptPath("/tools.sh"), "openssh", "--status"] };
+        repoScriptPath("/scripts/tools.sh"), "openssh", "--status"] };
     } else {
-      spec = { command: "bash", args: [path.join(REPO_ROOT, "tools.sh"), "openssh", "--status"] };
+      spec = { command: "bash", args: [path.join(REPO_ROOT, "scripts", "tools.sh"), "openssh", "--status"] };
     }
     const child = spawn(spec.command, spec.args, {
       stdio: ["ignore", "pipe", "pipe"], windowsHide: true,

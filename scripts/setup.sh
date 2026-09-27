@@ -12,12 +12,13 @@
 # 在 Windows 的 Git Bash 下运行时参数原样透传给 setup.ps1。
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"  # 仓库根（脚本已收纳进 scripts/）
 
 case "$(uname -s)" in
     MINGW*|MSYS*|CYGWIN*)
         # 在 Windows 的 Git Bash / MSYS 下运行，转交给 PowerShell 入口
-        exec powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$ROOT/setup.ps1" "$@"
+        exec powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$SCRIPT_DIR/setup.ps1" "$@"
         ;;
     Linux)
         ENVTOOLS_VERSION="$(cat "$ROOT/VERSION" 2>/dev/null || true)"
