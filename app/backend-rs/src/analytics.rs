@@ -398,7 +398,7 @@ fn scan_zcode_db(
 /// 盘符路径 D:\a\b 映射为 /mnt-d/a/b——同一物理目录无论从哪一侧访问，
 /// 都落在同一路径键上，跨源汇总不再产生重复项目条目。
 fn normalize_work_dir(work_dir: &str) -> String {
-    let mut text = work_dir.trim().replace('\\', "/");
+    let text = work_dir.trim().replace('\\', "/");
     if text.is_empty() {
         return text;
     }
