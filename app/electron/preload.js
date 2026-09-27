@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld("api", {
   updateInstall: () => ipcRenderer.invoke("update-install"),
   onUpdateProgress: (callback) => subscribe("update-progress", (payload) => callback(payload)),
   onNavigate: (callback) => subscribe("navigate", (_payload, route) => callback(route)),
+  onAnalyticsInvalidated: (callback) => subscribe("analytics-invalidated", () => callback()),
   onOpenSettings: (callback) => subscribe("open-settings", () => callback()),
   onInstallProgress: (callback) => subscribe("install-progress", (payload) => callback(payload)),
   refresh: () => ipcRenderer.send("refresh"),

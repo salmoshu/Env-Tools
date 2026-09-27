@@ -619,7 +619,10 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                       key={item.project}
                       title={`${item.project} · ${item.agent} · ${t("dash.rateEndedAgo").replace("{d}", fmtSpan(item.ended_ago_seconds || 0))}`}
                     >
-                      <span className="rate-name">{item.project}</span>
+                      <span className="rate-name">
+                        {item.project}
+                        <span className="rate-ago">{t("dash.rateEndedAgo").replace("{d}", fmtSpan(item.ended_ago_seconds || 0))}</span>
+                      </span>
                       <span className="rate-val">
                         {(() => {
                           const useGen = speedMode === "gen";

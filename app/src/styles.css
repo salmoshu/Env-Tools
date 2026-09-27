@@ -838,3 +838,12 @@ td b { font-weight: 600; }
 .rate-row .rate-val {
   font-variant-numeric: tabular-nums; color: var(--accent); flex-shrink: 0;
 }
+
+/* 速率卡行内的新鲜度标注 */
+.rate-ago {
+  margin-left: 6px;
+  font-size: 9px;
+  font-weight: 400;
+  color: var(--faint);
+  white-space: nowrap;
+}

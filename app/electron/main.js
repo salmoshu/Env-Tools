@@ -449,7 +449,19 @@ ipcMain.on("window-close", (event) => {
   const window = senderWindow(event);
   if (window) window.close();
 });
-ipcMain.on("refresh", () => pushUsage());
+ipcMain.on("refresh", async () => {
+  pushUsage();
+  // 手动刷新同时失效分析/速率缓存：前端随即重拉的 analytics 是新鲜数据
+  try {
+    if (backendPort) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 5000);
+      await fetch(`http://127.0.0.1:${backendPort}/api/cache-clear`, { method: "POST", signal: controller.signal });
+      clearTimeout(timer);
+    }
+  } catch {}
+  for (const w of liveWindows()) w.webContents.send("analytics-invalidated");
+});
 // 全量窗口 ⇄ 用量看板：互相打开对方窗口；设置页自 v0.7.0 起住主窗口内
 ipcMain.handle("open-usage-board", async () => {
   await focusWindow(() => boardWin, createBoardWindow);

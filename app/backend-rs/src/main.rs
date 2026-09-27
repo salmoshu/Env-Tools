@@ -24,7 +24,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use axum::{extract::Query, response::IntoResponse, routing::get, Json, Router};
+use axum::{extract::Query, response::IntoResponse, routing::{get, post}, Json, Router};
 use serde_json::Value;
 use tokio::sync::Mutex;
 
@@ -311,6 +311,12 @@ async fn usage(axum::extract::State(state): axum::extract::State<AppState>) -> J
     Json(value)
 }
 
+/// 手动刷新：清空分析/配额缓存，下次请求强制增量重扫
+async fn cache_clear(axum::extract::State(state): axum::extract::State<AppState>) -> Json<Value> {
+    state.cache.entries.lock().await.clear();
+    Json(serde_json::json!({ "ok": true }))
+}
+
 async fn backend_status() -> Json<Value> {
     Json(settings::backend_status_payload())
 }
@@ -409,6 +415,7 @@ async fn main() {
         .route("/api/backend-status", get(backend_status))
         .route("/api/settings", get(get_settings).post(update_settings))
         .route("/api/api-keys", get(api_key_status).post(save_api_keys))
+        .route("/api/cache-clear", post(cache_clear))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_guard))
         .with_state(state);
 
