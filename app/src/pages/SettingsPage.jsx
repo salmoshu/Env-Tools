@@ -248,7 +248,7 @@ function MembershipPanel({ settings, lastPayload, onSaved }) {
     }
     try {
       const result = await window.api.setSettings({ membership: values });
-      if (!result || !result.ok) throw new Error((result && result.error) || "unknown error");
+      if (!result || !result.ok) throw new Error((result && result.error) || t("state.unknownError"));
       setNote({ cls: "settings-note ok", text: t("state.saved") });
       onSaved(result);
       try { window.api.refresh(); } catch {}
@@ -322,12 +322,12 @@ function LoginPanel({ currentSettings, lastPayload }) {
   const [busy, setBusy] = useState(false);
   const login = async (agent) => {
     setBusy(true);
-    setNote({ cls: "settings-note", text: "Starting web authorization…" });
+    setNote({ cls: "settings-note", text: t("settings.startingLogin") });
     try {
       const environment = (currentSettings && currentSettings.environment)
         || (lastPayload && lastPayload.data && lastPayload.data.environment);
       const result = await window.api.loginAgent(agent, environment);
-      if (!result || !result.ok) throw new Error((result && result.error) || "unknown error");
+      if (!result || !result.ok) throw new Error((result && result.error) || t("state.unknownError"));
       setNote({ cls: "settings-note ok", text: t("settings.loginStarted") });
     } catch (err) {
       setNote({ cls: "settings-note error", text: `${t("state.saveFailed")}: ${err.message || err}` });
@@ -365,14 +365,14 @@ function ApiKeysPanel({ reloadKey }) {
 
   const showStatus = (provider, info = {}) => {
     if (info.configured) {
-      setStates((prev) => ({ ...prev, [provider]: { text: `Configured (${info.source || "local"})`, cls: " configured" } }));
-      if (inputs[provider].current) inputs[provider].current.placeholder = "Leave blank to keep current key";
+      setStates((prev) => ({ ...prev, [provider]: { text: t("settings.configured").replace("{src}", info.source || "local"), cls: " configured" } }));
+      if (inputs[provider].current) inputs[provider].current.placeholder = t("settings.keepKeyPh");
     } else if (info.source === "invalid") {
-      setStates((prev) => ({ ...prev, [provider]: { text: "Invalid credential file", cls: " invalid" } }));
-      if (inputs[provider].current) inputs[provider].current.placeholder = "Enter a replacement key";
+      setStates((prev) => ({ ...prev, [provider]: { text: t("settings.invalidCred"), cls: " invalid" } }));
+      if (inputs[provider].current) inputs[provider].current.placeholder = t("settings.replaceKeyPh");
     } else {
-      setStates((prev) => ({ ...prev, [provider]: { text: "Not configured", cls: "" } }));
-      if (inputs[provider].current) inputs[provider].current.placeholder = "Enter API key";
+      setStates((prev) => ({ ...prev, [provider]: { text: t("settings.notConfigured"), cls: "" } }));
+      if (inputs[provider].current) inputs[provider].current.placeholder = t("settings.enterKeyPh");
     }
   };
 
@@ -382,7 +382,7 @@ function ApiKeysPanel({ reloadKey }) {
       try {
         const result = await window.api.getApiKeyStatus();
         if (cancelled) return;
-        if (!result || !result.ok) throw new Error((result && result.error) || "unknown error");
+        if (!result || !result.ok) throw new Error((result && result.error) || t("state.unknownError"));
         for (const provider of Object.keys(inputs)) {
           showStatus(provider, (result.status || {})[provider]);
         }
@@ -400,14 +400,14 @@ function ApiKeysPanel({ reloadKey }) {
       if (value) values[provider] = value;
     }
     if (Object.keys(values).length === 0) {
-      setNote({ cls: "settings-note error", text: "Enter at least one new API key." });
+      setNote({ cls: "settings-note error", text: t("settings.needOneKey") });
       return;
     }
     setSaving(true);
     setNote({ cls: "settings-note", text: t("state.saving") });
     try {
       const result = await window.api.saveApiKeys(values);
-      if (!result || !result.ok) throw new Error((result && result.error) || "unknown error");
+      if (!result || !result.ok) throw new Error((result && result.error) || t("state.unknownError"));
       for (const provider of Object.keys(inputs)) {
         showStatus(provider, (result.status || {})[provider]);
         if (inputs[provider].current) inputs[provider].current.value = "";
@@ -427,11 +427,11 @@ function ApiKeysPanel({ reloadKey }) {
       <div className="settings-card">
         <div className="key-field">
           <div className="key-label"><span>DeepSeek</span><span className={`key-state${states.deepseek.cls}`}>{states.deepseek.text}</span></div>
-          <input ref={inputs.deepseek} className="key-input" type="password" autoComplete="off" spellCheck={false} placeholder="Enter API key" />
+          <input ref={inputs.deepseek} className="key-input" type="password" autoComplete="off" spellCheck={false} placeholder={t("settings.enterKeyPh")} />
         </div>
         <div className="key-field">
           <div className="key-label"><span>GLM / BigModel</span><span className={`key-state${states.glm.cls}`}>{states.glm.text}</span></div>
-          <input ref={inputs.glm} className="key-input" type="password" autoComplete="off" spellCheck={false} placeholder="Enter API key" />
+          <input ref={inputs.glm} className="key-input" type="password" autoComplete="off" spellCheck={false} placeholder={t("settings.enterKeyPh")} />
         </div>
         <div className={note.cls}>{note.text}</div>
         <div className="settings-actions">
@@ -456,7 +456,7 @@ function EnvironmentPanel({ settings, onSaved }) {
     setNote({ cls: "settings-note", text: t("state.saving") });
     try {
       const result = await window.api.setSettings(values);
-      if (!result || !result.ok) throw new Error((result && result.error) || "unknown error");
+      if (!result || !result.ok) throw new Error((result && result.error) || t("state.unknownError"));
       setNote({ cls: "settings-note ok", text: t("state.saved") });
       onSaved(result.settings || {});
     } catch (err) {
@@ -491,7 +491,7 @@ function EnvironmentPanel({ settings, onSaved }) {
           </div>
         ))}
         <div className={`wsl-distro-field${current === "wsl" && wslDistros.length ? "" : " hidden"}`}>
-          <label className="wsl-distro-label" htmlFor="wsl-distro">WSL distribution</label>
+          <label className="wsl-distro-label" htmlFor="wsl-distro">{t("settings.wslDistro")}</label>
           <select
             id="wsl-distro" className="wsl-distro-select" value={distro}
             onChange={(event) => {
@@ -606,7 +606,7 @@ function WeekStartPanel({ settings }) {
     setNote({ cls: "settings-note", text: t("state.saving") });
     try {
       const result = await window.api.setSettings({ week_start: next });
-      if (!result || !result.ok) throw new Error((result && result.error) || "unknown error");
+      if (!result || !result.ok) throw new Error((result && result.error) || t("state.unknownError"));
       setNote({ cls: "settings-note ok", text: t("state.saved") });
     } catch (err) {
       setNote({ cls: "settings-note error", text: `${t("state.saveFailed")}: ${err.message || err}` });
@@ -645,7 +645,7 @@ function SpeedModePanel({ settings }) {
     setNote({ cls: "settings-note", text: t("state.saving") });
     try {
       const result = await window.api.setSettings({ speed_mode: next });
-      if (!result || !result.ok) throw new Error((result && result.error) || "unknown error");
+      if (!result || !result.ok) throw new Error((result && result.error) || t("state.unknownError"));
       setNote({ cls: "settings-note ok", text: t("state.saved") });
     } catch (err) {
       setNote({ cls: "settings-note error", text: `${t("state.saveFailed")}: ${err.message || err}` });

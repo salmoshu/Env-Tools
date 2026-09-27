@@ -168,7 +168,7 @@ function QuotaCard({ account, versions, onUpgrade, upgrading }) {
 /** 配额异常占位卡片：按 provider 类型分级引导，API 型绝不引导"去登录" */
 function QuotaErrorCard({ err, onFix }) {
   const [expanded, setExpanded] = useState(false);
-  const message = String((err && err.error) || "Unknown error");
+  const message = String((err && err.error) || t("state.unknownError"));
   const provider = String((err && err.provider) || "");
   const lower = message.toLowerCase();
   const isApiProvider = provider === "DeepSeek" || provider === "GLM";
@@ -297,7 +297,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
         setAnalytics(result.analytics);
         setAnalyticsError("");
       } else {
-        setAnalyticsError((result && result.error) || "Analytics failed");
+        setAnalyticsError((result && result.error) || t("dash.analyticsFailed"));
       }
     } catch (error) {
       setAnalyticsError(`Analytics failed: ${error.message || error}`);
@@ -436,9 +436,9 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
           SERIES_DEFS.map(([key, name, color]) =>
             `<div class="tt-row"><span class="swatch" style="background:${color}"></span>${name}` +
             `<span class="tt-val">${fmt(entry[key])}</span></div>`).join("") +
-          `<div class="tt-row">total<span class="tt-val">${fmt(total)}</span></div>` +
-          `<div class="tt-row">requests<span class="tt-val">${fmt(entry.requests)}</span></div>` +
-          `<div class="tt-row">cache hit<span class="tt-val">${fmtPct(entry.cache_hit_rate)}</span></div>` +
+          `<div class="tt-row">${t("dash.ttTotal")}<span class="tt-val">${fmt(total)}</span></div>` +
+          `<div class="tt-row">${t("dash.ttRequests")}<span class="tt-val">${fmt(entry.requests)}</span></div>` +
+          `<div class="tt-row">${t("dash.ttCacheHit")}<span class="tt-val">${fmtPct(entry.cache_hit_rate)}</span></div>` +
           (dailyProjectsMap[entry.date] || []).slice(0, 3).map((p, j) =>
             `<div class="tt-row"><span class="tt-val">${j + 1}. ${p.name} · ${fmt(p.total)}</span></div>`).join("");
       }}
@@ -540,7 +540,8 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
               }}
             >
               {Object.entries(AGENT_LABELS).map(([value, label]) => (
-                <option key={value} value={value}>{label}</option>
+
+                <option key={value} value={value}>{value === "all" ? t("dash.agentAll") : label}</option>
               ))}
             </select>
           </label>
@@ -721,8 +722,8 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                   SERIES_DEFS.map(([key, name, color]) =>
                     `<div class="tt-row"><span class="swatch" style="background:${color}"></span>${name}` +
                     `<span class="tt-val">${fmt(entry[key])}</span></div>`).join("") +
-                  `<div class="tt-row">total<span class="tt-val">${fmt(total)}</span></div>` +
-                  `<div class="tt-row">requests<span class="tt-val">${fmt(entry.requests)}</span></div>`;
+                  `<div class="tt-row">${t("dash.ttTotal")}<span class="tt-val">${fmt(total)}</span></div>` +
+                  `<div class="tt-row">${t("dash.ttRequests")}<span class="tt-val">${fmt(entry.requests)}</span></div>`;
               }}
             />
           </>
@@ -787,7 +788,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                 ? `<div class="tt-row"><span class="swatch" style="background:${MODEL_PALETTE[j % MODEL_PALETTE.length]}"></span>${model}` +
                   `<span class="tt-val">${fmt(perModel[j])}</span></div>`
                 : "").join("") +
-              `<div class="tt-row">total<span class="tt-val">${fmt(((daily || [])[i] || {}).total || 0)}</span></div>`;
+              `<div class="tt-row">${t("dash.ttTotal")}<span class="tt-val">${fmt(((daily || [])[i] || {}).total || 0)}</span></div>`;
           }}
         />
       </section>

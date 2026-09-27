@@ -185,7 +185,7 @@ export default function Board({ lastPayload }) {
                     className="ver upgrade"
                     role="button"
                     tabIndex={0}
-                    title="Click to upgrade"
+                    title={t("upgrade.click")}
                     onClick={() => setUpgradeProvider(account.provider)}
                     onKeyDown={activateOnKeys(() => setUpgradeProvider(account.provider))}
                   >

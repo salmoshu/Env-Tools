@@ -217,7 +217,7 @@ export function LineChart({ labels, values }) {
         x: margin.left + step * i, y: margin.top, width: step, height: innerH,
         fill: "transparent",
       }, svg);
-      hit.dataset.tip = tipTitle(labels[i]) + tipRow("hit rate", fmtPct(values[i]));
+      hit.dataset.tip = tipTitle(labels[i]) + tipRow(t("charts.hitRate"), fmtPct(values[i]));
       if (i % labelStep === 0) {
         const text = svgEl("text", {
           x: margin.left + step * (i + 0.5), y: height - 6,

@@ -5,40 +5,41 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useInstallState, setInstallRunning, setInstallResult, clearInstallLog } from "../installState.js";
+import { t, useLang } from "../i18n.js";
 
 const COMPONENTS = [
   {
     key: "ai-tools",
     name: "AI Tools",
     platforms: ["linux", "windows"],
-    desc: "Kimi Code / OpenAI Codex CLI 的安装与升级；配额监控与设置见用量看板。",
+    descKey: "tools.descAiTools",
     actions: [
-      { key: "kimi", label: "Install / Update Kimi" },
-      { key: "codex", label: "Install / Update Codex" },
+      { key: "kimi", labelKey: "tools.installKimi" },
+      { key: "codex", labelKey: "tools.installCodex" },
     ],
   },
   {
     key: "nodejs",
     name: "Node.js",
     platforms: ["linux", "windows"],
-    desc: "Node.js 环境部署（各组件 CLI 与工具链的运行时依赖）。",
-    actions: [{ key: "nodejs", label: "Install / Update" }],
+    descKey: "tools.descNodejs",
+    actions: [{ key: "nodejs", labelKey: "tools.installUpdate" }],
   },
   {
     key: "kdesk",
     name: "KDesk",
     platforms: ["windows"],
-    desc: "元气桌面免安装便携部署 + 快照对抗自动升级（仅 Windows）。",
-    actions: [{ key: "kdesk", label: "Install / Update" }],
+    descKey: "tools.descKdesk",
+    actions: [{ key: "kdesk", labelKey: "tools.installUpdate" }],
   },
   {
     key: "openssh",
     name: "OpenSSH Server",
     platforms: ["linux", "windows"],
-    desc: "OpenSSH Server 安装与配置；可查看 sshd 服务状态与连接示例。",
+    descKey: "tools.descOpenssh",
     actions: [
-      { key: "openssh", label: "Install / Update" },
-      { key: "openssh:status", label: "Check status", ghost: true },
+      { key: "openssh", labelKey: "tools.installUpdate" },
+      { key: "openssh:status", labelKey: "tools.checkStatus", ghost: true },
     ],
   },
 ];
@@ -46,6 +47,7 @@ const COMPONENTS = [
 const TAB_KEY = "tools.platform-tab";
 
 export default function Tools({ lastPayload }) {
+  useLang();
   const [platformTab, setPlatformTab] = useState(() => {
     try {
       const stored = localStorage.getItem(TAB_KEY);
@@ -95,15 +97,15 @@ export default function Tools({ lastPayload }) {
 
   const connectSsh = async (host) => {
     setSshBusy(host);
-    setSshNote(`Connecting to ${host} … (bootstrap: upload agent, start, tunnel)`);
+    setSshNote(t("tools.connectingNote").replace("{host}", host));
     try {
       const result = await window.api.sshConnect(host);
       setSshNote(result && result.ok
-        ? `Connected: ${host} (agent reachable via localhost tunnel)`
-        : `Failed: ${(result && result.error) || "unknown error"}`);
+        ? t("tools.connectedNote").replace("{host}", host)
+        : t("tools.failedNote").replace("{err}", (result && result.error) || t("state.unknownError")));
       await window.api.listTargets();
     } catch (err) {
-      setSshNote(`Failed: ${err.message || err}`);
+      setSshNote(t("tools.failedNote").replace("{err}", String(err.message || err)));
     } finally {
       setSshBusy("");
     }
@@ -147,9 +149,9 @@ export default function Tools({ lastPayload }) {
     <div className="page">
       <header className="page-head">
         <div>
-          <h1>Tools</h1>
+          <h1>{t("nav.tools")}</h1>
           <div className="meta">
-            Components managed through the Env-Tools setup scripts · data source: {environment}
+            {t("tools.meta").replace("{env}", environment)}
           </div>
         </div>
       </header>
@@ -177,7 +179,7 @@ export default function Tools({ lastPayload }) {
         <button
           type="button"
           className={`tools-tab tools-add${showRemote ? " active" : ""}`}
-          title="Remote targets (SSH)"
+          title={t("tools.remote")}
           onClick={() => setShowRemote((v) => !v)}
         >
           +
@@ -186,13 +188,8 @@ export default function Tools({ lastPayload }) {
 
       {showRemote && (
         <section className="card tools-remote">
-          <h2>Remote targets (SSH)</h2>
-          <div className="panel-hint">
-            Register an SSH host, then Connect: the app uploads its agent to
-            <code> ~/.local/share/env-tools/</code> on that host and tunnels it to
-            localhost — the host then appears in the Analytics Target selector.
-            Requires key-based SSH access (no password prompts).
-          </div>
+          <h2>{t("tools.remote")}</h2>
+          <div className="panel-hint">{t("tools.remoteHint")}</div>
           {sshList.map((c) => (
             <div className="login-row" key={c.host}>
               <div className="login-info">
@@ -205,7 +202,7 @@ export default function Tools({ lastPayload }) {
                 disabled={Boolean(sshBusy)}
                 onClick={() => connectSsh(c.host)}
               >
-                {sshBusy === c.host ? "Connecting…" : "Connect"}
+                {sshBusy === c.host ? t("tools.connecting") : t("tools.connect")}
               </button>
               <button
                 type="button"
@@ -216,23 +213,23 @@ export default function Tools({ lastPayload }) {
                   await saveSsh(sshList.filter((item) => item.host !== c.host));
                 }}
               >
-                Remove
+                {t("tools.remove")}
               </button>
             </div>
           ))}
           <div className="membership-inputs" style={{ marginTop: 8, flexWrap: "wrap" }}>
             <input
-              className="key-input" style={{ flex: "2", minWidth: 140 }} placeholder="host (required)"
+              className="key-input" style={{ flex: "2", minWidth: 140 }} placeholder={t("tools.hostPh")}
               value={sshForm.host}
               onChange={(e) => setSshForm({ ...sshForm, host: e.target.value })}
             />
             <input
-              className="key-input" style={{ flex: "0 0 80px" }} placeholder="port"
+              className="key-input" style={{ flex: "0 0 80px" }} placeholder={t("tools.portPh")}
               value={sshForm.port}
               onChange={(e) => setSshForm({ ...sshForm, port: e.target.value })}
             />
             <input
-              className="key-input" style={{ flex: "1", minWidth: 110 }} placeholder="user (optional)"
+              className="key-input" style={{ flex: "1", minWidth: 110 }} placeholder={t("tools.userPh")}
               value={sshForm.user}
               onChange={(e) => setSshForm({ ...sshForm, user: e.target.value })}
             />
@@ -249,7 +246,7 @@ export default function Tools({ lastPayload }) {
                 setSshForm({ host: "", port: "22", user: "" });
               }}
             >
-              Add
+              {t("tools.add")}
             </button>
           </div>
           {sshNote ? <div className="settings-note" style={{ marginTop: 6 }}>{sshNote}</div> : null}
@@ -265,7 +262,7 @@ export default function Tools({ lastPayload }) {
                 {platformTab === "windows" ? "Windows" : "Linux"}
               </span>
             </div>
-            <div className="tool-desc">{component.desc}</div>
+            <div className="tool-desc">{t(component.descKey)}</div>
             {component.key === "openssh" && statuses.openssh && statuses.openssh.output ? (
               <div className="tool-status">{statuses.openssh.output}</div>
             ) : null}
@@ -276,9 +273,9 @@ export default function Tools({ lastPayload }) {
                   key={action.key}
                   className={`tool-btn${action.ghost ? " ghost" : ""}`}
                   disabled={Boolean(running)}
-                  onClick={() => run(action.key, action.label)}
+                  onClick={() => run(action.key, t(action.labelKey))}
                 >
-                  {running && running.label === action.label ? "Running…" : action.label}
+                  {running && running.label === t(action.labelKey) ? t("tools.running") : t(action.labelKey)}
                 </button>
               ))}
             </div>
@@ -287,17 +284,17 @@ export default function Tools({ lastPayload }) {
       </div>
 
       <div className="card" style={{ marginTop: 14 }}>
-        <h2>Runtime</h2>
-        <div className="about-row"><span>Data engine</span><strong>{backend ? backend.engine : "checking…"}</strong></div>
-        <div className="about-row"><span>API port</span><strong>{backend && backend.port ? `127.0.0.1:${backend.port}` : "—"}</strong></div>
-        <div className="about-row"><span>Script</span><strong className="about-path">{backend && backend.detail ? backend.detail.script : "—"}</strong></div>
+        <h2>{t("tools.runtime")}</h2>
+        <div className="about-row"><span>{t("tools.dataEngine")}</span><strong>{backend ? backend.engine : t("tools.checking")}</strong></div>
+        <div className="about-row"><span>{t("tools.apiPort")}</span><strong>{backend && backend.port ? `127.0.0.1:${backend.port}` : "—"}</strong></div>
+        <div className="about-row"><span>{t("tools.script")}</span><strong className="about-path">{backend && backend.detail ? backend.detail.script : "—"}</strong></div>
       </div>
 
       {/* 终端风格安装日志面板：不再使用弹框蒙版 */}
       <section className="card tools-terminal">
         <div className="term-head">
           <span className="term-dot" />
-          <span className="term-title">install log</span>
+          <span className="term-title">{t("tools.installLog")}</span>
           <span className={`term-status${result && !result.ok ? " err" : ""}${running ? " run" : ""}`}>
             {running
               ? `● ${running.label}`
