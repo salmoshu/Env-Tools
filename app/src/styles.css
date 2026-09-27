@@ -1,89 +1,125 @@
 /* Env-Tools 桌面应用全局样式：明暗双主题 + 三个页面（Dashboard/Board/Tools）。 */
 
+/* ============ Robo-Flow 品牌设计令牌（tokens.json 单一事实源） ============
+ * 工程暖橙六档 + 纸白/墨色叙事对；橙色只用于行动/强调元素，
+ * 语义色让位（warning/success/error/info 独立于品牌橙）。
+ * 字体：Inter（界面/正文）+ Geist Mono（数据/代码），OFL 可自由嵌入。 */
+@font-face {
+  font-family: "Inter";
+  src: url("../public/fonts/Inter-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Geist Mono";
+  src: url("../public/fonts/GeistMono-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+}
+
 :root {
-  --bg: #10131a;
-  --card: #171b26;
-  --elevated: #1a1f2c;
-  --border: rgba(255, 255, 255, 0.07);
-  --titlebar: rgba(20, 24, 36, 0.9);
-  --text: #eceff5;
-  --dim: #9aa3b5;
-  --faint: #6b7385;
-  --accent: #6ea8fe;
-  --green: #34d399;
-  --yellow: #fbbf24;
-  --red: #fb7185;
-  --hover: rgba(255, 255, 255, 0.08);
-  --hover-soft: rgba(255, 255, 255, 0.06);
-  --inset: rgba(255, 255, 255, 0.045);
-  --sidebar-bg: rgba(255, 255, 255, 0.02);
-  --track: rgba(255, 255, 255, 0.06);
-  --marker: rgba(255, 255, 255, 0.95);
-  --on-accent: #10131a;
-  --placeholder: #596174;
-  --scrollbar: #2a3140;
+  /* 品牌色 */
+  --brand-50: #FFF7ED;
+  --brand-300: #FDBA74;
+  --brand-400: #FB923C;
+  --brand-500: #F97316;
+  --brand-600: #EA580C;
+  --brand-800: #9A3412;
+  --paper: #FAFAF9;
+  --ink: #1C1917;
+
+  /* 深色工作界面（暗底 + 橙强调；文字级橙用 brand-300 保证可读性） */
+  --bg: #14120f;
+  --card: #1c1916;
+  --elevated: #211d19;
+  --border: rgba(250, 250, 249, 0.09);
+  --hairline: rgba(250, 250, 249, 0.14);
+  --titlebar: rgba(24, 21, 18, 0.92);
+  --text: #f5f2ee;
+  --dim: #b8b0a6;
+  --faint: #837b71;
+  --accent: var(--brand-500);
+  --accent-text: var(--brand-300);
+  --green: #86EFAC;
+  --yellow: #EAB308;
+  --red: #FF6568;
+  --info: #93C5FD;
+  --hover: rgba(250, 250, 249, 0.07);
+  --hover-soft: rgba(250, 250, 249, 0.05);
+  --inset: rgba(250, 250, 249, 0.045);
+  --sidebar-bg: rgba(250, 250, 249, 0.025);
+  --track: rgba(250, 250, 249, 0.08);
+  --marker: rgba(250, 250, 249, 0.95);
+  --on-accent: #1c1917;
+  --placeholder: #6e665c;
+  --scrollbar: #3a352f;
   --warn: var(--yellow);
-  --shadow: rgba(0, 0, 0, 0.25);
-  /* 交互质感令牌：时长/缓动/焦点环/阴影/accent 徽章色系（浅主题在下覆写色彩类） */
+  --shadow: rgba(0, 0, 0, 0.3);
+  /* 交互质感令牌 */
   --dur: 0.15s;
   --ease: ease-out;
-  --ring: rgba(110, 168, 254, 0.55);
-  --accent-softer: rgba(110, 168, 254, 0.1);
-  --accent-soft: rgba(110, 168, 254, 0.16);
-  --accent-border: rgba(110, 168, 254, 0.4);
-  --accent-border-soft: rgba(110, 168, 254, 0.3);
-  --accent-hover: rgba(110, 168, 254, 0.28);
+  --ring: rgba(249, 115, 22, 0.55);
+  --accent-softer: rgba(249, 115, 22, 0.09);
+  --accent-soft: rgba(249, 115, 22, 0.14);
+  --accent-border: rgba(249, 115, 22, 0.42);
+  --accent-border-soft: rgba(249, 115, 22, 0.3);
+  --accent-hover: rgba(249, 115, 22, 0.26);
   --shadow-card: 0 2px 10px var(--shadow);
-  --shadow-pop: rgba(0, 0, 0, 0.45);
-  --c-input: #5b8def;
-  --c-output: #4cc38a;
-  --c-cache-read: #9b7ede;
-  --c-cache-creation: #e5a545;
-  --cal-0: #181d28;
-  --cal-1: #1f3a5f;
-  --cal-2: #2f6bc4;
-  --cal-3: #5b8def;
-  --cal-4: #9db9f5;
+  --shadow-pop: rgba(0, 0, 0, 0.5);
+  /* 图表系列色：输入青 / 输出蓝 / 缓存读紫 / 缓存写暖橙（对齐画布节点色） */
+  --c-input: #40B0A6;
+  --c-output: #3794FF;
+  --c-cache-read: #B66DFF;
+  --c-cache-creation: #FDBA74;
+  --cal-0: #201d19;
+  --cal-1: #4a2c14;
+  --cal-2: #7c4416;
+  --cal-3: #c2590b;
+  --cal-4: #f97316;
   color-scheme: dark;
-  --font-ui: "Ubuntu Sans", "Ubuntu", "DejaVu Sans", "Droid Sans Fallback", sans-serif;
-  --font-num: "Ubuntu Sans", "Ubuntu", "DejaVu Sans", sans-serif;
+  --font-ui: "Inter", system-ui, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  --font-num: "Geist Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
 }
 :root[data-theme="light"] {
-  --bg: #eef1f6;
+  /* 浅色 = 叙事面：暖纸白底 + 墨色文字 + 橙主色（brand-500） */
+  --bg: #FAFAF9;
   --card: #ffffff;
   --elevated: #ffffff;
-  --border: rgba(15, 23, 42, 0.1);
-  --titlebar: rgba(248, 250, 253, 0.9);
-  --text: #1d2433;
-  --dim: #4d5769;
-  --faint: #7d8698;
-  --accent: #2f6fe0;
-  --green: #0e9f6e;
-  --yellow: #f59e0b;
+  --border: rgba(28, 25, 23, 0.1);
+  --hairline: rgba(28, 25, 23, 0.14);
+  --titlebar: rgba(250, 250, 249, 0.92);
+  --text: #1C1917;
+  --dim: #57534e;
+  --faint: #8a8580;
+  --accent: #F97316;
+  --accent-text: #EA580C;
+  --green: #16a34a;
+  --yellow: #ca8a04;
   --red: #e11d48;
-  --hover: rgba(15, 23, 42, 0.07);
-  --hover-soft: rgba(15, 23, 42, 0.05);
-  --inset: rgba(15, 23, 42, 0.045);
-  --sidebar-bg: rgba(15, 23, 42, 0.035);
-  --track: rgba(15, 23, 42, 0.09);
-  --marker: rgba(15, 23, 42, 0.7);
+  --info: #2563eb;
+  --hover: rgba(28, 25, 23, 0.06);
+  --hover-soft: rgba(28, 25, 23, 0.04);
+  --inset: rgba(28, 25, 23, 0.04);
+  --sidebar-bg: rgba(28, 25, 23, 0.03);
+  --track: rgba(28, 25, 23, 0.09);
+  --marker: rgba(28, 25, 23, 0.72);
   --on-accent: #ffffff;
   --placeholder: #9aa3b5;
   --scrollbar: #c3c9d6;
   --warn: #b45309;
   --shadow: rgba(15, 23, 42, 0.12);
-  --ring: rgba(47, 111, 224, 0.45);
-  --accent-softer: rgba(47, 111, 224, 0.08);
-  --accent-soft: rgba(47, 111, 224, 0.12);
-  --accent-border: rgba(47, 111, 224, 0.35);
-  --accent-border-soft: rgba(47, 111, 224, 0.25);
-  --accent-hover: rgba(47, 111, 224, 0.2);
-  --shadow-pop: rgba(15, 23, 42, 0.22);
-  --cal-0: #ebeef4;
-  --cal-1: #c4d7f5;
-  --cal-2: #8db4ec;
-  --cal-3: #5b8def;
-  --cal-4: #2f5fbf;
+  --ring: rgba(249, 115, 22, 0.45);
+  --accent-softer: rgba(249, 115, 22, 0.08);
+  --accent-soft: rgba(249, 115, 22, 0.12);
+  --accent-border: rgba(249, 115, 22, 0.38);
+  --accent-border-soft: rgba(249, 115, 22, 0.26);
+  --accent-hover: rgba(249, 115, 22, 0.18);
+  --shadow-pop: rgba(28, 25, 23, 0.2);
+  --cal-0: #f2ede6;
+  --cal-1: #fcd9b3;
+  --cal-2: #fbb070;
+  --cal-3: #f97d28;
+  --cal-4: #ea580c;
   color-scheme: light;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -847,3 +883,48 @@ td b { font-weight: 600; }
   color: var(--faint);
   white-space: nowrap;
 }
+
+/* ============ Robo-Flow 品牌组件细节（工作界面规范） ============ */
+/* 区块小标签（eyebrow）：mono 大写、橙、宽字距——brand 手册的章节语言 */
+h2, .panel-title { letter-spacing: 0.01em; }
+.card h2::before, .block h2::before {
+  content: "";
+  display: inline-block;
+  width: 3px; height: 12px;
+  background: var(--brand-500);
+  border-radius: 2px;
+  margin-right: 8px;
+  vertical-align: -1px;
+}
+/* 侧边导航激活项：橙色行动条 */
+.app-sidebar .side-item.nav.active {
+  position: relative;
+  color: var(--accent-text);
+}
+.app-sidebar .side-item.nav.active::before {
+  content: "";
+  position: absolute;
+  left: -8px; top: 8px; bottom: 8px;
+  width: 3px;
+  background: var(--brand-500);
+  border-radius: 0 2px 2px 0;
+}
+/* KPI 数值：mono 数字（Geist Mono）+ 橙色涨跌 */
+.kpi-value { font-family: var(--font-num); letter-spacing: -0.01em; }
+.kpi-sub .up { color: var(--brand-400); font-weight: 600; }
+.kpi-sub .down { color: var(--info); font-weight: 600; }
+/* 标题栏 logo 与标题的橙色节奏点 */
+.titlebar .title::after {
+  content: "";
+  display: inline-block;
+  width: 6px; height: 6px;
+  background: var(--brand-500);
+  border-radius: 50%;
+  margin-left: 8px;
+  vertical-align: 2px;
+}
+/* 表格斑马纹与 hairline */
+.table-wrap table td, .table-wrap table th { border-bottom: 1px solid var(--border); }
+tbody tr:nth-child(even) { background: var(--hover-soft); }
+/* 终端面板：品牌 mono 字体已是 --font-num */
+.term-body { font-family: var(--font-num); }

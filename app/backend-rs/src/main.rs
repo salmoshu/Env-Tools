@@ -264,7 +264,13 @@ async fn analytics(
                     &zcode_homes(aggregate, distro),
                     now_sec,
                 );
-                let payload = engine.aggregate(days, &agent, now);
+                // 周起点设置（settings.json 的 week_start）注入周至今对比
+                let week_start = settings::load_settings()
+                    .get("week_start")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("monday")
+                    .to_string();
+                let payload = engine.aggregate_with_week_start(days, &agent, now, &week_start);
                 drop(engines);
                 let engine_note = format!(
                     "native-rust{}{} (scan {:.1}ms, dirty={dirty})",

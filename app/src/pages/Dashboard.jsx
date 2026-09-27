@@ -587,7 +587,10 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
         <div className="kpi-card">
           <div className="kpi-label">{t("dash.kpiWeek")}{agent !== "all" ? ` · ${AGENT_LABELS[agent]}` : ""}</div>
           <div className="kpi-value">{fmt(kpi.week_total)}</div>
-          <div className="kpi-sub">{wowHtml}{wowHtml ? ` ${t("dash.vsPrevWeek")}` : ""}</div>
+          <div className="kpi-sub">
+            {wowHtml}
+            {wowHtml ? ` ${t("dash.kpiWeekSub")}` : (kpi.prev_week_total > 0 ? "" : t("dash.kpiWeekSub"))}
+          </div>
         </div>
         <div className="kpi-card">
           <div className="kpi-label">{t("dash.kpiToday")}</div>

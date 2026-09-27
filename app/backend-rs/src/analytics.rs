@@ -663,6 +663,17 @@ impl AnalyticsState {
     }
 
     pub fn aggregate(&self, days: u32, agent: &str, now: DateTime<Local>) -> serde_json::Value {
+        self.aggregate_with_week_start(days, agent, now, "monday")
+    }
+
+    /// week_start: "monday" | "sunday"——周至今对比的自然周起点
+    pub fn aggregate_with_week_start(
+        &self,
+        days: u32,
+        agent: &str,
+        now: DateTime<Local>,
+        week_start: &str,
+    ) -> serde_json::Value {
         let days = days.clamp(1, 365) as i64;
         let agent = if AGENTS.contains(&agent) { agent } else { "all" };
         let today = date_string(now);
@@ -1002,12 +1013,36 @@ impl AnalyticsState {
             .map(|(date, (total, requests))| serde_json::json!([date, total, requests]))
             .collect();
 
-        let week_total: i64 = daily_out.iter().rev().take(7).map(|d| d["total"].as_i64().unwrap_or(0)).sum();
-        let prev_week_total: i64 = if days >= 14 {
-            daily_out.iter().rev().skip(7).take(7).map(|d| d["total"].as_i64().unwrap_or(0)).sum()
-        } else {
-            0
-        };
+        // 周至今 vs 上周同时刻（自然周，受 week_start 设置控制）：
+        // 本周起点 00:00 → 现在的总量，对比 上周起点 00:00 → 上周同一时刻。
+        // 逐记录累计而非按天桶：周中当前时刻的对齐只能靠原始时间戳。
+        let start_dow = if week_start == "sunday" { 0 } else { 1 }; // Chrono: 周日=0 周一=1
+        let now_weekday = now.weekday().num_days_from_sunday() as i64;
+        let days_into_week = (now_weekday - start_dow + 7) % 7;
+        let elapsed_secs_today = now.num_seconds_from_midnight() as i64;
+        let week_so_far_secs = days_into_week * 86400 + elapsed_secs_today;
+        let this_week_start_ts = now.timestamp() - week_so_far_secs;
+        let last_week_start_ts = this_week_start_ts - 7 * 86400;
+
+        let mut week_total: i64 = 0;
+        let mut prev_week_total: i64 = 0;
+        let this_week_end = now.timestamp();
+        let last_week_end = last_week_start_ts + week_so_far_secs;
+        for state in self.files.values() {
+            for record in &state.records {
+                let record_agent = agent_of(state.source, &record.model);
+                if agent != "all" && record_agent != agent {
+                    continue;
+                }
+                let total =
+                    record.input + record.output + record.cache_read + record.cache_creation;
+                if record.ts >= this_week_start_ts && record.ts <= this_week_end {
+                    week_total += total;
+                } else if record.ts >= last_week_start_ts && record.ts <= last_week_end {
+                    prev_week_total += total;
+                }
+            }
+        }
         let denominator: i64 = daily_out
             .iter()
             .map(|d| d["input"].as_i64().unwrap_or(0) + d["cache_read"].as_i64().unwrap_or(0) + d["cache_creation"].as_i64().unwrap_or(0))
