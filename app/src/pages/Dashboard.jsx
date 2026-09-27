@@ -607,7 +607,10 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                     >
                       <span className="rate-name">{item.project}</span>
                       <span className="rate-val">
-                        {item.rate != null ? `${fmtRate(item.rate)} tok/s` : "—"}
+                        {(() => {
+                          const v = item.gen_rate != null ? item.gen_rate : item.rate;
+                          return v != null ? `${fmtRate(v)} tok/s${item.gen_rate != null ? "*" : ""}` : "—";
+                        })()}
                       </span>
                     </div>
                   ))}
@@ -782,6 +785,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
       <section className="card">
         <h2>{t("dash.sessions")}</h2>
         <div className="table-hint">{t("dash.sessionsHint")}</div>
+        <div className="table-hint" style={{ opacity: 0.7 }}>{t("dash.speedHint")}</div>
         <div className="table-wrap">
           <table>
             <thead>
@@ -797,7 +801,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                 {header("first", "Start", true)}
                 {header("last", "End", true)}
                 {header("total", "Total")}
-                {header("rate", "Rate")}
+                {header("rate", "Speed")}
               </tr>
             </thead>
             <tbody>
@@ -821,9 +825,11 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                   <td className="l mono">{fmtTimestamp(session.last)}</td>
                   <td><b>{fmt(session.total)}</b></td>
                   <td className="mono">
-                    {session.rate != null
-                      ? `${session.rate >= 100 ? abbrev(Math.round(session.rate)) : session.rate.toFixed(1)} tok/s`
-                      : "—"}
+                    {(() => {
+                      const v = session.gen_rate != null ? session.gen_rate : session.rate;
+                      if (v == null) return "—";
+                      return `${v >= 100 ? abbrev(Math.round(v)) : v.toFixed(1)} tok/s${session.gen_rate != null ? "*" : ""}`;
+                    })()}
                   </td>
                 </tr>
               ))}

@@ -33,6 +33,9 @@ pub struct TurnRecord {
     pub cache_read: i64,
     pub cache_creation: i64,
     pub sid: String,
+    /// 该次请求的纯生成时长（秒）= duration_ms − TTFT。仅 ZCode 数据源
+    /// 逐请求可得；kimi/codex 文件源没有该信息，为 0。
+    pub gen_seconds: f64,
 }
 
 #[derive(Clone)]
@@ -99,6 +102,7 @@ pub(crate) fn parse_kimi_line(line: &str) -> Option<TurnRecord> {
         cache_read: count_field(&usage, "inputCacheRead"),
         cache_creation: count_field(&usage, "inputCacheCreation"),
         sid: String::new(), // 由调用方填文件级会话标识
+        gen_seconds: 0.0,
     })
 }
 
@@ -144,6 +148,7 @@ pub(crate) fn parse_codex_token_line(line: &str, model: &str, sid: &str) -> Opti
         cache_read: cached,
         cache_creation: count_field(usage, "cache_write_input_tokens"),
         sid: sid.to_string(),
+        gen_seconds: 0.0,
     })
 }
 
@@ -327,7 +332,8 @@ fn scan_zcode_db(
         let mut stmt = conn
             .prepare(
                 "SELECT rowid, session_id, model_id, completed_at, \
-                 input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens \
+                 input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, \
+                 duration_ms, time_to_first_token_ms \
                  FROM model_usage WHERE rowid > ?1 AND completed_at IS NOT NULL ORDER BY rowid",
             )
             .map_err(|err| err.to_string())?;
@@ -342,12 +348,18 @@ fn scan_zcode_db(
                     row.get::<_, i64>(5)?,
                     row.get::<_, i64>(6)?,
                     row.get::<_, i64>(7)?,
+                    row.get::<_, Option<i64>>(8)?,
+                    row.get::<_, Option<i64>>(9)?,
                 ))
             })
             .map_err(|err| err.to_string())?;
         for row in rows {
-            let (rowid, sid, model, completed_ms, input, output, cache_read, cache_creation) =
+            let (rowid, sid, model, completed_ms, input, output, cache_read, cache_creation, duration_ms, ttft_ms) =
                 row.map_err(|err| err.to_string())?;
+            let gen_ms = duration_ms
+                .zip(ttft_ms)
+                .map(|(d, t)| (d - t).max(0))
+                .unwrap_or(0) as f64;
             records.push(TurnRecord {
                 ts: completed_ms,
                 model,
@@ -356,6 +368,7 @@ fn scan_zcode_db(
                 cache_read: cache_read.max(0),
                 cache_creation: cache_creation.max(0),
                 sid,
+                gen_seconds: gen_ms / 1000.0,
             });
             if rowid > new_watermark {
                 new_watermark = rowid;
@@ -448,6 +461,8 @@ struct SessionRow {
     first: i64,
     last: i64,
     total: i64,
+    /// 逐请求纯生成时长之和（秒，ZCode 源），用于 TPOT 口径速率
+    gen_seconds: f64,
 }
 
 impl AnalyticsState {
@@ -743,6 +758,7 @@ impl AnalyticsState {
                     first: record.ts,
                     last: record.ts,
                     total: 0,
+                    gen_seconds: 0.0,
                 });
                 session.models.insert(record.model.clone());
                 *session.agent_totals.entry(record_agent).or_default() += total;
@@ -754,6 +770,7 @@ impl AnalyticsState {
                 session.first = session.first.min(record.ts);
                 session.last = session.last.max(record.ts);
                 session.total += total;
+                session.gen_seconds += record.gen_seconds;
             }
         }
 
@@ -804,14 +821,23 @@ impl AnalyticsState {
                 serde_json::json!({
                     "project": s.project,
                     "agent": dominant,
+                    // 输出速率为基础（业界吞吐标准：以输出 token 计量）
                     "rate": if s.last > s.first {
                         serde_json::json!(
-                            (s.total as f64 / (s.last - s.first) as f64 * 100.0).round() / 100.0
+                            (s.output as f64 / (s.last - s.first) as f64 * 100.0).round() / 100.0
+                        )
+                    } else {
+                        serde_json::Value::Null
+                    },
+                    "gen_rate": if s.gen_seconds > 0.0 {
+                        serde_json::json!(
+                            (s.output as f64 / s.gen_seconds * 100.0).round() / 100.0
                         )
                     } else {
                         serde_json::Value::Null
                     },
                     "total": s.total,
+                    "output": s.output,
                     "last": s.last,
                     "ended_ago_seconds": (now_sec - s.last).max(0),
                 })
@@ -922,11 +948,19 @@ impl AnalyticsState {
                     "first": session.first,
                     "last": session.last,
                     "total": session.total,
-                    // 会话速率：token / 会话时长（秒）；单条记录会话时长为 0，
-                    // 无法折算速率，返回 null 由前端显示 "—"
+                    // 输出速率（业界吞吐标准：以输出 token 计量）：
+                    // output / 会话时长；单条记录会话返回 null 由前端显示 "—"
                     "rate": if session.last > session.first {
                         serde_json::json!(
-                            (session.total as f64 / (session.last - session.first) as f64 * 100.0).round() / 100.0
+                            (session.output as f64 / (session.last - session.first) as f64 * 100.0).round() / 100.0
+                        )
+                    } else {
+                        serde_json::Value::Null
+                    },
+                    // 真生成速度（TPOT 口径，仅 ZCode 源有逐请求生成时长）
+                    "gen_rate": if session.gen_seconds > 0.0 {
+                        serde_json::json!(
+                            (session.output as f64 / session.gen_seconds * 100.0).round() / 100.0
                         )
                     } else {
                         serde_json::Value::Null
