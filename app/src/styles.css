@@ -867,6 +867,7 @@ td b { font-weight: 600; }
 }
 .rate-row .rate-name {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--text); font-weight: 600;
 }
 .rate-row .rate-val {
   font-variant-numeric: tabular-nums; color: var(--accent); flex-shrink: 0;
