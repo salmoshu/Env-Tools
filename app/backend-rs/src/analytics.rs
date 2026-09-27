@@ -47,6 +47,9 @@ pub struct FileState {
     pub source: Source,
     /// codex：session_id → 工作目录（rollout 一文件一会话）
     pub cwds: HashMap<String, String>,
+    /// kimi：待配对的 llm.request 起始时刻（毫秒，0 = 无）。usage.record
+    /// 到达时与之相减得到该次请求时长，实现 TPOT 口径的生成速度。
+    pub pending_llm_ms: i64,
 }
 
 /// 进程内增量状态：跨请求累积，重复调用只读取各文件新增字节。
@@ -75,6 +78,12 @@ fn count_field(usage: &serde_json::Value, key: &str) -> i64 {
 }
 
 pub(crate) fn parse_kimi_line(line: &str) -> Option<TurnRecord> {
+    parse_kimi_line_with_pending(line, 0)
+}
+
+/// pending_llm_start_ms：同文件内最近一个 llm.request 的起始毫秒；
+/// 与 usage.record 的 time 相减即该次请求时长（含 TTFT/prefill）。
+pub(crate) fn parse_kimi_line_with_pending(line: &str, pending_llm_start_ms: i64) -> Option<TurnRecord> {
     if !line.contains("\"usage.record\"") {
         return None;
     }
@@ -85,7 +94,8 @@ pub(crate) fn parse_kimi_line(line: &str) -> Option<TurnRecord> {
     if rec.get("usageScope")?.as_str()? != "turn" {
         return None;
     }
-    let ts = normalize_ts(rec.get("time")?.as_f64()? as i64)?;
+    let raw_time_ms = rec.get("time")?.as_f64()? as i64;
+    let ts = normalize_ts(raw_time_ms)?;
     // 借用而非克隆：usage 缺失/非对象按空对象计
     let empty = serde_json::Value::Object(serde_json::Map::new());
     let usage = rec.get("usage").filter(|u| u.is_object()).unwrap_or(&empty);
@@ -102,7 +112,12 @@ pub(crate) fn parse_kimi_line(line: &str) -> Option<TurnRecord> {
         cache_read: count_field(&usage, "inputCacheRead"),
         cache_creation: count_field(&usage, "inputCacheCreation"),
         sid: String::new(), // 由调用方填文件级会话标识
-        gen_seconds: 0.0,
+        // 请求时长 = usage.record 时刻 − llm.request 起始时刻（毫秒差）
+        gen_seconds: if pending_llm_start_ms > 0 && raw_time_ms > pending_llm_start_ms {
+            (raw_time_ms - pending_llm_start_ms) as f64 / 1000.0
+        } else {
+            0.0
+        },
     })
 }
 
@@ -521,7 +536,7 @@ impl AnalyticsState {
                 if !self.files.contains_key(&key) {
                     self.files.insert(
                         key.clone(),
-                        FileState { offset: 0, records: Vec::new(), source, cwds: HashMap::new() },
+                        FileState { offset: 0, records: Vec::new(), source, cwds: HashMap::new(), pending_llm_ms: 0 },
                     );
                     dirty = true;
                 }
@@ -543,8 +558,20 @@ impl AnalyticsState {
                 let mut current_model = String::new();
                 for line in text.split('\n') {
                     if source == Source::Kimi {
-                        if let Some(mut record) = parse_kimi_line(line) {
+                        // llm.request：记录起始时刻，供下一个 usage.record 配对
+                        if line.contains("\"llm.request\"") {
+                            if let Ok(req) = serde_json::from_str::<serde_json::Value>(line) {
+                                if let Some(start) = req.get("time").and_then(|v| v.as_f64()) {
+                                    state.pending_llm_ms = start as i64;
+                                }
+                            }
+                            continue;
+                        }
+                        if let Some(mut record) = parse_kimi_line_with_pending(line, state.pending_llm_ms) {
                             record.sid = session_id.clone();
+                            if record.gen_seconds > 0.0 {
+                                state.pending_llm_ms = 0; // 已配对，防止复用过期起点
+                            }
                             state.records.push(record);
                             dirty = true;
                         }
@@ -593,6 +620,7 @@ impl AnalyticsState {
                         records: Vec::new(),
                         source: Source::ZCode,
                         cwds: HashMap::new(),
+                        pending_llm_ms: 0,
                     },
                 );
                 dirty = true;
