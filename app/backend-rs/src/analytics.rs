@@ -59,6 +59,9 @@ pub struct AnalyticsState {
     /// kimi session_index.jsonl：session_id → 工作目录（每次扫描重新读取）
     pub session_index: HashMap<String, String>,
     scanned: bool,
+    /// 上次扫描的秒级时间戳：节流窗内跳过重扫（WSL/聚合走 9P，全量 stat 20s+）；
+    /// /api/cache-clear 置 0 以强制重扫
+    pub last_scan_secs: i64,
 }
 
 fn normalize_ts(value: i64) -> Option<i64> {

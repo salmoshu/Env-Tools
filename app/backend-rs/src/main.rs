@@ -49,6 +49,11 @@ pub(crate) const APP_VERSION: &str = match option_env!("APP_VERSION") {
 };
 
 const ANALYTICS_TTL: Duration = Duration::from_secs(30);
+/// 扫描节流窗（秒）：节流窗内复用引擎内已累积的记录，只重算聚合（纯内存，
+/// 毫秒级）。数据未变时的重复全量扫描纯属浪费——WSL/聚合走 9P 尤甚（20s+）。
+/// 刷新按钮经 /api/cache-clear 重置水位强制重扫。
+const SCAN_GAP_LOCAL: i64 = 30;
+const SCAN_GAP_WSL: i64 = 120;
 const USAGE_TTL: Duration = Duration::from_secs(20);
 const ANALYTICS_WSL_TTL: Duration = Duration::from_secs(120);
 
@@ -57,7 +62,7 @@ struct AppState {
     cache: Arc<Cache>,
     /// 原生分析引擎状态：按扫描范围（local / wsl:<distro> / aggregate）各一份，
     /// 进程内增量（std Mutex + spawn_blocking 避免阻塞运行时）
-    analytics: Arc<std::sync::Mutex<HashMap<String, analytics::AnalyticsState>>>,
+    analytics: Arc<std::sync::Mutex<HashMap<String, Arc<std::sync::Mutex<analytics::AnalyticsState>>>>>,
     /// 可选鉴权 token（--token）：设置后所有 /api 请求（除 /api/health）必须带
     /// x-env-token 头。用于 SSH 等跨机场景；本机 loopback 可省略。
     token: Option<String>,
@@ -219,6 +224,58 @@ fn default_home(dot_dir: &str) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(dot_dir))
 }
 
+/// 分析 worker：扫描（节流）+ 聚合。引擎按 scope 各持一把细粒度锁——
+/// aggregate 的 9P 长扫描不会阻塞 local 请求。启动预热也走这条路径。
+fn analytics_worker(
+    state: &AppState,
+    days: u32,
+    agent: &str,
+    aggregate: bool,
+    wsl_distro: Option<&str>,
+    scope: &str,
+) -> Value {
+    let now = chrono::Local::now();
+    let now_sec = now.timestamp();
+    let engine_arc = {
+        let mut engines = state.analytics.lock().unwrap();
+        engines.entry(scope.to_string()).or_default().clone()
+    };
+    let mut engine = engine_arc.lock().unwrap();
+    let scan_gap = if aggregate || wsl_distro.is_some() { SCAN_GAP_WSL } else { SCAN_GAP_LOCAL };
+    let scan_started = std::time::Instant::now();
+    let (dirty, scan_note) = if now_sec - engine.last_scan_secs >= scan_gap {
+        let dirty = engine.scan(
+            &kimi_homes(aggregate, wsl_distro),
+            &codex_homes(aggregate, wsl_distro),
+            &zcode_homes(aggregate, wsl_distro),
+            now_sec,
+        );
+        engine.last_scan_secs = now_sec;
+        (dirty, format!("scan {:.1}ms", scan_started.elapsed().as_secs_f64() * 1000.0))
+    } else {
+        (false, "scan throttled".to_string())
+    };
+    // 周起点设置（settings.json 的 week_start）注入周至今对比
+    let week_start = settings::load_settings()
+        .get("week_start")
+        .and_then(|v| v.as_str())
+        .unwrap_or("monday")
+        .to_string();
+    let payload = engine.aggregate_with_week_start(days, agent, now, &week_start);
+    drop(engine);
+    let engine_note = format!(
+        "native-rust{}{} ({}, dirty={dirty})",
+        if aggregate { "+wsl" } else { "" },
+        if let Some(name) = wsl_distro { format!("[{name}]") } else { String::new() },
+        scan_note,
+    );
+    serde_json::json!({
+        "ok": true,
+        "engine": engine_note,
+        "analytics": payload,
+    })
+}
+
 /// /api/analytics：原生引擎扫描 + 聚合（无网络、无子进程）；aggregate=1 时
 /// 额外扫描 WSL 家目录（9P 访问较慢，缓存 TTL 放宽）。
 async fn analytics(
@@ -248,44 +305,20 @@ async fn analytics(
     let key = format!("analytics:{days}:{agent}:{scope}");
     let ttl = if aggregate || wsl_distro.is_some() { ANALYTICS_WSL_TTL } else { ANALYTICS_TTL };
     let state = state.clone();
-    let value = state
-        .cache
-        .get_or_fetch(key, ttl, move || async move {
-            tokio::task::spawn_blocking(move || {
-                let now = chrono::Local::now();
-                let now_sec = now.timestamp();
-                let mut engines = state.analytics.lock().unwrap();
-                let engine = engines.entry(scope.clone()).or_default();
-                let scan_started = std::time::Instant::now();
-                let distro = wsl_distro.as_deref();
-                let dirty = engine.scan(
-                    &kimi_homes(aggregate, distro),
-                    &codex_homes(aggregate, distro),
-                    &zcode_homes(aggregate, distro),
-                    now_sec,
-                );
-                // 周起点设置（settings.json 的 week_start）注入周至今对比
-                let week_start = settings::load_settings()
-                    .get("week_start")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("monday")
-                    .to_string();
-                let payload = engine.aggregate_with_week_start(days, &agent, now, &week_start);
-                drop(engines);
-                let engine_note = format!(
-                    "native-rust{}{} (scan {:.1}ms, dirty={dirty})",
-                    if aggregate { "+wsl" } else { "" },
-                    if let Some(name) = distro { format!("[{name}]") } else { String::new() },
-                    scan_started.elapsed().as_secs_f64() * 1000.0
-                );
-                serde_json::json!({
-                    "ok": true,
-                    "engine": engine_note,
-                    "analytics": payload,
+    let cache = state.cache.clone();
+    let value = cache
+        .get_or_fetch(key, ttl, move || {
+            let state = state.clone();
+            let agent = agent.clone();
+            let wsl_distro = wsl_distro.clone();
+            let scope = scope.clone();
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    analytics_worker(&state, days, &agent, aggregate, wsl_distro.as_deref(), &scope)
                 })
-            })
-            .await
-            .unwrap_or_else(|err| error_payload(format!("analytics worker failed: {err}")))
+                .await
+                .unwrap_or_else(|err| error_payload(format!("analytics worker failed: {err}")))
+            }
         })
         .await;
     Json(value)
@@ -320,6 +353,10 @@ async fn usage(axum::extract::State(state): axum::extract::State<AppState>) -> J
 /// 手动刷新：清空分析/配额缓存，下次请求强制增量重扫
 async fn cache_clear(axum::extract::State(state): axum::extract::State<AppState>) -> Json<Value> {
     state.cache.entries.lock().await.clear();
+    // 重置扫描节流水位：下一次分析请求强制增量重扫（手动刷新语义）
+    for engine in state.analytics.lock().unwrap().values() {
+        engine.lock().unwrap().last_scan_secs = 0;
+    }
     Json(serde_json::json!({ "ok": true }))
 }
 
@@ -423,7 +460,7 @@ async fn main() {
         .route("/api/api-keys", get(api_key_status).post(save_api_keys))
         .route("/api/cache-clear", post(cache_clear))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth_guard))
-        .with_state(state);
+        .with_state(state.clone());
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     let listener = match tokio::net::TcpListener::bind(addr).await {
@@ -443,5 +480,32 @@ async fn main() {
         "env-tools-api {} on http://127.0.0.1:{bound}",
         APP_VERSION
     );
+    // 启动预热：local 与 aggregate 各扫一遍（WSL 9P 冷扫 20s+，赶在用户首次
+    // 切换/打开看板之前）。scope 级锁保证预热不阻塞其它范围的请求。
+    {
+        let warm_state = state.clone();
+        tokio::spawn(async move {
+            let mut jobs: Vec<(bool, Option<String>, String)> = vec![
+                (false, None, "local".to_string()),
+                (true, None, "aggregate".to_string()),
+            ];
+            for distro in settings::available_wsl_distros() {
+                jobs.push((false, Some(distro.clone()), format!("wsl:{distro}")));
+            }
+            for (aggregate, distro, scope) in jobs {
+                let st = warm_state.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    let started = std::time::Instant::now();
+                    let value = analytics_worker(&st, 30, "all", aggregate, distro.as_deref(), &scope);
+                    let _ = value;
+                    eprintln!(
+                        "warmup {scope} done in {:.1}s",
+                        started.elapsed().as_secs_f64()
+                    );
+                })
+                .await;
+            }
+        });
+    }
     axum::serve(listener, app).await.unwrap();
 }
