@@ -462,12 +462,7 @@ td b { font-weight: 600; }
 .side-item:hover { background: var(--hover); color: var(--text); }
 .side-item.active { background: var(--accent-soft); color: var(--accent); }
 .side-item.hidden { display: none; }
-.side-group-label {
-  color: var(--faint); font-size: 9px; font-weight: 700;
-  letter-spacing: 0.08em; text-transform: uppercase;
-  padding: 8px 10px 3px; white-space: nowrap;
-}
-.main-settings-nav .side-item { padding-left: 18px; }
+.main-settings-nav .side-item { margin-bottom: 2px; }
 .settings-main { flex: 1; min-width: 0; padding: 20px 24px 28px; }
 .settings-column { max-width: 600px; margin: 0 auto; }
 .settings-back {
@@ -477,6 +472,8 @@ td b { font-weight: 600; }
 }
 .settings-back:hover { color: var(--text); }
 .panel.hidden { display: none; }
+.panel-group { display: flex; flex-direction: column; gap: 20px; }
+.panel-group.hidden { display: none; }
 .settings-card {
   background: var(--card); border: 1px solid var(--border);
   border-radius: 12px; box-shadow: var(--shadow-card);
@@ -709,8 +706,8 @@ td b { font-weight: 600; }
 .titlebar .btn { line-height: 1; }
 .titlebar .env-badge { display: inline-flex; align-items: center; }
 
-/* 设置页侧边栏（主窗口模式，带返回按钮） */
-.main-settings-nav { width: 148px; flex-shrink: 0; padding: 10px 8px; }
+/* 设置页侧边栏（主窗口模式，带返回按钮；大类单层导航） */
+.main-settings-nav { width: 128px; flex-shrink: 0; padding: 10px 8px; }
 
 /* 卡片标题行（标题 + 右侧控件） */
 .card-head-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }

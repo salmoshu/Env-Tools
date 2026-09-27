@@ -691,35 +691,29 @@ function AboutPanel({ settings, backend }) {
 
 const PANEL_GROUPS = [
   {
+    key: "appearance",
     labelKey: "settings.groupAppearance",
-    items: [
-      ["theme", "settings.theme"],
-      ["language", "settings.language"],
-      ["display", "settings.display"],
-      ["weekstart", "settings.week"],
-      ["speedmode", "settings.speed"],
-    ],
+    panels: ["theme", "language", "display", "weekstart", "speedmode"],
   },
   {
+    key: "account",
     labelKey: "settings.groupAccount",
-    items: [
-      ["membership", "settings.membership"],
-      ["login", "settings.login"],
-      ["apikeys", "settings.apikeys"],
-    ],
+    panels: ["membership", "login", "apikeys"],
   },
   {
+    key: "environment",
     labelKey: "settings.groupEnvironment",
-    items: [["environment", "settings.envTitle"]],
+    panels: ["environment"],
   },
   {
+    key: "about",
     labelKey: "settings.groupAbout",
-    items: [["about", "settings.aboutItem"]],
+    panels: ["about"],
   },
 ];
 
 export default function SettingsPage({ lastPayload }) {
-  const [activePanel, setActivePanel] = useState("theme");
+  const [activeGroup, setActiveGroup] = useState("appearance");
   const [settings, setSettings] = useState(null);
   const [backend, setBackend] = useState(null);
   const [apiKeysReload, setApiKeysReload] = useState(0);
@@ -735,7 +729,7 @@ export default function SettingsPage({ lastPayload }) {
 
   useEffect(() => { refreshSettings(); }, [refreshSettings]);
 
-  const panel = (name) => `panel${activePanel === name ? "" : " hidden"}`;
+  const groupClass = (key) => `panel-group${activeGroup === key ? "" : " hidden"}`;
   const envAvailable = (() => {
     const available = (settings && settings.available_environments) || [];
     const distros = (settings && settings.wsl_distros) || [];
@@ -749,45 +743,31 @@ export default function SettingsPage({ lastPayload }) {
           ← {t("nav.back")}
         </button>
         {PANEL_GROUPS.map((group) => {
-          const items = group.items.filter(([key]) => key !== "environment" || envAvailable);
-          if (items.length === 0) return null;
+          if (group.key === "environment" && !envAvailable) return null;
           return (
-            <div className="side-group" key={group.labelKey}>
-              <div className="side-group-label">{t(group.labelKey)}</div>
-              {items.map(([key, labelKey]) => (
-                <div
-                  key={key}
-                  className={`side-item${activePanel === key ? " active" : ""}`}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => setActivePanel(key)}
-                  onKeyDown={activateOnKeys(() => setActivePanel(key))}
-                >
-                  {t(labelKey)}
-                </div>
-              ))}
+            <div
+              key={group.key}
+              className={`side-item${activeGroup === group.key ? " active" : ""}`}
+              role="button"
+              tabIndex={0}
+              onClick={() => setActiveGroup(group.key)}
+              onKeyDown={activateOnKeys(() => setActiveGroup(group.key))}
+            >
+              {t(group.labelKey)}
             </div>
           );
         })}
       </div>
       <div className="settings-main page-scroll">
         <div className="settings-column">
-          <div className={panel("display")}>
-            <DisplayPanel lastPayload={lastPayload} />
-          </div>
-          <div className={panel("theme")}>
+          <div className={groupClass("appearance")}>
             <ThemePanel />
-          </div>
-          <div className={panel("language")}>
             <LanguagePanel />
-          </div>
-          <div className={panel("weekstart")}>
+            <DisplayPanel lastPayload={lastPayload} />
             <WeekStartPanel settings={settings} />
-          </div>
-          <div className={panel("speedmode")}>
             <SpeedModePanel settings={settings} />
           </div>
-          <div className={panel("membership")}>
+          <div className={groupClass("account")}>
             <MembershipPanel
               settings={settings}
               lastPayload={lastPayload}
@@ -795,14 +775,10 @@ export default function SettingsPage({ lastPayload }) {
                 if (result.settings) setSettings((prev) => ({ ...(prev || {}), ...result.settings }));
               }}
             />
-          </div>
-          <div className={panel("login")}>
             <LoginPanel currentSettings={settings} lastPayload={lastPayload} />
-          </div>
-          <div className={panel("apikeys")}>
             <ApiKeysPanel reloadKey={apiKeysReload} />
           </div>
-          <div className={panel("environment")}>
+          <div className={groupClass("environment")}>
             <EnvironmentPanel
               settings={settings}
               onSaved={(next) => {
@@ -811,7 +787,7 @@ export default function SettingsPage({ lastPayload }) {
               }}
             />
           </div>
-          <div className={panel("about")}>
+          <div className={groupClass("about")}>
             <AboutPanel settings={settings} backend={backend} />
           </div>
         </div>
