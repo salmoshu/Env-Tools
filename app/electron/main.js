@@ -8,7 +8,7 @@
 // 数据链路（v0.7.0）：渲染层只走 IPC；数据全部由原生后端 env-tools-api
 // （Rust + axum，配额/分析/设置全原生）提供，python 引擎已移除。
 
-const { app, BrowserWindow, ipcMain } = require("electron");
+const { app, BrowserWindow, ipcMain, net } = require("electron");
 const { spawn, execSync } = require("child_process");
 const os = require("os");
 const path = require("path");
@@ -219,6 +219,18 @@ async function fetchWithTimeout(url, { headers = {}, timeoutMs }) {
     return await fetch(url, { headers, signal: controller.signal });
   } finally {
     clearTimeout(timer);
+  }
+}
+
+// 更新专用：走 Electron net.fetch（Chromium 网络栈），自动遵循系统代理；
+// Node undici 的全局 fetch 不认代理，国内直连 GitHub release 常被限速。
+async function fetchViaNet(url, { headers = {}, timeoutMs } = {}) {
+  const controller = new AbortController();
+  const timer = timeoutMs ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  try {
+    return await net.fetch(url, { headers, signal: controller.signal });
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -1284,7 +1296,7 @@ ipcMain.handle("update-check", async () => {
   try {
     let meta;
     try {
-      const res = await fetchWithTimeout(UPDATE_FEED, {
+      const res = await fetchViaNet(UPDATE_FEED, {
         headers: githubHeaders(),
         timeoutMs: 20000,
       });
@@ -1292,7 +1304,7 @@ ipcMain.handle("update-check", async () => {
       meta = await res.json();
     } catch (feedErr) {
       // 兜底：latest 短链延迟时，走公开 GitHub API 定位 latest.json
-      const api = await fetchWithTimeout("https://api.github.com/repos/salmoshu/Env-Tools/releases/latest", {
+      const api = await fetchViaNet("https://api.github.com/repos/salmoshu/Env-Tools/releases/latest", {
         headers: githubHeaders({ Accept: "application/vnd.github+json" }),
         timeoutMs: 20000,
       });
@@ -1304,7 +1316,7 @@ ipcMain.handle("update-check", async () => {
       const release = await api.json();
       const metaAsset = (release.assets || []).find((a) => a.name === "latest.json");
       if (!metaAsset) throw new Error("latest release has no latest.json");
-      const res2 = await fetchWithTimeout(metaAsset.browser_download_url, {
+      const res2 = await fetchViaNet(metaAsset.browser_download_url, {
         headers: githubHeaders(),
         timeoutMs: 30000,
       });
@@ -1340,16 +1352,19 @@ async function downloadUpdateAsset(asset, destFile) {
   const url = asset.url
     || `https://github.com/salmoshu/Env-Tools/releases/download/v${lastUpdateInfo.version}/${encodeURIComponent(asset.name)}`;
   sendUpdateProgress({ phase: "download", percent: 0 });
-  const res = await fetch(url, {
+  const res = await fetchViaNet(url, {
     headers: githubHeaders({ Accept: "application/octet-stream" }),
   });
   if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`);
   const total = Number(res.headers.get("content-length")) || 0;
   let received = 0;
   const chunks = [];
-  for await (const chunk of res.body) {
-    chunks.push(chunk);
-    received += chunk.length;
+  const reader = res.body.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(Buffer.from(value));
+    received += value.length;
     if (total) {
       sendUpdateProgress({ phase: "download", percent: Math.round((received / total) * 100) });
     }
