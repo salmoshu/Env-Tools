@@ -591,7 +591,6 @@ function UpdateSection() {
           </button>
         )}
       </div>
-      <div className="settings-note">{t("settings.noTokenNeeded")}</div>
     </div>
   );
 }
