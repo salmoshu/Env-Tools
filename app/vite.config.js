@@ -18,8 +18,14 @@ const devCsp = () => ({
 export default defineConfig({
   plugins: [react(), devCsp()],
   base: "./",
-  // 端口写死且严格占用：scripts/dev.mjs 要把确定地址传给 Electron
-  server: { port: 5173, strictPort: true },
+  // 端口写死且严格占用：scripts/dev.mjs 要把确定地址传给 Electron。
+  // 不用 vite 默认的 5173：其他 vite 项目（如 Nav-Tools）的 dev server 会撞车
+  server: {
+    port: 5273,
+    strictPort: true,
+    // 不看 Rust 构建产物：cargo 链接期间 exe 被锁，fs.watch 会 EBUSY 崩溃
+    watch: { ignored: ["**/backend-rs/target/**"] },
+  },
   build: {
     outDir: "dist",
     emptyOutDir: true,

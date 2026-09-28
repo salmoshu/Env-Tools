@@ -17,26 +17,22 @@ if (!fs.existsSync(viteEntry)) {
   process.exit(1);
 }
 
-const PORT = 5173;
+const PORT = 5273;
 const devUrl = `http://localhost:${PORT}/`;
 
-// 幂等启动：上次异常退出可能遗留占用 5173 的 vite（node.exe），先清掉。
+// 幂等启动：上次异常退出可能遗留占用本端口的 vite（node.exe），先清掉。
 // 只杀 node.exe 进程，绝不误伤其他应用。
 function killStaleVite() {
   if (process.platform !== "win32") return;
+  // v4/v6 独立查询：任一协议无匹配时 findstr 退出码为 1，v4 失败不能跳过
+  // v6 检查——vite 绑 localhost 时常常只监听 [::1]
   let out = "";
-  try {
-    // 同时查 TCPv4 与 TCPv6：vite 绑 localhost 时可能落在 [::1]
-    const v4 = execSync(`netstat -ano -p tcp | findstr ":${PORT} "`, { encoding: "utf8" });
-    let v6 = "";
+  for (const proto of ["tcp", "tcpv6"]) {
     try {
-      v6 = execSync(`netstat -ano -p tcpv6 | findstr ":${PORT} "`, { encoding: "utf8" });
+      out += `${execSync(`netstat -ano -p ${proto} | findstr ":${PORT} "`, { encoding: "utf8" })}\n`;
     } catch {}
-    out = `${v4}
-${v6}`;
-  } catch {
-    return; // 端口空闲
   }
+  if (!out.trim()) return; // 端口空闲
   const pids = new Set();
   for (const line of out.split("\n")) {
     if (!line.includes("LISTENING")) continue;
@@ -69,6 +65,9 @@ vite.on("exit", (code) => {
 
 async function waitForServer() {
   for (let i = 0; i < 150; i++) {
+    // 自家 vite 已退出（如 strictPort 撞车）就直接判失败：
+    // 端口上答话的可能是别的项目的服务器，不能算"就绪"
+    if (vite.exitCode !== null || vite.signalCode !== null) return false;
     try {
       const res = await fetch(devUrl);
       if (res.ok) return true;
@@ -82,7 +81,11 @@ async function waitForServer() {
 
 const ready = await waitForServer();
 if (!ready) {
-  console.error(`[dev] vite dev server 在 30s 内未就绪：${devUrl}`);
+  if (vite.exitCode !== null || vite.signalCode !== null) {
+    console.error("[dev] vite 进程已退出（端口冲突或启动失败），详见上方 vite 输出");
+  } else {
+    console.error(`[dev] vite dev server 在 30s 内未就绪：${devUrl}`);
+  }
   vite.kill();
   process.exit(1);
 }
