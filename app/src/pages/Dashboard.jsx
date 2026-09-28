@@ -22,6 +22,16 @@ const DAYS_KEY = "ai-usage-monitor.analytics-days";
 const AGENT_KEY = "ai-usage-monitor.analytics-agent";
 const TARGET_KEY = "ai-usage-monitor.target";
 const TREND_KEY = "ai-usage-monitor.trend-granularity";
+// 设置页"显示"面板的 provider 勾选（与悬浮看板共用同一 localStorage 键）
+const DISPLAY_SELECTION_KEY = "ai-usage-monitor.display-providers";
+
+function readDisplaySelection() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(DISPLAY_SELECTION_KEY) || "null");
+    if (Array.isArray(stored)) return new Set(stored.filter((p) => typeof p === "string"));
+  } catch {}
+  return null;
+}
 
 const AGENT_PROVIDERS = {
   kimi: ["Kimi Code"],
@@ -252,6 +262,29 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
   const [weekStart, setWeekStart] = useState("monday");
   const [speedMode, setSpeedMode] = useState("gen");
   const [upgradeProvider, setUpgradeProvider] = useState(null);
+  // 铺满视图的卡片 id（每日 Token 及以下各区块）；Esc 退出
+  const [expandedCard, setExpandedCard] = useState(null);
+  useEffect(() => {
+    if (!expandedCard) return;
+    const onKey = (event) => { if (event.key === "Escape") setExpandedCard(null); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [expandedCard]);
+  const cardCls = (id, base = "card") => `${base}${expandedCard === id ? " card-expanded" : ""}`;
+  const expandBtn = (id) => (
+    <button
+      type="button"
+      className="refresh-inline card-expand-btn"
+      title={expandedCard === id ? t("dash.collapseView") : t("dash.expandView")}
+      onClick={() => setExpandedCard(expandedCard === id ? null : id)}
+    >
+      <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+        {expandedCard === id
+          ? (<><path d="M11 7H7v4" /><path d="M11 11 7 7" /><path d="M1 5h4v4" /><path d="M1 1l4 4" /></>)
+          : (<><path d="M7 1h4v4" /><path d="M11 1 7 5" /><path d="M5 11H1V7" /><path d="M1 11l4-4" /></>)}
+      </svg>
+    </button>
+  );
 
   useEffect(() => {
     window.api.getSettings().then((result) => {
@@ -265,7 +298,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
   const install = useInstallState();
   const upgrading = install.running;
   const analyticsBusy = useRef(false);
-  useLang();
+  const [lang] = useLang();
 
   // 配额按目标路由：本地/汇总目标吃 60s 广播（lastPayload），远端目标走 get-usage
   const refreshUsage = useCallback(async (nextTarget) => {
@@ -354,8 +387,22 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
   const versions = (data && data.versions) || {};
   const allAccounts = (data && data.accounts) || [];
   // agent 筛选联动配额：只看 kimi 时配额区只显示 Kimi
-  const accounts = filterByAgent(allAccounts, agent);
-  const shownErrors = filterByAgent(errors, agent);
+  const agentAccounts = filterByAgent(allAccounts, agent);
+  const agentErrors = filterByAgent(errors, agent);
+  // 再叠加设置页"显示"勾选：未勾选的 provider（如 DeepSeek）配额区同样隐藏；
+  // 与看板一致的自愈：勾选把现有 provider 全部过滤掉时回退为显示全部
+  const displaySel = readDisplaySelection();
+  let accounts = agentAccounts;
+  let shownErrors = agentErrors;
+  if (displaySel) {
+    accounts = agentAccounts.filter((a) => displaySel.has(a.provider));
+    shownErrors = agentErrors.filter((e) => !e.provider || displaySel.has(e.provider));
+    if (accounts.length === 0 && shownErrors.length === 0
+        && (agentAccounts.length > 0 || agentErrors.length > 0)) {
+      accounts = agentAccounts;
+      shownErrors = agentErrors;
+    }
+  }
 
   // --- 分析数据派生 ---
   const dayList = (analytics && analytics.day_list) || [];
@@ -602,31 +649,36 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
           <div className="kpi-value">{fmtPct(kpi.cache_hit_rate)}</div>
         </div>
         <div className="kpi-card">
-          <div className="kpi-label">{t("dash.kpiSessions")}</div>
-          <div className="kpi-value">{fmt(kpi.active_sessions)}</div>
-        </div>
-        <div className="kpi-card">
-          <div className="kpi-label">{t("dash.kpiRate")}</div>
+          <div className="kpi-label">
+            {lang === "zh"
+              ? `${t("dash.kpiRate")}（${t("dash.rateLatestHint")}）`
+              : `${t("dash.kpiRate")} (${t("dash.rateLatestHint")})`}
+          </div>
           {(() => {
             const latest = (kpi.rate || {}).latest_sessions || [];
             if (!latest.length) {
               return <div className="kpi-sub">{t("state.noData")}</div>;
             }
             const fmtRate = (v) => (v >= 100 ? abbrev(Math.round(v)) : v.toFixed(1));
+            // 同名项目出现多次时用 #1/#2/#3 区分（按最近活跃排序，#1 最新）；
+            // 完整会话 id 在悬浮提示里，行内不再占空间
+            const projCount = {};
+            for (const item of latest) projCount[item.project] = (projCount[item.project] || 0) + 1;
+            const projSeen = {};
             return (
-              <>
-                <div className="kpi-sub">{t("dash.rateLatestHint")}</div>
-                <div className="rate-rows">
-                  {latest.map((item) => (
+              <div className="rate-rows">
+                {latest.map((item) => {
+                  const dupIdx = (projSeen[item.project] = (projSeen[item.project] || 0) + 1);
+                  const tag = projCount[item.project] > 1 ? `#${dupIdx}` : null;
+                  return (
                     <div
                       className="rate-row"
-                      key={item.project}
-                      title={`${item.project} · ${item.agent} · ${t("dash.rateEndedAgo").replace("{d}", fmtSpan(item.ended_ago_seconds || 0))}`}
+                      key={item.session_id || `${item.project}#${dupIdx}`}
+                      title={`${item.project} · ${item.session_id || "?"} · ${item.model || item.agent} · ${t("dash.rateEndedAgo").replace("{d}", fmtSpan(item.ended_ago_seconds || 0))}`}
                     >
-                      <span className="rate-name">
-                        {item.project}
-                        <span className="rate-ago">{t("dash.rateEndedAgo").replace("{d}", fmtSpan(item.ended_ago_seconds || 0))}</span>
-                      </span>
+                      <span className="rate-name">{item.project}</span>
+                      {tag ? <span className="rate-tag">{tag}</span> : null}
+                      <span className="rate-model">{item.model || item.agent || "—"}</span>
                       <span className="rate-val">
                         {(() => {
                           const useGen = speedMode === "gen";
@@ -637,9 +689,9 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                         })()}
                       </span>
                     </div>
-                  ))}
-                </div>
-              </>
+                  );
+                })}
+              </div>
             );
           })()}
         </div>
@@ -684,16 +736,19 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
         </div>
       </section>
 
-      <section className="card">
+      <section className={cardCls("daily")}>
         <div className="card-head-row">
           <h2>{t("dash.dailyTokens")}</h2>
-          <button
-            type="button"
-            className="refresh-inline"
-            onClick={() => setShowHourly((v) => !v)}
-          >
-            {t("dash.hourly")} {showHourly ? "▾" : "▸"}
-          </button>
+          <div className="card-head-actions">
+            <button
+              type="button"
+              className="refresh-inline"
+              onClick={() => setShowHourly((v) => !v)}
+            >
+              {t("dash.hourly")} {showHourly ? "▾" : "▸"}
+            </button>
+            {expandBtn("daily")}
+          </div>
         </div>
         <div className="legend">
           {SERIES_DEFS.map(([key, name, color]) => (
@@ -730,21 +785,24 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
         )}
       </section>
 
-      <section className="card">
+      <section className={cardCls("trend")}>
         <div className="card-head-row">
           <h2>{t("dash.trend")}</h2>
-          <select
-            className="control"
-            value={trendGran}
-            onChange={(event) => {
-              setTrendGran(event.target.value);
-              try { localStorage.setItem(TREND_KEY, event.target.value); } catch {}
-            }}
-          >
-            <option value="day">{t("dash.trendDaily")}</option>
-            <option value="week">{t("dash.trendWeekly")}</option>
-            <option value="year">{t("dash.trendYearly")}</option>
-          </select>
+          <div className="card-head-actions">
+            <select
+              className="control"
+              value={trendGran}
+              onChange={(event) => {
+                setTrendGran(event.target.value);
+                try { localStorage.setItem(TREND_KEY, event.target.value); } catch {}
+              }}
+            >
+              <option value="day">{t("dash.trendDaily")}</option>
+              <option value="week">{t("dash.trendWeekly")}</option>
+              <option value="year">{t("dash.trendYearly")}</option>
+            </select>
+            {expandBtn("trend")}
+          </div>
         </div>
         {trendGran === "year" && !trendAnalytics
           ? <div className="status">{t("dash.trendYearlyHint")}</div>
@@ -754,18 +812,27 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
       </section>
 
       <div className="row-yearly">
-        <section className="card">
-          <h2>{t("dash.yearly")}</h2>
+        <section className={cardCls("yearly")}>
+          <div className="card-head-row">
+            <h2>{t("dash.yearly")}</h2>
+            {expandBtn("yearly")}
+          </div>
           <CalendarHeatmap calendar={analytics && analytics.calendar} />
         </section>
-        <section className="card card-model-share">
-          <h2>{t("dash.modelShare")}</h2>
+        <section className={cardCls("share", "card card-model-share")}>
+          <div className="card-head-row">
+            <h2>{t("dash.modelShare")}</h2>
+            {expandBtn("share")}
+          </div>
           <DonutChart items={pieItems} />
         </section>
       </div>
 
-      <section className="card">
-        <h2>{t("dash.dailyModel")}</h2>
+      <section className={cardCls("dailyModel")}>
+        <div className="card-head-row">
+          <h2>{t("dash.dailyModel")}</h2>
+          {expandBtn("dailyModel")}
+        </div>
         <div className="legend">
           {models.map((model, i) => (
             <span className="item" key={model}>
@@ -794,20 +861,29 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
       </section>
 
       <div className="grid">
-        <section className="card">
-          <h2>{t("dash.cacheRate")}</h2>
+        <section className={cardCls("cacheRate")}>
+          <div className="card-head-row">
+            <h2>{t("dash.cacheRate")}</h2>
+            {expandBtn("cacheRate")}
+          </div>
           <LineChart labels={shortDays} values={(daily || []).map((entry) => entry.cache_hit_rate)} />
         </section>
-        <section className="card">
-          <h2>{t("dash.topProjects")}</h2>
+        <section className={cardCls("topProjects")}>
+          <div className="card-head-row">
+            <h2>{t("dash.topProjects")}</h2>
+            {expandBtn("topProjects")}
+          </div>
           {(analytics && analytics.project_rank || []).slice(0, 15).length
             ? <ProjectBars items={(analytics.project_rank || []).slice(0, 15)} />
             : <div className="status">{t("state.noData")}</div>}
         </section>
       </div>
 
-      <section className="card">
-        <h2>{t("dash.sessions")}</h2>
+      <section className={cardCls("sessions")}>
+        <div className="card-head-row">
+          <h2>{t("dash.sessions")}</h2>
+          {expandBtn("sessions")}
+        </div>
         <div className="table-hint">{t("dash.sessionsHint")}</div>
         <div className="table-hint" style={{ opacity: 0.7 }}>
           {speedMode === "gen" ? t("dash.speedHint") : t("dash.speedHintThroughput")}

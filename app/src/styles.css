@@ -712,6 +712,19 @@ td b { font-weight: 600; }
 /* 卡片标题行（标题 + 右侧控件） */
 .card-head-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
 .card-head-row h2 { margin: 0; }
+.card-head-actions { display: flex; align-items: center; gap: 8px; }
+
+/* 卡片铺满视图：铺满标题栏（38px）以下、侧边栏（128px）以右的主体区域 */
+.card-expanded {
+  position: fixed;
+  top: 38px; left: 128px; right: 0; bottom: 0;
+  z-index: 40;
+  margin: 0;
+  border-radius: 0;
+  overflow-y: auto;
+}
+.card-expanded .chart { height: min(70vh, 640px); }
+.card-expanded .table-wrap { max-height: none; }
 
 /* --- v0.7.1 滚动结构调整：页头固定，滚动条只出现在页头之下 --- */
 .page.page-flex { height: 100%; display: flex; flex-direction: column; padding: 0; }
@@ -859,27 +872,26 @@ td b { font-weight: 600; }
 }
 .toast-close:hover { opacity: 1; }
 
-/* --- 速率卡内的分项目排行 --- */
+/* --- 速率卡内的最新会话列表（项目 / 会话 id / 模型 / 速率） --- */
 .rate-rows { margin-top: 7px; display: grid; gap: 3px; }
 .rate-row {
   display: flex; align-items: center; justify-content: space-between;
-  gap: 10px; font-size: 10px; color: var(--dim);
+  gap: 8px; font-size: 10px; color: var(--dim);
 }
 .rate-row .rate-name {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  color: var(--text); font-weight: 600;
+  color: var(--text); font-weight: 600; min-width: 0;
+}
+.rate-row .rate-tag {
+  font-family: var(--font-num); color: var(--accent); flex-shrink: 0;
+}
+.rate-row .rate-model {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--faint); min-width: 0;
 }
 .rate-row .rate-val {
   font-variant-numeric: tabular-nums; color: var(--accent); flex-shrink: 0;
-}
-
-/* 速率卡行内的新鲜度标注 */
-.rate-ago {
-  margin-left: 6px;
-  font-size: 9px;
-  font-weight: 400;
-  color: var(--faint);
-  white-space: nowrap;
+  margin-left: auto;
 }
 
 /* ============ Robo-Flow 品牌组件细节（工作界面规范） ============ */

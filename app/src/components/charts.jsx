@@ -16,6 +16,23 @@ function svgEl(tag, attrs = {}, parent = null) {
   return node;
 }
 
+// 图表构建 + 容器尺寸跟随：卡片铺开/窗口缩放时按新尺寸重绘（rAF 合并抖动）
+function useChartBuild(ref, build, deps) {
+  useEffect(() => {
+    const container = ref.current;
+    if (!container) return;
+    let raf = 0;
+    const run = () => build(container);
+    run();
+    const observer = new ResizeObserver(() => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(run);
+    });
+    observer.observe(container);
+    return () => { observer.disconnect(); cancelAnimationFrame(raf); };
+  }, deps);
+}
+
 export const SERIES_DEFS = [
   ["input", "input", "var(--c-input)"],
   ["output", "output", "var(--c-output)"],
@@ -92,9 +109,9 @@ export function StackedBars({ labels, series, columnTip, className = "" }) {
   // labels/series/columnTip 均为父组件渲染期新建引用，不能直接做依赖（等于每次重建）；
   // 以数据序列化做 key：父组件无关重渲染（如刷新按钮动画）不再重建整棵 SVG
   const dataKey = JSON.stringify([labels, series.map((s) => [s.color, s.data])]);
-  useEffect(() => {
-    if (!ref.current || !labels) return;
-    buildStackedBars(ref.current, labels, series, columnTip);
+  useChartBuild(ref, (container) => {
+    if (!labels) return;
+    buildStackedBars(container, labels, series, columnTip);
   }, [dataKey]);
   useEffect(() => bindChartTooltip(ref), []);
   return <div ref={ref} className={`chart ${className}`} />;
@@ -113,12 +130,8 @@ function donutArcPath(cx, cy, rInner, rOuter, start, end) {
   ].join(" ");
 }
 
-export function DonutChart({ items }) {
-  const ref = useRef(null);
-  useEffect(() => {
-    const container = ref.current;
-    if (!container) return;
-    container.textContent = "";
+function buildDonut(container, items) {
+  container.textContent = "";
     const total = items.reduce((sum, item) => sum + item.value, 0);
     const size = 190;
     const cx = size / 2;
@@ -162,17 +175,17 @@ export function DonutChart({ items }) {
       legend.appendChild(row);
     }
     container.appendChild(legend);
-  }, [items]);
+}
+
+export function DonutChart({ items }) {
+  const ref = useRef(null);
+  useChartBuild(ref, (container) => buildDonut(container, items), [items]);
   useEffect(() => bindChartTooltip(ref), []);
   return <div ref={ref} className="pie-wrap" />;
 }
 
-export function LineChart({ labels, values }) {
-  const ref = useRef(null);
-  useEffect(() => {
-    const container = ref.current;
-    if (!container) return;
-    container.textContent = "";
+function buildLineChart(container, labels, values) {
+  container.textContent = "";
     const width = Math.max(container.clientWidth || 0, 240);
     const height = Math.max(container.clientHeight || 0, 160);
     const margin = { top: 10, right: 10, bottom: 20, left: 44 };
@@ -227,18 +240,18 @@ export function LineChart({ labels, values }) {
       }
     });
     container.appendChild(svg);
-  }, [labels, values]);
+}
+
+export function LineChart({ labels, values }) {
+  const ref = useRef(null);
+  useChartBuild(ref, (container) => buildLineChart(container, labels, values), [labels, values]);
   useEffect(() => bindChartTooltip(ref), []);
   return <div ref={ref} className="chart" />;
 }
 
 /** 数值折线图（token 趋势）：y 轴按数据自适应刻度，可传入每点的自定义悬浮 HTML */
-export function ValueLineChart({ labels, values, valueLabel = "tokens", toolTips }) {
-  const ref = useRef(null);
-  useEffect(() => {
-    const container = ref.current;
-    if (!container) return;
-    container.textContent = "";
+function buildValueLineChart(container, labels, values, valueLabel, toolTips) {
+  container.textContent = "";
     const width = Math.max(container.clientWidth || 0, 240);
     const height = Math.max(container.clientHeight || 0, 170);
     const margin = { top: 10, right: 12, bottom: 20, left: 52 };
@@ -298,7 +311,11 @@ export function ValueLineChart({ labels, values, valueLabel = "tokens", toolTips
       }
     });
     container.appendChild(svg);
-  }, [labels, values, valueLabel, toolTips]);
+}
+
+export function ValueLineChart({ labels, values, valueLabel = "tokens", toolTips }) {
+  const ref = useRef(null);
+  useChartBuild(ref, (container) => buildValueLineChart(container, labels, values, valueLabel, toolTips), [labels, values, valueLabel, toolTips]);
   useEffect(() => bindChartTooltip(ref), []);
   return <div ref={ref} className="chart" />;
 }
@@ -351,7 +368,7 @@ export function CalendarHeatmap({ calendar }) {
     const weeks = Math.ceil(totalDays / 7);
     const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     const monthsRow = document.createElement("div");
-    // v0.7.1：网格铺满容器宽度，月份标签与周列一一对应
+    // 网格铺满容器宽度，月份标签与周列一一对应
     monthsRow.className = "cal-months";
     monthsRow.style.display = "grid";
     monthsRow.style.gridTemplateColumns = `repeat(${weeks}, minmax(13px, 1fr))`;
@@ -402,7 +419,8 @@ export function CalendarHeatmap({ calendar }) {
         const level = Math.min(4, Math.ceil((entry[0] / maxVal) * 4));
         cell.classList.add(`l${level}`);
       }
-      if (key === todayKey) cell.style.outline = "1px solid var(--marker)";
+      // 内嵌阴影画高亮圈：outline 画在格子外侧，最右列会被滚动容器截断 1px
+      if (key === todayKey) cell.style.boxShadow = "inset 0 0 0 1px var(--marker)";
       cell.dataset.tip = tipTitle(key) +
         tipRow("tokens", fmt(entry ? entry[0] : 0)) +
         tipRow("requests", fmt(entry ? entry[1] : 0));

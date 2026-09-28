@@ -150,11 +150,14 @@ Windows Electron 看板自 v0.2.0 起默认打开**全量模式**窗口（Usage 
 `~/.kimi-code/sessions/**/wire.jsonl`，只读取 turn 级 `usage.record`，全程不
 联网）：
 
-- KPI 卡片：近 7 天 tokens、今日 tokens、总缓存命中率、活跃会话数、上周同期
-  （含周环比涨跌）。
+- KPI 卡片：近 7 天 tokens、今日 tokens、总缓存命中率、上周同期（含周环比
+  涨跌）、Token 速率（最新 3 个活跃会话的项目 / 模型 / 速率，同名项目以
+  #1/#2 区分，悬浮可查看完整会话 id）。
 - 图表：每日 token 趋势（input/output/cacheRead/cacheCreation 堆叠）、今日按
   小时趋势、模型占比（Top 8 + 其他）、每日 × 模型堆叠、缓存命中率折线、项目
-  排行 Top 15（按会话工作目录聚合）、GitHub 风格近一年活动日历。
+  排行 Top 15（按会话工作目录聚合）、GitHub 风格近一年活动日历。每日 Token
+  及其以下各区块右上角均有“铺满视图”按钮，可将该区块铺满主体区域查看
+  （Esc 或“还原”退出）。
 - 会话明细：按 token 总量排序，点击 Start / End / Total 表头可切换排序。
 - 顶部 Range 下拉切换统计窗口（7/14/30/90 天）；数据每 5 分钟自动重扫，也可
   点击标题栏刷新按钮立即重扫。解析位置按文件增量缓存在
