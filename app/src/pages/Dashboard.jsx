@@ -19,6 +19,8 @@ import { useInstallState, setInstallRunning, setInstallResult, dismissInstallRes
 
 const ANALYTICS_REFRESH_MS = 5 * 60 * 1000;
 const DAYS_KEY = "ai-usage-monitor.analytics-days";
+// 可选范围档；持久化值若不在档内（如历史版本遗留的 "14"）回退默认 30
+const RANGE_OPTIONS = ["7", "30", "90"];
 const AGENT_KEY = "ai-usage-monitor.analytics-agent";
 const TARGET_KEY = "ai-usage-monitor.target";
 const TREND_KEY = "ai-usage-monitor.trend-granularity";
@@ -239,7 +241,10 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
   const [analyticsError, setAnalyticsError] = useState("");
   const [busy, setBusy] = useState(false);
   const [days, setDays] = useState(() => {
-    try { return localStorage.getItem(DAYS_KEY) || "30"; } catch { return "30"; }
+    try {
+      const saved = localStorage.getItem(DAYS_KEY);
+      return RANGE_OPTIONS.includes(saved) ? saved : "30";
+    } catch { return "30"; }
   });
   const [agent, setAgent] = useState(() => {
     try { return localStorage.getItem(AGENT_KEY) || "all"; } catch { return "all"; }
@@ -494,6 +499,9 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
 
   const hourly = (analytics && analytics.today_hourly) || [];
   const kpi = (analytics && analytics.kpi) || {};
+  // 缓存命中率 KPI 用今日口径：取逐日桶最后一天（与后端逐日 cache_hit_rate 同口径），
+  // 原 kpi.cache_hit_rate 是所选范围窗口口径，与"本周/今日"两张固定窗口卡不一致
+  const todayCacheRate = daily && daily.length ? daily[daily.length - 1].cache_hit_rate : null;
   let wowHtml = "";
   if (kpi.week_over_week != null) {
     const percent = (kpi.week_over_week * 100).toFixed(1);
@@ -592,21 +600,6 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
               ))}
             </select>
           </label>
-          <label className="days-field">{t("dash.range")}
-            <select
-              className="control"
-              value={days}
-              onChange={(event) => {
-                setDays(event.target.value);
-                try { localStorage.setItem(DAYS_KEY, event.target.value); } catch {}
-              }}
-            >
-              <option value="7">{t("dash.range7")}</option>
-              <option value="14">{t("dash.range14")}</option>
-              <option value="30">{t("dash.range30")}</option>
-              <option value="90">{t("dash.range90")}</option>
-            </select>
-          </label>
           <button
             type="button"
             className="btn refresh-inline"
@@ -645,8 +638,8 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
           <div className="kpi-value">{fmt(kpi.today_total)}</div>
         </div>
         <div className="kpi-card">
-          <div className="kpi-label">{t("dash.kpiCache")}</div>
-          <div className="kpi-value">{fmtPct(kpi.cache_hit_rate)}</div>
+          <div className="kpi-label">{t("dash.kpiCacheToday")}</div>
+          <div className="kpi-value">{fmtPct(todayCacheRate)}</div>
         </div>
         <div className="kpi-card">
           <div className="kpi-label">
@@ -740,6 +733,19 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
         <div className="card-head-row">
           <h2>{t("dash.dailyTokens")}</h2>
           <div className="card-head-actions">
+            <select
+              className="control"
+              value={days}
+              title={t("dash.range")}
+              onChange={(event) => {
+                setDays(event.target.value);
+                try { localStorage.setItem(DAYS_KEY, event.target.value); } catch {}
+              }}
+            >
+              {RANGE_OPTIONS.map((n) => (
+                <option key={n} value={n}>{t(`dash.range${n}`)}</option>
+              ))}
+            </select>
             <button
               type="button"
               className="refresh-inline"
