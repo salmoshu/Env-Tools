@@ -45,6 +45,16 @@ export function MaximizeIcon() {
   );
 }
 
+// 还原（已最大化）：前窗 + 后窗的错层双框，与最大化单框区分
+export function RestoreIcon() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4">
+      <rect x="7" y="9" width="13" height="13" rx="1.5" />
+      <path d="M4 15V5.5A1.5 1.5 0 0 1 5.5 4H15" />
+    </svg>
+  );
+}
+
 export function AnalyticsIcon() {
   return (
     <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
@@ -53,10 +63,12 @@ export function AnalyticsIcon() {
   );
 }
 
+// 悬浮看板：大窗口右下角嵌一个实心小浮窗（画中画），与最大化的空框拉开差距
 export function BoardIcon() {
   return (
     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
-      <rect x="3" y="5" width="18" height="14" rx="2" />
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <rect x="12.5" y="12.5" width="6.5" height="4.5" rx="1" fill="currentColor" stroke="none" />
     </svg>
   );
 }

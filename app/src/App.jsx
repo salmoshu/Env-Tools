@@ -1,10 +1,10 @@
 // 应用入口：hash 路由分发窗口页面（#board 看板 / #tools 组件 / #settings 设置 /
-// 其余为全量窗口的分析页）。v0.7.1 起主窗口采用左侧边栏导航：Analytics /
-// Tools / Board 住侧边栏，header 右侧只留设置与窗口按钮。
+// 其余为全量窗口的分析页）。主窗口左侧边栏导航：Analytics / Tools；悬浮看板
+// 入口为 header 图标按钮（设置齿轮左侧），header 右侧其余为窗口按钮。
 
 import { useEffect, useState } from "react";
 import Titlebar, {
-  AnalyticsIcon, BoardIcon, GearIcon, ExpandIcon, MaximizeIcon, PinIcon,
+  AnalyticsIcon, BoardIcon, GearIcon, ExpandIcon, MaximizeIcon, RestoreIcon, PinIcon,
   ToolsIcon, useEnvBadge,
 } from "./components/Titlebar.jsx";
 import Dashboard from "./pages/Dashboard.jsx";
@@ -29,6 +29,7 @@ export default function App() {
   const [lastPayload, setLastPayload] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const [pinned, setPinned] = useState(false);
+  const [maximized, setMaximized] = useState(false);
   const [theme, setTheme] = useState(readThemePreference());
   // 订阅语言切换：t() 的输出随 useLang 状态变化整树重渲染
   useLang();
@@ -52,9 +53,12 @@ export default function App() {
     const onHash = () => setRoute(currentRoute());
     window.addEventListener("hashchange", onHash);
     if (window.api.getPinState) window.api.getPinState().then(setPinned);
+    const offMaximized = window.api.onMaximizedChanged(setMaximized);
+    window.api.isMaximized().then(setMaximized);
     return () => {
       off();
       offNavigate();
+      offMaximized();
       window.removeEventListener("hashchange", onHash);
     };
   }, []);
@@ -92,6 +96,16 @@ export default function App() {
         {isMain && (
           <button
             type="button"
+            className="btn"
+            title={t("tip.board")}
+            onClick={() => window.api.openUsageBoard()}
+          >
+            <BoardIcon />
+          </button>
+        )}
+        {isMain && (
+          <button
+            type="button"
             className={`btn${isSettings ? " active" : ""}`}
             title={t("tip.settings")}
             onClick={() => navigate(isSettings ? "dashboard" : "settings")}
@@ -104,10 +118,10 @@ export default function App() {
           <button
             type="button"
             className="btn"
-            title={t("tip.maximize")}
-            onClick={() => window.api.windowMaximizeToggle()}
+            title={maximized ? t("tip.restore") : t("tip.maximize")}
+            onClick={async () => setMaximized(await window.api.windowMaximizeToggle())}
           >
-            <MaximizeIcon />
+            {maximized ? <RestoreIcon /> : <MaximizeIcon />}
           </button>
         )}
         <button type="button" className="btn close" title={t("tip.close")} onClick={() => window.api.close()}>✕</button>
@@ -139,16 +153,6 @@ export default function App() {
               title={t("tip.tools")}
             >
               <ToolsIcon /> {t("nav.tools")}
-            </div>
-            <div
-              className="side-item nav"
-              role="button"
-              tabIndex={0}
-              onClick={() => window.api.openUsageBoard()}
-              onKeyDown={activateOnKeys(() => window.api.openUsageBoard())}
-              title={t("tip.board")}
-            >
-              <BoardIcon /> {t("nav.board")}
             </div>
           </nav>
           {route === "tools" && (

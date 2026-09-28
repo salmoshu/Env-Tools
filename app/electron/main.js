@@ -20,6 +20,9 @@ const REPO_ROOT = path.join(__dirname, "..", "..");
 const BACKEND_BINARY = path.join(
   REPO_ROOT, "app", "backend-rs", "target", "release", "env-tools-api");
 const BACKEND_PORT_DEFAULT = 8747;
+// 开发实例用独立后端端口：与已安装应用并存时互不抢后端（killStaleBackend
+// 也不会误杀对方）；渲染层经 IPC 动态取端口，对前端透明
+const BACKEND_PORT = app.isPackaged ? BACKEND_PORT_DEFAULT : BACKEND_PORT_DEFAULT + 1;
 const REFRESH_INTERVAL_MS = 60 * 1000;
 const FETCH_TIMEOUT_MS = 45 * 1000;
 const SETTINGS_TIMEOUT_MS = 10 * 1000;
@@ -98,7 +101,7 @@ function backendSpec() {
       command: "wsl.exe",
       args: [
         "-d", WSL_DISTRO, "--exec", binary,
-        "--port", String(BACKEND_PORT_DEFAULT),
+        "--port", String(BACKEND_PORT),
         "--idle-exit-secs", "1800",
       ],
     };
@@ -108,18 +111,18 @@ function backendSpec() {
   return {
     command: binary,
     // idle-exit：应用异常退出留下孤儿后端时，30 分钟无请求自动退出自清理
-    args: ["--port", String(BACKEND_PORT_DEFAULT), "--idle-exit-secs", "1800"],
+    args: ["--port", String(BACKEND_PORT), "--idle-exit-secs", "1800"],
   };
 }
 
-// 根治进程残留第一道防线：启动前把占用默认端口、且确系我们自己的旧后端
-// 进程清掉（按 PID 反查进程镜像名，绝不误杀无关进程）。这保证新实例
-// 连到的 8747 后端一定是本次拉起的新二进制。
+// 根治进程残留第一道防线：启动前把占用本实例后端端口、且确系我们自己的旧
+// 后端进程清掉（按 PID 反查进程镜像名，绝不误杀无关进程）。这保证新实例
+// 连到的后端一定是本次拉起的新二进制。
 function killStaleBackend() {
   if (process.platform !== "win32") return;
   let out = "";
   try {
-    out = execSync(`netstat -ano -p tcp | findstr ":${BACKEND_PORT_DEFAULT} "`, { encoding: "utf8" });
+    out = execSync(`netstat -ano -p tcp | findstr ":${BACKEND_PORT} "`, { encoding: "utf8" });
   } catch {
     return; // 端口无人监听，无需清理
   }
@@ -134,7 +137,7 @@ function killStaleBackend() {
       const info = execSync(`tasklist /FI "PID eq ${pid}" /FO CSV /NH`, { encoding: "utf8" });
       if (info.toLowerCase().includes("env-tools-api")) {
         execSync(`taskkill /PID ${pid} /F`, { stdio: "ignore" });
-        console.log(`[backend] killed stale backend (pid ${pid}) on port ${BACKEND_PORT_DEFAULT}`);
+        console.log(`[backend] killed stale backend (pid ${pid}) on port ${BACKEND_PORT}`);
       }
     } catch {}
   }
@@ -290,8 +293,9 @@ function stopPinWatchdog() {
   }
 }
 
-// 单实例:再次启动时聚焦已有窗口而不是开新窗口
-const gotLock = app.requestSingleInstanceLock();
+// 单实例:再次启动时聚焦已有窗口而不是开新窗口。
+// 开发实例（未打包）跳过单实例锁：与已安装应用并存调试，互不劫持窗口
+const gotLock = !app.isPackaged || app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
 } else {
@@ -358,6 +362,10 @@ function createDashboardWindow() {
   }
   mainWin.setTitle(DASHBOARD_TITLE);
   mainWin.on("closed", () => (mainWin = null));
+  // 最大化状态同步给渲染层（标题栏最大化/还原图标切换）；
+  // 双击拖拽区触发的原生最大化同样走这两个事件
+  mainWin.on("maximize", () => mainWin && mainWin.webContents.send("window-maximized-changed", true));
+  mainWin.on("unmaximize", () => mainWin && mainWin.webContents.send("window-maximized-changed", false));
   // 页面加载完成（含刷新）后立即推一次数据；定时广播最快 60s 后才有下一轮
   mainWin.webContents.on("did-finish-load", () => pushUsage());
   mainWin.on("blur", () => {
@@ -459,6 +467,10 @@ ipcMain.handle("window-maximize-toggle", (event) => {
   }
   window.maximize();
   return true;
+});
+ipcMain.handle("window-is-maximized", (event) => {
+  const window = senderWindow(event);
+  return window ? window.isMaximized() : false;
 });
 ipcMain.on("window-close", (event) => {
   const window = senderWindow(event);

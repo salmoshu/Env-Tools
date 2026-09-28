@@ -32,6 +32,8 @@ contextBridge.exposeInMainWorld("api", {
   // 窗口
   minimize: () => ipcRenderer.send("window-minimize"),
   windowMaximizeToggle: () => ipcRenderer.invoke("window-maximize-toggle"),
+  isMaximized: () => ipcRenderer.invoke("window-is-maximized"),
+  onMaximizedChanged: (callback) => subscribe("window-maximized-changed", (payload) => callback(payload)),
   close: () => ipcRenderer.send("window-close"),
   togglePin: () => ipcRenderer.invoke("toggle-pin"),
   getPinState: () => ipcRenderer.invoke("get-pin-state"),
