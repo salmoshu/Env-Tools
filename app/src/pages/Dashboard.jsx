@@ -21,6 +21,26 @@ const ANALYTICS_REFRESH_MS = 5 * 60 * 1000;
 const DAYS_KEY = "ai-usage-monitor.analytics-days";
 // 可选范围档；持久化值若不在档内（如历史版本遗留的 "14"）回退默认 30
 const RANGE_OPTIONS = ["7", "30", "90"];
+// 首屏秒开：按 目标|agent|范围 缓存最近一次分析载荷，启动先画旧数据，
+// 新鲜数据到达后无缝替换（meta 行的"更新于"时间戳自然暴露陈旧度）
+const ANALYTICS_CACHE_KEY = "ai-usage-monitor.analytics-cache-v1";
+
+function readAnalyticsCache() {
+  try { return JSON.parse(localStorage.getItem(ANALYTICS_CACHE_KEY) || "{}"); } catch { return {}; }
+}
+
+function writeAnalyticsCache(combo, payload) {
+  try {
+    const all = readAnalyticsCache();
+    all[combo] = payload;
+    const keys = Object.keys(all);
+    while (keys.length > 8) delete all[keys.shift()];
+    localStorage.setItem(ANALYTICS_CACHE_KEY, JSON.stringify(all));
+  } catch {
+    // 配额超限：退化为只保留当前组合
+    try { localStorage.setItem(ANALYTICS_CACHE_KEY, JSON.stringify({ [combo]: payload })); } catch {}
+  }
+}
 const AGENT_KEY = "ai-usage-monitor.analytics-agent";
 const TARGET_KEY = "ai-usage-monitor.target";
 const TREND_KEY = "ai-usage-monitor.trend-granularity";
@@ -303,6 +323,8 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
   const install = useInstallState();
   const upgrading = install.running;
   const analyticsBusy = useRef(false);
+  // 当前展示的 目标|agent|范围 组合：切换时先画该组合的磁盘缓存载荷
+  const analyticsCombo = useRef("");
   const [lang] = useLang();
 
   // 配额按目标路由：本地/汇总目标吃 60s 广播（lastPayload），远端目标走 get-usage
@@ -326,6 +348,13 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
   }, [target, refreshUsage]);
 
   const requestAnalytics = useCallback(async (nextDays, nextAgent, nextTarget) => {
+    const combo = `${nextTarget}|${nextAgent}|${nextDays}`;
+    // 组合切换（含首次进入）时先画该组合的缓存载荷，冷扫描期间不白屏
+    if (analyticsCombo.current !== combo) {
+      analyticsCombo.current = combo;
+      const cached = readAnalyticsCache()[combo];
+      if (cached) setAnalytics(cached);
+    }
     if (analyticsBusy.current) return;
     analyticsBusy.current = true;
     setBusy(true);
@@ -333,6 +362,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
       const result = await window.api.getAnalytics(nextDays, nextAgent, nextTarget);
       if (result && result.ok && result.analytics) {
         setAnalytics(result.analytics);
+        writeAnalyticsCache(combo, result.analytics);
         setAnalyticsError("");
       } else {
         setAnalyticsError((result && result.error) || t("dash.analyticsFailed"));

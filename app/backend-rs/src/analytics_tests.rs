@@ -263,3 +263,60 @@ fn rate_card_shows_latest_requested_model() {
     // token 占比口径仍保留在 model_rank（k3-256k 居首）
     assert_eq!(all["model_rank"][0]["model"], "kimi-code/k3-256k");
 }
+
+#[test]
+fn scan_cache_roundtrip_survives_restart() {
+    let dir = tempfile_dir();
+    let home = dir.join("home");
+    let wire = home
+        .join(".kimi-code")
+        .join("sessions")
+        .join("session_a")
+        .join("wire.jsonl");
+    let ts = chrono::Local
+        .with_ymd_and_hms(2026, 9, 16, 8, 0, 0)
+        .unwrap()
+        .timestamp();
+    write_file(&wire, &[kimi_line(ts, "m1", 100, 10, 0, 0)]);
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("session_index.jsonl"),
+        "{\"sessionId\":\"session_a\",\"workDir\":\"/w/a/projects/demo\"}\n",
+    )
+    .unwrap();
+    let cache = dir.join("scan-cache-local.json");
+    let now = chrono::Local
+        .with_ymd_and_hms(2026, 9, 16, 12, 0, 0)
+        .unwrap();
+
+    // 第一个"进程"：缓存不存在时水合静默跳过，冷扫后落盘
+    let mut first = AnalyticsState::default();
+    first.hydrate_once(&cache);
+    first.scan(&[home.join(".kimi-code")], &[], &[], now.timestamp());
+    first.save_cache(&cache);
+    let cold = first.aggregate(7, "all", now);
+    assert_eq!(cold["kpi"]["today_total"], 110);
+
+    // 第二个"进程"：水合 → 扫描读 0 新字节 → 结果一致、记录不翻倍
+    let mut second = AnalyticsState::default();
+    second.hydrate_once(&cache);
+    second.scan(&[home.join(".kimi-code")], &[], &[], now.timestamp());
+    let warm = second.aggregate(7, "all", now);
+    assert_eq!(warm["kpi"]["today_total"], 110);
+    assert_eq!(warm["kpi"]["active_sessions"], 1);
+    assert_eq!(warm["sessions"].as_array().unwrap().len(), 1);
+
+    // 追加一条后第三个"进程"只读增量字节：总量正确累加
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&wire)
+        .unwrap();
+    writeln!(file, "{}", kimi_line(ts + 3600, "m1", 50, 5, 0, 0)).unwrap();
+    drop(file);
+    let mut third = AnalyticsState::default();
+    third.hydrate_once(&cache);
+    third.scan(&[home.join(".kimi-code")], &[], &[], now.timestamp());
+    let appended = third.aggregate(7, "all", now);
+    assert_eq!(appended["kpi"]["today_total"], 165);
+}

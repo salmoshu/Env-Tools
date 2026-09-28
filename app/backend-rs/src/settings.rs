@@ -21,7 +21,10 @@ pub fn env_value(name: &str) -> Option<String> {
 
 pub fn env_enabled(name: &str, default: bool) -> bool {
     match env_value(name) {
-        Some(v) => matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes" | "on"),
+        Some(v) => matches!(
+            v.trim().to_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
         None => default,
     }
 }
@@ -43,7 +46,9 @@ pub fn wsl_homes() -> Vec<PathBuf> {
     let mut homes = Vec::new();
     for distro in available_wsl_distros() {
         let home_root = PathBuf::from(format!("\\\\wsl.localhost\\{distro}\\home"));
-        let Ok(users) = std::fs::read_dir(&home_root) else { continue };
+        let Ok(users) = std::fs::read_dir(&home_root) else {
+            continue;
+        };
         for user in users.flatten() {
             let path = user.path();
             if path.is_dir() {
@@ -77,8 +82,7 @@ pub fn wsl_distro_homes(distro: &str) -> Vec<PathBuf> {
 pub fn read_json(path: &Path) -> Result<Value, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|err| format!("Cannot read {}: {err}", path.display()))?;
-    serde_json::from_str(&text)
-        .map_err(|err| format!("Cannot parse {}: {err}", path.display()))
+    serde_json::from_str(&text).map_err(|err| format!("Cannot parse {}: {err}", path.display()))
 }
 
 pub fn write_private_json(path: &Path, data: &Value) -> Result<(), String> {
@@ -86,7 +90,10 @@ pub fn write_private_json(path: &Path, data: &Value) -> Result<(), String> {
         std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
         #[cfg(unix)]
         {
-            let _ = std::fs::set_permissions(parent, std::os::unix::fs::PermissionsExt::from_mode(0o700));
+            let _ = std::fs::set_permissions(
+                parent,
+                std::os::unix::fs::PermissionsExt::from_mode(0o700),
+            );
         }
     }
     let text = serde_json::to_string_pretty(data).unwrap_or_else(|_| "{}".into());
@@ -105,11 +112,15 @@ fn config_dir() -> PathBuf {
 }
 
 pub fn settings_path() -> PathBuf {
-    env_value("AI_USAGE_SETTINGS_PATH").map(PathBuf::from).unwrap_or_else(|| config_dir().join("settings.json"))
+    env_value("AI_USAGE_SETTINGS_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| config_dir().join("settings.json"))
 }
 
 pub fn membership_config_path() -> PathBuf {
-    env_value("AI_USAGE_CONFIG_PATH").map(PathBuf::from).unwrap_or_else(|| config_dir().join("config.json"))
+    env_value("AI_USAGE_CONFIG_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| config_dir().join("config.json"))
 }
 
 pub fn load_settings() -> Value {
@@ -137,7 +148,13 @@ pub fn available_wsl_distros() -> Vec<String> {
             let text: String = out
                 .stdout
                 .iter()
-                .filter(|b| b.is_ascii_alphanumeric() || b.is_ascii_whitespace() || **b == b'-' || **b == b'_' || **b == b'.')
+                .filter(|b| {
+                    b.is_ascii_alphanumeric()
+                        || b.is_ascii_whitespace()
+                        || **b == b'-'
+                        || **b == b'_'
+                        || **b == b'.'
+                })
                 .map(|b| *b as char)
                 .collect();
             for line in text.lines() {
@@ -166,20 +183,28 @@ pub fn available_environments() -> Vec<String> {
 pub fn settings_payload() -> Value {
     let settings = load_settings();
     let available = available_environments();
-    let configured = settings.get("environment").and_then(|v| v.as_str()).unwrap_or("");
+    let configured = settings
+        .get("environment")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let environment = if available.iter().any(|env| env == configured) && !configured.is_empty() {
         configured.to_string()
     } else {
         available[0].clone()
     };
     let wsl_distros = available_wsl_distros();
-    let configured_distro = settings.get("wsl_distro").and_then(|v| v.as_str()).unwrap_or("");
+    let configured_distro = settings
+        .get("wsl_distro")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let wsl_distro = if wsl_distros.iter().any(|d| d == configured_distro) {
         configured_distro.to_string()
     } else {
         wsl_distros.first().cloned().unwrap_or_default()
     };
-    let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default();
+    let exe = std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
     // 周起点（趋势按周分桶用）：monday（默认）| sunday
     let week_start = settings
         .get("week_start")
@@ -211,7 +236,13 @@ pub fn update_settings(payload: &Value) -> Result<Value, String> {
     if !payload.is_object() {
         return Err("Settings must be a JSON object".into());
     }
-    let allowed = ["environment", "wsl_distro", "membership", "week_start", "speed_mode"];
+    let allowed = [
+        "environment",
+        "wsl_distro",
+        "membership",
+        "week_start",
+        "speed_mode",
+    ];
     let mut settings = load_settings();
     let obj = settings.as_object_mut().unwrap();
     for key in payload.as_object().unwrap().keys() {
@@ -226,14 +257,18 @@ pub fn update_settings(payload: &Value) -> Result<Value, String> {
     if let Some(value) = payload.get("speed_mode") {
         let value = value.as_str().unwrap_or("");
         if value != "gen" && value != "throughput" {
-            return Err(format!("Invalid speed_mode '{value}' (use gen or throughput)"));
+            return Err(format!(
+                "Invalid speed_mode '{value}' (use gen or throughput)"
+            ));
         }
         obj.insert("speed_mode".into(), Value::String(value.to_string()));
     }
     if let Some(value) = payload.get("week_start") {
         let value = value.as_str().unwrap_or("");
         if value != "monday" && value != "sunday" {
-            return Err(format!("Invalid week_start '{value}' (use monday or sunday)"));
+            return Err(format!(
+                "Invalid week_start '{value}' (use monday or sunday)"
+            ));
         }
         obj.insert("week_start".into(), Value::String(value.to_string()));
     }
@@ -326,14 +361,21 @@ pub fn update_membership_config(payload: &Value) -> Result<Value, String> {
             chrono::DateTime::parse_from_rfc3339(&purchased)
                 .map(|_| ())
                 .or_else(|_| {
-                    for format in ["%Y-%m-%dT%H:%M", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"] {
+                    for format in [
+                        "%Y-%m-%dT%H:%M",
+                        "%Y-%m-%dT%H:%M:%S",
+                        "%Y-%m-%d %H:%M",
+                        "%Y-%m-%d %H:%M:%S",
+                    ] {
                         if chrono::NaiveDateTime::parse_from_str(&purchased, format).is_ok() {
                             return Ok(());
                         }
                     }
                     Err(())
                 })
-                .map_err(|_| format!("Invalid membership_purchased_at for {provider}: {purchased}"))?;
+                .map_err(|_| {
+                    format!("Invalid membership_purchased_at for {provider}: {purchased}")
+                })?;
             cleaned.insert("membership_purchased_at".into(), Value::String(purchased));
             cleaned.insert("membership_duration_months".into(), Value::from(months));
         }
@@ -351,7 +393,11 @@ pub fn update_membership_config(payload: &Value) -> Result<Value, String> {
 pub fn membership_section(provider: &str) -> Option<Value> {
     let config = load_membership_config();
     let section = config.get(provider)?.as_object()?.clone();
-    if section.get("membership_purchased_at").and_then(|v| v.as_str()).is_some() {
+    if section
+        .get("membership_purchased_at")
+        .and_then(|v| v.as_str())
+        .is_some()
+    {
         Some(Value::Object(section))
     } else {
         None
@@ -382,7 +428,10 @@ fn key_configured(path: &Path, env_names: &[&str], fields: &[&str]) -> Value {
     match read_json(path) {
         Ok(data) => {
             let configured = fields.iter().any(|field| {
-                data.get(*field).and_then(|v| v.as_str()).map(|v| !v.trim().is_empty()).unwrap_or(false)
+                data.get(*field)
+                    .and_then(|v| v.as_str())
+                    .map(|v| !v.trim().is_empty())
+                    .unwrap_or(false)
             });
             serde_json::json!({ "configured": configured, "source": if configured { "file" } else { "missing" } })
         }
@@ -427,7 +476,11 @@ pub fn save_api_keys(payload: &Value) -> Result<Value, String> {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let mut data = if path.is_file() { read_json(&path).unwrap_or_else(|_| serde_json::json!({})) } else { serde_json::json!({}) };
+        let mut data = if path.is_file() {
+            read_json(&path).unwrap_or_else(|_| serde_json::json!({}))
+        } else {
+            serde_json::json!({})
+        };
         data["api_key"] = Value::String(value);
         write_private_json(&path, &data)?;
         saved.push(provider.clone());
@@ -438,7 +491,20 @@ pub fn save_api_keys(payload: &Value) -> Result<Value, String> {
 // --- CLI 版本探测（当前版本实时，最新版本 1h 缓存） ---------------------------
 
 fn version_cache_path() -> PathBuf {
-    local_home().join(".cache").join("ai-usage-monitor").join("versions.json")
+    local_home()
+        .join(".cache")
+        .join("ai-usage-monitor")
+        .join("versions.json")
+}
+
+/// 增量扫描磁盘缓存：~/.cache/ai-usage-monitor/scan-cache-<scope>.json
+///（scope 含 ':' 时替换为 '_'，Windows 文件名不允许冒号）
+pub fn scan_cache_path(scope: &str) -> PathBuf {
+    let safe = scope.replace(':', "_");
+    local_home()
+        .join(".cache")
+        .join("ai-usage-monitor")
+        .join(format!("scan-cache-{safe}.json"))
 }
 
 fn semver_key(text: &str) -> Vec<u64> {
@@ -457,7 +523,9 @@ fn semver_in(text: &str) -> Option<String> {
         if bytes[index].is_ascii_digit() {
             let mut end = index;
             let mut dots = 0;
-            while end < bytes.len() && (bytes[end].is_ascii_digit() || (bytes[end] == b'.' && dots < 2)) {
+            while end < bytes.len()
+                && (bytes[end].is_ascii_digit() || (bytes[end] == b'.' && dots < 2))
+            {
                 if bytes[end] == b'.' {
                     if end + 1 >= bytes.len() || !bytes[end + 1].is_ascii_digit() {
                         break;
@@ -481,7 +549,11 @@ fn semver_in(text: &str) -> Option<String> {
 
 fn request_text(url: &str, use_proxy: bool) -> Option<String> {
     let agent = super::quota::build_agent(use_proxy, 15);
-    match agent.get(url).set("Accept", "text/plain, application/json").call() {
+    match agent
+        .get(url)
+        .set("Accept", "text/plain, application/json")
+        .call()
+    {
         Ok(response) => response.into_string().ok(),
         Err(_) => None,
     }
@@ -489,8 +561,11 @@ fn request_text(url: &str, use_proxy: bool) -> Option<String> {
 
 fn fetch_latest_version(provider: &str) -> Option<String> {
     match provider {
-        "Kimi Code" => request_text(KIMI_LATEST_VERSION_URL, env_enabled("KIMI_USE_PROXY", false))
-            .and_then(|text| semver_in(&text)),
+        "Kimi Code" => request_text(
+            KIMI_LATEST_VERSION_URL,
+            env_enabled("KIMI_USE_PROXY", false),
+        )
+        .and_then(|text| semver_in(&text)),
         "OpenAI Codex" => {
             let url = NPM_LATEST_VERSION_URL.replace("{package}", "@openai/codex");
             let text = request_text(&url, true)?;
@@ -504,9 +579,13 @@ fn fetch_latest_version(provider: &str) -> Option<String> {
 /// `cmd --version`：Windows 上 npm 安装的是 .cmd 垫片，必须经 cmd.exe 解析。
 fn detect_cli_version(command: &str) -> Option<String> {
     let output = if cfg!(windows) {
-        std::process::Command::new("cmd.exe").args(["/C", command, "--version"]).output()
+        std::process::Command::new("cmd.exe")
+            .args(["/C", command, "--version"])
+            .output()
     } else {
-        std::process::Command::new(command).arg("--version").output()
+        std::process::Command::new(command)
+            .arg("--version")
+            .output()
     };
     let stdout = output.ok()?.stdout;
     let text = String::from_utf8_lossy(&stdout);
@@ -522,23 +601,41 @@ pub fn collect_versions() -> Value {
     let now_epoch = chrono::Utc::now().timestamp() as f64;
     let mut versions = serde_json::Map::new();
     for provider in providers {
-        let tool_command = if provider == "Kimi Code" { "kimi" } else { "codex" };
-        let entry = cache.get(provider).cloned().unwrap_or_else(|| serde_json::json!({}));
-        let current = detect_cli_version(tool_command)
-            .or_else(|| entry.get("current").and_then(|v| v.as_str()).map(String::from));
+        let tool_command = if provider == "Kimi Code" {
+            "kimi"
+        } else {
+            "codex"
+        };
+        let entry = cache
+            .get(provider)
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+        let current = detect_cli_version(tool_command).or_else(|| {
+            entry
+                .get("current")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        });
         let cached_at = entry.get("checked_at").and_then(|v| v.as_f64());
         let fresh = cached_at
             .map(|stamp| now_epoch - stamp < VERSION_CHECK_INTERVAL as f64)
             .unwrap_or(false);
         let (latest, checked_at) = if fresh {
             (
-                entry.get("latest").and_then(|v| v.as_str()).map(String::from),
+                entry
+                    .get("latest")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
                 cached_at.unwrap_or(now_epoch),
             )
         } else {
             (
-                fetch_latest_version(provider)
-                    .or_else(|| entry.get("latest").and_then(|v| v.as_str()).map(String::from)),
+                fetch_latest_version(provider).or_else(|| {
+                    entry
+                        .get("latest")
+                        .and_then(|v| v.as_str())
+                        .map(String::from)
+                }),
                 now_epoch,
             )
         };

@@ -16,7 +16,7 @@ pub const RECORD_RETENTION_DAYS: i64 = 400;
 pub const SESSION_CAP: usize = 500;
 pub const AGENTS: [&str; 5] = ["all", "kimi", "codex", "glm", "deepseek"];
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Source {
     Kimi,
     Codex,
@@ -24,7 +24,7 @@ pub enum Source {
     ZCode,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct TurnRecord {
     pub ts: i64,
     pub model: String,
@@ -38,7 +38,7 @@ pub struct TurnRecord {
     pub gen_seconds: f64,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct FileState {
     /// 已解析到的字节位置；-1 表示文件已消失（记录保留，避免历史缩水）。
     /// zcode 数据源（SQLite）下语义为 model_usage 的 rowid 水位
@@ -49,6 +49,8 @@ pub struct FileState {
     pub cwds: HashMap<String, String>,
     /// kimi：待配对的 llm.request 起始时刻（毫秒，0 = 无）。usage.record
     /// 到达时与之相减得到该次请求时长，实现 TPOT 口径的生成速度。
+    /// 不落盘：跨进程复用半截配对起点没有意义
+    #[serde(skip)]
     pub pending_llm_ms: i64,
 }
 
@@ -62,6 +64,68 @@ pub struct AnalyticsState {
     /// 上次扫描的秒级时间戳：节流窗内跳过重扫（WSL/聚合走 9P，全量 stat 20s+）；
     /// /api/cache-clear 置 0 以强制重扫
     pub last_scan_secs: i64,
+}
+
+/// 磁盘持久化的增量扫描缓存：跨进程存活，避免每次启动全量冷扫
+///（本机数秒、WSL 9P 数十秒）。按 scope 各一份 JSON；原子写
+///（tmp+rename）；损坏/版本不符时回退全量冷扫，不会更糟。
+#[derive(serde::Serialize)]
+struct ScanCacheRef<'a> {
+    version: u32,
+    files: &'a HashMap<String, FileState>,
+}
+
+#[derive(serde::Deserialize)]
+struct ScanCache {
+    version: u32,
+    files: HashMap<String, FileState>,
+}
+
+const SCAN_CACHE_VERSION: u32 = 1;
+
+impl AnalyticsState {
+    /// 首轮扫描前从磁盘水合增量缓存（只生效一次）。水合后首轮扫描照常跑：
+    /// 文件消失置 offset=-1 保留历史、截断检测（size < offset）丢弃重扫、
+    /// 未变文件读 0 字节——语义与纯内存增量完全一致。
+    pub fn hydrate_once(&mut self, path: &Path) {
+        if self.scanned {
+            return;
+        }
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return;
+        };
+        let Ok(cache) = serde_json::from_str::<ScanCache>(&text) else {
+            return;
+        };
+        if cache.version != SCAN_CACHE_VERSION {
+            return;
+        }
+        self.files = cache.files;
+    }
+
+    /// 落盘（tmp + rename 原子替换；失败静默，下轮扫描再试）。
+    pub fn save_cache(&self, path: &Path) {
+        use std::io::Write;
+        let Some(dir) = path.parent() else { return };
+        if std::fs::create_dir_all(dir).is_err() {
+            return;
+        }
+        let cache = ScanCacheRef {
+            version: SCAN_CACHE_VERSION,
+            files: &self.files,
+        };
+        let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
+        let Ok(mut writer) = std::fs::File::create(&tmp).map(std::io::BufWriter::new) else {
+            return;
+        };
+        if serde_json::to_writer(&mut writer, &cache).is_err() || writer.flush().is_err() {
+            drop(writer);
+            let _ = std::fs::remove_file(&tmp);
+            return;
+        }
+        drop(writer);
+        let _ = std::fs::rename(&tmp, path);
+    }
 }
 
 fn normalize_ts(value: i64) -> Option<i64> {

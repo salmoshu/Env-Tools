@@ -24,7 +24,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use axum::{extract::Query, response::IntoResponse, routing::{get, post}, Json, Router};
+use axum::{
+    extract::Query,
+    response::IntoResponse,
+    routing::{get, post},
+    Json, Router,
+};
 use serde_json::Value;
 use tokio::sync::Mutex;
 
@@ -62,7 +67,8 @@ struct AppState {
     cache: Arc<Cache>,
     /// 原生分析引擎状态：按扫描范围（local / wsl:<distro> / aggregate）各一份，
     /// 进程内增量（std Mutex + spawn_blocking 避免阻塞运行时）
-    analytics: Arc<std::sync::Mutex<HashMap<String, Arc<std::sync::Mutex<analytics::AnalyticsState>>>>>,
+    analytics:
+        Arc<std::sync::Mutex<HashMap<String, Arc<std::sync::Mutex<analytics::AnalyticsState>>>>>,
     /// 可选鉴权 token（--token）：设置后所有 /api 请求（除 /api/health）必须带
     /// x-env-token 头。用于 SSH 等跨机场景；本机 loopback 可省略。
     token: Option<String>,
@@ -94,11 +100,16 @@ async fn auth_guard(
         .store(now_millis(), std::sync::atomic::Ordering::Relaxed);
     if let Some(expected) = &state.token {
         let is_health = req.uri().path().starts_with("/api/health");
-        let provided = req.headers().get("x-env-token").and_then(|v| v.to_str().ok());
+        let provided = req
+            .headers()
+            .get("x-env-token")
+            .and_then(|v| v.to_str().ok());
         if !is_health && provided != Some(expected.as_str()) {
             return (
                 axum::http::StatusCode::UNAUTHORIZED,
-                Json(error_payload("invalid or missing x-env-token header".into())),
+                Json(error_payload(
+                    "invalid or missing x-env-token header".into(),
+                )),
             )
                 .into_response();
         }
@@ -119,7 +130,9 @@ struct Entry {
 
 impl Cache {
     fn new() -> Self {
-        Self { entries: Mutex::new(HashMap::new()) }
+        Self {
+            entries: Mutex::new(HashMap::new()),
+        }
     }
 
     async fn get_or_fetch<F, Fut>(&self, key: String, ttl: Duration, fetch: F) -> Value
@@ -134,8 +147,10 @@ impl Cache {
             match map.get(&key) {
                 Some(entry) => entry.clone(),
                 None => {
-                    let entry =
-                        Arc::new(Entry { created: Instant::now(), cell: tokio::sync::OnceCell::new() });
+                    let entry = Arc::new(Entry {
+                        created: Instant::now(),
+                        cell: tokio::sync::OnceCell::new(),
+                    });
                     map.insert(key.clone(), entry.clone());
                     entry
                 }
@@ -241,7 +256,13 @@ fn analytics_worker(
         engines.entry(scope.to_string()).or_default().clone()
     };
     let mut engine = engine_arc.lock().unwrap();
-    let scan_gap = if aggregate || wsl_distro.is_some() { SCAN_GAP_WSL } else { SCAN_GAP_LOCAL };
+    // 首次见到该 scope 的引擎：先水合磁盘缓存再扫描，重启后只需读增量字节
+    engine.hydrate_once(&settings::scan_cache_path(scope));
+    let scan_gap = if aggregate || wsl_distro.is_some() {
+        SCAN_GAP_WSL
+    } else {
+        SCAN_GAP_LOCAL
+    };
     let scan_started = std::time::Instant::now();
     let (dirty, scan_note) = if now_sec - engine.last_scan_secs >= scan_gap {
         let dirty = engine.scan(
@@ -251,7 +272,16 @@ fn analytics_worker(
             now_sec,
         );
         engine.last_scan_secs = now_sec;
-        (dirty, format!("scan {:.1}ms", scan_started.elapsed().as_secs_f64() * 1000.0))
+        if dirty {
+            engine.save_cache(&settings::scan_cache_path(scope));
+        }
+        (
+            dirty,
+            format!(
+                "scan {:.1}ms",
+                scan_started.elapsed().as_secs_f64() * 1000.0
+            ),
+        )
     } else {
         (false, "scan throttled".to_string())
     };
@@ -266,7 +296,11 @@ fn analytics_worker(
     let engine_note = format!(
         "native-rust{}{} ({}, dirty={dirty})",
         if aggregate { "+wsl" } else { "" },
-        if let Some(name) = wsl_distro { format!("[{name}]") } else { String::new() },
+        if let Some(name) = wsl_distro {
+            format!("[{name}]")
+        } else {
+            String::new()
+        },
         scan_note,
     );
     serde_json::json!({
@@ -293,8 +327,14 @@ async fn analytics(
         .filter(|raw| analytics::AGENTS.contains(raw))
         .unwrap_or("all")
         .to_string();
-    let aggregate = params.get("aggregate").map(|v| v == "1" || v == "true").unwrap_or(false);
-    let wsl_distro = params.get("wsl_distro").map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    let aggregate = params
+        .get("aggregate")
+        .map(|v| v == "1" || v == "true")
+        .unwrap_or(false);
+    let wsl_distro = params
+        .get("wsl_distro")
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
     // 扫描范围标识：每个范围独立的引擎状态。引擎对"消失文件"保留历史记录
     //（增量语义），共享单个状态会让上一个目标的记录污染下一个目标的结果。
     let scope = match wsl_distro.as_deref() {
@@ -303,7 +343,11 @@ async fn analytics(
         None => "local".to_string(),
     };
     let key = format!("analytics:{days}:{agent}:{scope}");
-    let ttl = if aggregate || wsl_distro.is_some() { ANALYTICS_WSL_TTL } else { ANALYTICS_TTL };
+    let ttl = if aggregate || wsl_distro.is_some() {
+        ANALYTICS_WSL_TTL
+    } else {
+        ANALYTICS_TTL
+    };
     let state = state.clone();
     let cache = state.cache.clone();
     let value = cache
@@ -314,7 +358,14 @@ async fn analytics(
             let scope = scope.clone();
             async move {
                 tokio::task::spawn_blocking(move || {
-                    analytics_worker(&state, days, &agent, aggregate, wsl_distro.as_deref(), &scope)
+                    analytics_worker(
+                        &state,
+                        days,
+                        &agent,
+                        aggregate,
+                        wsl_distro.as_deref(),
+                        &scope,
+                    )
                 })
                 .await
                 .unwrap_or_else(|err| error_payload(format!("analytics worker failed: {err}")))
@@ -374,7 +425,11 @@ async fn update_settings(
 ) -> Json<Value> {
     // 环境切换影响后续 usage 缓存内容，保存成功后整体失效
     let result = settings::update_settings(&payload);
-    if result.as_ref().map(|r| r.get("ok").and_then(|v| v.as_bool()).unwrap_or(false)).unwrap_or(false) {
+    if result
+        .as_ref()
+        .map(|r| r.get("ok").and_then(|v| v.as_bool()).unwrap_or(false))
+        .unwrap_or(false)
+    {
         state.cache.entries.lock().await.clear();
     }
     Json(result.unwrap_or_else(|err| error_payload(err)))
@@ -443,7 +498,9 @@ async fn main() {
             let mut ticker = tokio::time::interval(Duration::from_secs(tick_secs));
             loop {
                 ticker.tick().await;
-                let last = state.last_activity.load(std::sync::atomic::Ordering::Relaxed);
+                let last = state
+                    .last_activity
+                    .load(std::sync::atomic::Ordering::Relaxed);
                 if now_millis().saturating_sub(last) > idle_exit_secs * 1000 {
                     eprintln!("idle for {idle_exit_secs}s — exiting (orphan cleanup)");
                     std::process::exit(0);
@@ -459,27 +516,29 @@ async fn main() {
         .route("/api/settings", get(get_settings).post(update_settings))
         .route("/api/api-keys", get(api_key_status).post(save_api_keys))
         .route("/api/cache-clear", post(cache_clear))
-        .layer(axum::middleware::from_fn_with_state(state.clone(), auth_guard))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth_guard,
+        ))
         .with_state(state.clone());
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(listener) => listener,
         // 端口被占（可能已有实例）时退回随机端口，仍保证可用
-        Err(_) => match tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0))).await {
-            Ok(listener) => listener,
-            Err(err) => {
-                eprintln!("bind failed: {err}");
-                std::process::exit(1);
+        Err(_) => {
+            match tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0))).await {
+                Ok(listener) => listener,
+                Err(err) => {
+                    eprintln!("bind failed: {err}");
+                    std::process::exit(1);
+                }
             }
-        },
+        }
     };
     let bound = listener.local_addr().map(|a| a.port()).unwrap_or(port);
     println!("LISTENING {bound}");
-    println!(
-        "env-tools-api {} on http://127.0.0.1:{bound}",
-        APP_VERSION
-    );
+    println!("env-tools-api {} on http://127.0.0.1:{bound}", APP_VERSION);
     // 启动预热：local 与 aggregate 各扫一遍（WSL 9P 冷扫 20s+，赶在用户首次
     // 切换/打开看板之前）。scope 级锁保证预热不阻塞其它范围的请求。
     {
@@ -496,7 +555,8 @@ async fn main() {
                 let st = warm_state.clone();
                 let _ = tokio::task::spawn_blocking(move || {
                     let started = std::time::Instant::now();
-                    let value = analytics_worker(&st, 30, "all", aggregate, distro.as_deref(), &scope);
+                    let value =
+                        analytics_worker(&st, 30, "all", aggregate, distro.as_deref(), &scope);
                     let _ = value;
                     eprintln!(
                         "warmup {scope} done in {:.1}s",
