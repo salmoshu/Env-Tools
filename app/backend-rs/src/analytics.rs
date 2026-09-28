@@ -66,7 +66,11 @@ pub struct AnalyticsState {
 
 fn normalize_ts(value: i64) -> Option<i64> {
     // 毫秒时间戳按秒解释；2000~2200 年之外的视为脏数据
-    let value = if value > 100_000_000_000 { value / 1000 } else { value };
+    let value = if value > 100_000_000_000 {
+        value / 1000
+    } else {
+        value
+    };
     if !(946_684_800..=7_258_118_400).contains(&value) {
         return None;
     }
@@ -86,7 +90,10 @@ pub(crate) fn parse_kimi_line(line: &str) -> Option<TurnRecord> {
 
 /// pending_llm_start_ms：同文件内最近一个 llm.request 的起始毫秒；
 /// 与 usage.record 的 time 相减即该次请求时长（含 TTFT/prefill）。
-pub(crate) fn parse_kimi_line_with_pending(line: &str, pending_llm_start_ms: i64) -> Option<TurnRecord> {
+pub(crate) fn parse_kimi_line_with_pending(
+    line: &str,
+    pending_llm_start_ms: i64,
+) -> Option<TurnRecord> {
     if !line.contains("\"usage.record\"") {
         return None;
     }
@@ -160,7 +167,11 @@ pub(crate) fn parse_codex_token_line(line: &str, model: &str, sid: &str) -> Opti
     let input_total = count_field(usage, "input_tokens");
     Some(TurnRecord {
         ts,
-        model: if model.is_empty() { "(unknown)".into() } else { model.to_string() },
+        model: if model.is_empty() {
+            "(unknown)".into()
+        } else {
+            model.to_string()
+        },
         input: (input_total - cached).max(0),
         output: count_field(usage, "output_tokens"),
         cache_read: cached,
@@ -204,7 +215,10 @@ fn kimi_session_id(path: &Path) -> String {
 }
 
 fn codex_default_session_id(path: &Path) -> String {
-    let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
     let tail = stem.rsplit('-').next().unwrap_or(&stem).to_string();
     format!("codex-{tail}")
 }
@@ -318,23 +332,19 @@ fn scan_zcode_db(
             let _ = std::fs::copy(&from, work.join(format!("db.sqlite{extra}")));
         }
     }
-    let conn = rusqlite::Connection::open_with_flags(
-        &copy_path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )
-    .map_err(|err| err.to_string())?;
+    let conn = rusqlite::Connection::open_with_flags(&copy_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|err| err.to_string())?;
 
     let mut cwds: Vec<(String, String)> = Vec::new();
     {
         let mut stmt = conn
-            .prepare("SELECT id, directory FROM session WHERE directory IS NOT NULL AND directory != ''")
+            .prepare(
+                "SELECT id, directory FROM session WHERE directory IS NOT NULL AND directory != ''",
+            )
             .map_err(|err| err.to_string())?;
         let rows = stmt
             .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                ))
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })
             .map_err(|err| err.to_string())?;
         for row in rows {
@@ -372,8 +382,18 @@ fn scan_zcode_db(
             })
             .map_err(|err| err.to_string())?;
         for row in rows {
-            let (rowid, sid, model, completed_ms, input, output, cache_read, cache_creation, duration_ms, ttft_ms) =
-                row.map_err(|err| err.to_string())?;
+            let (
+                rowid,
+                sid,
+                model,
+                completed_ms,
+                input,
+                output,
+                cache_read,
+                cache_creation,
+                duration_ms,
+                ttft_ms,
+            ) = row.map_err(|err| err.to_string())?;
             let gen_ms = duration_ms
                 .zip(ttft_ms)
                 .map(|(d, t)| (d - t).max(0))
@@ -470,7 +490,10 @@ struct SessionRow {
     project: String,
     work_dir: String,
     agent_totals: HashMap<&'static str, i64>,
-    models: HashSet<String>,
+    /// 会话内各模型的 token 总量：keys 即模型列表，最大值即主力模型
+    model_totals: HashMap<String, i64>,
+    /// 时间戳最新的 usage 记录所用模型（速率卡展示的"当前在用模型"）
+    last_model: String,
     input: i64,
     output: i64,
     cache_read: i64,
@@ -527,7 +550,10 @@ impl AnalyticsState {
         for (source, root, session_id_of, selector) in sources {
             let files = wire_files(&root, selector);
             // HashSet：已登记文件 × 现存文件逐个 contains 是 O(n²)
-            let live: HashSet<String> = files.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+            let live: HashSet<String> = files
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect();
             for (key, state) in self.files.iter_mut() {
                 if state.source == source && !live.contains(key) && state.offset != -1 {
                     state.offset = -1;
@@ -539,7 +565,13 @@ impl AnalyticsState {
                 if !self.files.contains_key(&key) {
                     self.files.insert(
                         key.clone(),
-                        FileState { offset: 0, records: Vec::new(), source, cwds: HashMap::new(), pending_llm_ms: 0 },
+                        FileState {
+                            offset: 0,
+                            records: Vec::new(),
+                            source,
+                            cwds: HashMap::new(),
+                            pending_llm_ms: 0,
+                        },
                     );
                     dirty = true;
                 }
@@ -570,7 +602,9 @@ impl AnalyticsState {
                             }
                             continue;
                         }
-                        if let Some(mut record) = parse_kimi_line_with_pending(line, state.pending_llm_ms) {
+                        if let Some(mut record) =
+                            parse_kimi_line_with_pending(line, state.pending_llm_ms)
+                        {
                             record.sid = session_id.clone();
                             if record.gen_seconds > 0.0 {
                                 state.pending_llm_ms = 0; // 已配对，防止复用过期起点
@@ -588,19 +622,22 @@ impl AnalyticsState {
                         state.cwds.insert(session_id.clone(), cwd);
                         dirty = true;
                     }
-                    if let Some(record) = parse_codex_token_line(line, &current_model, &session_id) {
+                    if let Some(record) = parse_codex_token_line(line, &current_model, &session_id)
+                    {
                         state.records.push(record);
                         dirty = true;
                     }
                 }
                 let before = state.records.len();
-                state.records.retain_mut(|record| match normalize_ts(record.ts) {
-                    Some(ts) if ts >= cutoff => {
-                        record.ts = ts;
-                        true
-                    }
-                    _ => false,
-                });
+                state
+                    .records
+                    .retain_mut(|record| match normalize_ts(record.ts) {
+                        Some(ts) if ts >= cutoff => {
+                            record.ts = ts;
+                            true
+                        }
+                        _ => false,
+                    });
                 if state.records.len() != before {
                     dirty = true;
                 }
@@ -646,19 +683,24 @@ impl AnalyticsState {
                         state.offset = new_watermark;
                     }
                     let before = state.records.len();
-                    state.records.retain_mut(|record| match normalize_ts(record.ts) {
-                        Some(ts) if ts >= cutoff => {
-                            record.ts = ts;
-                            true
-                        }
-                        _ => false,
-                    });
+                    state
+                        .records
+                        .retain_mut(|record| match normalize_ts(record.ts) {
+                            Some(ts) if ts >= cutoff => {
+                                record.ts = ts;
+                                true
+                            }
+                            _ => false,
+                        });
                     if state.records.len() != before {
                         dirty = true;
                     }
                 }
                 Err(err) => {
-                    eprintln!("[analytics] zcode db scan failed ({}): {err}", db_path.display());
+                    eprintln!(
+                        "[analytics] zcode db scan failed ({}): {err}",
+                        db_path.display()
+                    );
                 }
             }
         }
@@ -678,7 +720,11 @@ impl AnalyticsState {
         week_start: &str,
     ) -> serde_json::Value {
         let days = days.clamp(1, 365) as i64;
-        let agent = if AGENTS.contains(&agent) { agent } else { "all" };
+        let agent = if AGENTS.contains(&agent) {
+            agent
+        } else {
+            "all"
+        };
         let today = date_string(now);
         let day_list: Vec<String> = (0..days)
             .rev()
@@ -717,9 +763,16 @@ impl AnalyticsState {
                     continue;
                 }
                 let work_dir = if matches!(state.source, Source::Codex | Source::ZCode) {
-                    state.cwds.get(&record.sid).cloned().unwrap_or_else(|| "(unknown)".into())
+                    state
+                        .cwds
+                        .get(&record.sid)
+                        .cloned()
+                        .unwrap_or_else(|| "(unknown)".into())
                 } else {
-                    self.session_index.get(&record.sid).cloned().unwrap_or_else(|| "(unknown)".into())
+                    self.session_index
+                        .get(&record.sid)
+                        .cloned()
+                        .unwrap_or_else(|| "(unknown)".into())
                 };
                 let local = Local
                     .timestamp_opt(record.ts, 0)
@@ -729,7 +782,8 @@ impl AnalyticsState {
                     .entry(local.date_naive().num_days_from_ce())
                     .or_insert_with(|| date_string(local))
                     .clone();
-                let total = record.input + record.output + record.cache_read + record.cache_creation;
+                let total =
+                    record.input + record.output + record.cache_read + record.cache_creation;
                 if record.ts >= now_sec - 3600 {
                     recent60_tokens += total;
                     let pname = project_name(&work_dir).to_string();
@@ -774,7 +828,9 @@ impl AnalyticsState {
                     .entry(record.model.clone())
                     .or_default() += total;
                 *model_total.entry(record.model.clone()).or_default() += total;
-                model_agent.entry(record.model.clone()).or_insert(record_agent);
+                model_agent
+                    .entry(record.model.clone())
+                    .or_insert(record_agent);
                 let project = project_name(&work_dir);
                 let normalized = normalize_work_dir(&work_dir);
                 *project_total
@@ -786,29 +842,39 @@ impl AnalyticsState {
                     .entry(project.clone())
                     .or_default() += total;
 
-                let session = sessions.entry(record.sid.clone()).or_insert_with(|| SessionRow {
-                    sid: record.sid.clone(),
-                    project: project.clone(),
-                    work_dir: work_dir.clone(),
-                    agent_totals: HashMap::new(),
-                    models: HashSet::new(),
-                    input: 0,
-                    output: 0,
-                    cache_read: 0,
-                    cache_creation: 0,
-                    requests: 0,
-                    first: record.ts,
-                    last: record.ts,
-                    total: 0,
-                    gen_seconds: 0.0,
-                });
-                session.models.insert(record.model.clone());
+                let session = sessions
+                    .entry(record.sid.clone())
+                    .or_insert_with(|| SessionRow {
+                        sid: record.sid.clone(),
+                        project: project.clone(),
+                        work_dir: work_dir.clone(),
+                        agent_totals: HashMap::new(),
+                        model_totals: HashMap::new(),
+                        last_model: String::new(),
+                        input: 0,
+                        output: 0,
+                        cache_read: 0,
+                        cache_creation: 0,
+                        requests: 0,
+                        first: record.ts,
+                        last: record.ts,
+                        total: 0,
+                        gen_seconds: 0.0,
+                    });
+                *session
+                    .model_totals
+                    .entry(record.model.clone())
+                    .or_default() += total;
                 *session.agent_totals.entry(record_agent).or_default() += total;
                 session.input += record.input;
                 session.output += record.output;
                 session.cache_read += record.cache_read;
                 session.cache_creation += record.cache_creation;
                 session.requests += 1;
+                // 多 agent 文件合扫时记录不按时间交错有序，仅在时间戳推进时更新
+                if record.ts >= session.last {
+                    session.last_model = record.model.clone();
+                }
                 session.first = session.first.min(record.ts);
                 session.last = session.last.max(record.ts);
                 session.total += total;
@@ -827,32 +893,30 @@ impl AnalyticsState {
         let rate15_rows: Vec<serde_json::Value> = {
             let mut rows: Vec<(String, i64)> = recent15_by_project.into_iter().collect();
             rows.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-            rows.into_iter().take(8)
+            rows.into_iter()
+                .take(8)
                 .map(|(name, tokens)| serde_json::json!({ "name": name, "tokens": tokens }))
                 .collect()
         };
         let rate60_rows: Vec<serde_json::Value> = {
             let mut rows: Vec<(String, i64)> = recent60_by_project.into_iter().collect();
             rows.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-            rows.into_iter().take(8)
+            rows.into_iter()
+                .take(8)
                 .map(|(name, tokens)| serde_json::json!({ "name": name, "tokens": tokens }))
                 .collect()
         };
 
-        // 顶部速率卡数据：最近活跃的两个项目，各自取最新会话的速率
-        //（会话 token / 会话时长，与 Sessions 表 Rate 列同口径）。
+        // 顶部速率卡数据：最近活跃的三个会话（不按项目去重），各行含
+        // 项目 / 会话 id / 最近请求的模型 / 速率。速率口径与 Sessions 表 Rate 列一致
+        //（会话 output token / 会话时长）；模型取会话内时间戳最新的记录所用模型
+        //（用户视角的"当前在用模型"），token 占比口径见 Sessions 明细表。
         // 业界面板惯例：会话级 TPS 用于体验视图，滑窗 TPM 用于配额视图。
-        let mut latest_by_project: HashMap<&String, &SessionRow> = HashMap::new();
-        for session in sessions.values() {
-            match latest_by_project.get(&session.project) {
-                Some(prev) if prev.last >= session.last => {}
-                _ => {
-                    latest_by_project.insert(&session.project, session);
-                }
-            }
-        }
-        let mut latest_sessions: Vec<serde_json::Value> = latest_by_project
-            .values()
+        let mut latest_rows: Vec<&SessionRow> = sessions.values().collect();
+        latest_rows.sort_by(|a, b| b.last.cmp(&a.last).then(b.total.cmp(&a.total)));
+        latest_rows.truncate(3);
+        let latest_sessions: Vec<serde_json::Value> = latest_rows
+            .iter()
             .map(|s| {
                 let dominant = s
                     .agent_totals
@@ -860,8 +924,19 @@ impl AnalyticsState {
                     .max_by_key(|(_, total)| **total)
                     .map(|(name, _)| *name)
                     .unwrap_or("kimi");
+                let model = if !s.last_model.is_empty() {
+                    s.last_model.clone()
+                } else {
+                    s.model_totals
+                        .iter()
+                        .max_by_key(|(_, total)| **total)
+                        .map(|(name, _)| name.clone())
+                        .unwrap_or_default()
+                };
                 serde_json::json!({
                     "project": s.project,
+                    "session_id": s.sid,
+                    "model": model,
                     "agent": dominant,
                     // 输出速率为基础（业界吞吐标准：以输出 token 计量）
                     "rate": if s.last > s.first {
@@ -885,13 +960,6 @@ impl AnalyticsState {
                 })
             })
             .collect();
-        latest_sessions.sort_by(|a, b| {
-            b["last"]
-                .as_i64()
-                .unwrap_or(0)
-                .cmp(&a["last"].as_i64().unwrap_or(0))
-        });
-        latest_sessions.truncate(2);
 
         let daily_out: Vec<serde_json::Value> = day_list
             .iter()
@@ -913,11 +981,13 @@ impl AnalyticsState {
             })
             .collect();
 
-        let mut models: Vec<(String, i64)> = model_total.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        let mut models: Vec<(String, i64)> =
+            model_total.iter().map(|(k, v)| (k.clone(), *v)).collect();
         models.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
         let model_names: Vec<String> = models.iter().map(|(m, _)| m.clone()).collect();
 
-        let mut rank: Vec<(&'static str, i64)> = agent_totals.iter().map(|(k, v)| (*k, *v)).collect();
+        let mut rank: Vec<(&'static str, i64)> =
+            agent_totals.iter().map(|(k, v)| (*k, *v)).collect();
         rank.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
         let agent_rank: Vec<serde_json::Value> = rank
             .iter()
@@ -934,7 +1004,9 @@ impl AnalyticsState {
         //（路径取贡献最大的那个），避免 Top projects 出现同名多行
         let mut merged: HashMap<String, (String, i64)> = HashMap::new();
         for ((name, path), total) in &project_total {
-            let entry = merged.entry(name.clone()).or_insert_with(|| (path.clone(), 0));
+            let entry = merged
+                .entry(name.clone())
+                .or_insert_with(|| (path.clone(), 0));
             entry.1 += total;
             if *total > entry.1 - total {
                 entry.0 = path.clone();
@@ -950,15 +1022,15 @@ impl AnalyticsState {
         let mut daily_projects: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
         for day in &day_list {
             if let Some(projects) = daily_project.get(day) {
-                let mut ranked: Vec<(String, i64)> =
-                    projects.iter().map(|(name, total)| (name.clone(), *total)).collect();
+                let mut ranked: Vec<(String, i64)> = projects
+                    .iter()
+                    .map(|(name, total)| (name.clone(), *total))
+                    .collect();
                 ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
                 let top: Vec<serde_json::Value> = ranked
                     .into_iter()
                     .take(5)
-                    .map(|(name, total)| {
-                        serde_json::json!({ "name": name, "total": total })
-                    })
+                    .map(|(name, total)| serde_json::json!({ "name": name, "total": total }))
                     .collect();
                 daily_projects.insert(day.clone(), serde_json::Value::Array(top));
             }
@@ -981,7 +1053,7 @@ impl AnalyticsState {
                     "project": session.project,
                     "work_dir": session.work_dir,
                     "agent": dominant,
-                    "models": session.models.iter().cloned().collect::<Vec<_>>(),
+                    "models": session.model_totals.keys().cloned().collect::<Vec<_>>(),
                     "input": session.input,
                     "output": session.output,
                     "cache_read": session.cache_read,
@@ -1048,9 +1120,16 @@ impl AnalyticsState {
         }
         let denominator: i64 = daily_out
             .iter()
-            .map(|d| d["input"].as_i64().unwrap_or(0) + d["cache_read"].as_i64().unwrap_or(0) + d["cache_creation"].as_i64().unwrap_or(0))
+            .map(|d| {
+                d["input"].as_i64().unwrap_or(0)
+                    + d["cache_read"].as_i64().unwrap_or(0)
+                    + d["cache_creation"].as_i64().unwrap_or(0)
+            })
             .sum();
-        let total_cache_read: i64 = daily_out.iter().map(|d| d["cache_read"].as_i64().unwrap_or(0)).sum();
+        let total_cache_read: i64 = daily_out
+            .iter()
+            .map(|d| d["cache_read"].as_i64().unwrap_or(0))
+            .sum();
 
         serde_json::json!({
             "generated_at": now.format("%Y-%m-%d %H:%M:%S").to_string(),

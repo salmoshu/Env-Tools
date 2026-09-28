@@ -7,13 +7,26 @@ use chrono::TimeZone;
 
 use crate::analytics::{agent_of, AnalyticsState, Source};
 
-fn kimi_line(ts: i64, model: &str, input: i64, output: i64, cache_read: i64, cache_creation: i64) -> String {
+fn kimi_line(
+    ts: i64,
+    model: &str,
+    input: i64,
+    output: i64,
+    cache_read: i64,
+    cache_creation: i64,
+) -> String {
     format!(
         r#"{{"type":"usage.record","usageScope":"turn","time":{ts},"model":"{model}","usage":{{"inputOther":{input},"output":{output},"inputCacheRead":{cache_read},"inputCacheCreation":{cache_creation}}}}}"#
     )
 }
 
-fn codex_token_line(input_tokens: i64, cached: i64, cache_write: i64, output: i64, iso: &str) -> String {
+fn codex_token_line(
+    input_tokens: i64,
+    cached: i64,
+    cache_write: i64,
+    output: i64,
+    iso: &str,
+) -> String {
     format!(
         r#"{{"timestamp":"{iso}","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":{input_tokens},"cached_input_tokens":{cached},"cache_write_input_tokens":{cache_write},"output_tokens":{output}}},"last_token_usage":{{"input_tokens":{input_tokens},"cached_input_tokens":{cached},"cache_write_input_tokens":{cache_write},"output_tokens":{output}}}}}}}}}"#
     )
@@ -25,7 +38,10 @@ fn agent_attribution_matches_python_rules() {
     assert_eq!(agent_of(Source::Codex, "gpt-5.6-sol"), "codex");
     assert_eq!(agent_of(Source::Kimi, "zai/glm-5.3-flash"), "glm");
     assert_eq!(agent_of(Source::Codex, "GLM-x"), "glm");
-    assert_eq!(agent_of(Source::Kimi, "deepseek/deepseek-v4-flash"), "deepseek");
+    assert_eq!(
+        agent_of(Source::Kimi, "deepseek/deepseek-v4-flash"),
+        "deepseek"
+    );
 }
 
 #[test]
@@ -168,8 +184,10 @@ fn aggregate_matches_python_contract() {
     std::fs::create_dir_all(&home).unwrap();
     std::fs::write(
         home.join("session_index.jsonl"),
-        format!(r#"{{"sessionId":"session_a","workDir":"/w/a/projects/demo"}}
-"#),
+        format!(
+            r#"{{"sessionId":"session_a","workDir":"/w/a/projects/demo"}}
+"#
+        ),
     )
     .unwrap();
 
@@ -201,4 +219,47 @@ fn aggregate_matches_python_contract() {
     assert_eq!(all["kpi"]["today_total"], 350);
     assert_eq!(all["kpi"]["active_sessions"], 1);
     assert_eq!(all["daily"][6]["requests"], 3);
+}
+
+#[test]
+fn rate_card_shows_latest_requested_model() {
+    let dir = tempfile_dir();
+    let home = dir.join("home");
+    let wire = home
+        .join(".kimi-code")
+        .join("sessions")
+        .join("session_a")
+        .join("wire.jsonl");
+    let ts = chrono::Local
+        .with_ymd_and_hms(2026, 9, 16, 8, 0, 0)
+        .unwrap()
+        .timestamp();
+    write_file(
+        &wire,
+        &[
+            // 旧模型贡献绝大部分 token，最新一条记录才换用新模型：
+            // 速率卡模型应跟随最近一次请求，而非 token 占比最高者
+            kimi_line(ts, "kimi-code/k3-256k", 100_000, 0, 0, 0),
+            kimi_line(ts + 60, "kimi-code/k3", 10, 0, 0, 0),
+        ],
+    );
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("session_index.jsonl"),
+        "{\"sessionId\":\"session_a\",\"workDir\":\"/w/a/projects/demo\"}\n",
+    )
+    .unwrap();
+
+    let mut state = AnalyticsState::default();
+    state.scan(&[home.join(".kimi-code")], &[], &[], 1_789_100_000);
+    let now = chrono::Local
+        .with_ymd_and_hms(2026, 9, 16, 12, 0, 0)
+        .unwrap();
+    let all = state.aggregate(7, "all", now);
+    assert_eq!(
+        all["kpi"]["rate"]["latest_sessions"][0]["model"],
+        "kimi-code/k3"
+    );
+    // token 占比口径仍保留在 model_rank（k3-256k 居首）
+    assert_eq!(all["model_rank"][0]["model"], "kimi-code/k3-256k");
 }
