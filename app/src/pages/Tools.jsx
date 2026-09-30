@@ -6,7 +6,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useInstallState, setInstallRunning, setInstallResult, clearInstallLog } from "../installState.js";
 import { t, useLang } from "../i18n.js";
-import { isNewerVersion } from "../utils.js";
+import { isNewerVersion, activateOnKeys } from "../utils.js";
 
 const COMPONENTS = [
   {
@@ -15,8 +15,8 @@ const COMPONENTS = [
     platforms: ["linux", "windows"],
     descKey: "tools.descAiTools",
     actions: [
-      { key: "kimi", labelKey: "tools.installKimi" },
-      { key: "codex", labelKey: "tools.installCodex" },
+      { key: "kimi", detect: "kimi", agent: "Kimi" },
+      { key: "codex", detect: "codex", agent: "Codex" },
     ],
   },
   {
@@ -24,14 +24,14 @@ const COMPONENTS = [
     name: "Node.js",
     platforms: ["linux", "windows"],
     descKey: "tools.descNodejs",
-    actions: [{ key: "nodejs", labelKey: "tools.installUpdate" }],
+    actions: [{ key: "nodejs", detect: "node" }],
   },
   {
     key: "kdesk",
     name: "KDesk",
     platforms: ["windows"],
     descKey: "tools.descKdesk",
-    actions: [{ key: "kdesk", labelKey: "tools.installUpdate" }],
+    actions: [{ key: "kdesk", detect: "kdesk" }],
   },
   {
     key: "openssh",
@@ -39,29 +39,40 @@ const COMPONENTS = [
     platforms: ["linux", "windows"],
     descKey: "tools.descOpenssh",
     actions: [
-      { key: "openssh", labelKey: "tools.installUpdate" },
+      { key: "openssh", detect: "openssh" },
       { key: "openssh:status", labelKey: "tools.checkStatus", ghost: true },
     ],
   },
 ];
 
-// ai-tools 卡的 agent 版本行：当前版本随 Tab 取（Windows 用 usage 载荷探测、
-// WSL 用发行版内探测），最新版本取 usage 载荷（npm/github 与平台无关），
-// 有更新时显示 → latest，与用量配额卡的版本徽章同口径。
-function AgentVersionRow({ platform, payloadVersions, wslVersions }) {
+// ai-tools 卡的 agent 版本行：当前版本来自当前 Tab 的组件探测（Windows 经
+// cmd.exe、WSL 在发行版内），最新版本取 usage 载荷（npm/github 与平台无关）。
+// 有更新时徽章可点击直接升级（与用量配额卡的版本徽章同语义）。
+function AgentVersionRow({ payloadVersions, detected, disabled, onUpgrade }) {
   const agents = [
-    { label: "Kimi", payloadKey: "Kimi Code", current: platform === "wsl" ? (wslVersions && wslVersions.kimi) : ((payloadVersions["Kimi Code"] || {}).current) },
-    { label: "Codex", payloadKey: "OpenAI Codex", current: platform === "wsl" ? (wslVersions && wslVersions.codex) : ((payloadVersions["OpenAI Codex"] || {}).current) },
+    { key: "kimi", label: "Kimi", payloadKey: "Kimi Code" },
+    { key: "codex", label: "Codex", payloadKey: "OpenAI Codex" },
   ];
   return (
     <div className="tool-vers">
       {agents.map((agent) => {
+        const current = (detected && detected[agent.key]) || null;
         const latest = ((payloadVersions[agent.payloadKey] || {}).latest) || "";
-        const newer = agent.current && latest && isNewerVersion(latest, agent.current);
+        const newer = current && latest && isNewerVersion(latest, current);
+        const clickable = newer && !disabled;
+        const fire = () => onUpgrade(agent.key, `${t("tools.update")} ${agent.label}`);
         return (
-          <span key={agent.label} className="tool-ver">
+          <span
+            key={agent.key}
+            className={`tool-ver${clickable ? " upgrade" : ""}`}
+            role={clickable ? "button" : undefined}
+            tabIndex={clickable ? 0 : undefined}
+            title={clickable ? t("upgrade.click") : undefined}
+            onClick={clickable ? fire : undefined}
+            onKeyDown={clickable ? activateOnKeys(fire) : undefined}
+          >
             {agent.label}
-            {agent.current ? ` v${agent.current}` : ""}
+            {current ? ` v${current}` : ""}
             {newer ? <span className="new"> → {latest}</span> : null}
           </span>
         );
@@ -90,8 +101,8 @@ export default function Tools({ lastPayload }) {
   const setRunning = setInstallRunning;
   const clearTerm = clearInstallLog;
   const [statuses, setStatuses] = useState({});
-  // WSL 侧 kimi/codex 已装版本（进入 WSL Tab 时探测；Windows Tab 用 usage 载荷）
-  const [wslAgentVersions, setWslAgentVersions] = useState(null);
+  // 当前 Tab 的组件探测：{kimi,codex,node:版本|null, openssh,kdesk:bool}
+  const [detected, setDetected] = useState(null);
   const [backend, setBackend] = useState(null);
   const [sshList, setSshList] = useState([]);
   const [sshForm, setSshForm] = useState({ host: "", port: "22", user: "" });
@@ -150,15 +161,22 @@ export default function Tools({ lastPayload }) {
     }
   };
 
+  const detectComponents = () => {
+    window.api.componentDetect(platformTab)
+      .then((result) => { if (result && result.ok) setDetected(result.components || {}); })
+      .catch(() => {});
+  };
+
   useEffect(() => {
-    // 切换平台 Tab 时刷新 openssh 状态（失败静默，按钮可手动重试）
+    // 切换平台 Tab 时刷新 openssh 状态与组件探测（失败静默，按钮可手动重试）
     refreshSshStatus();
-    if (platformTab === "wsl") {
-      window.api.wslAgentVersions()
-        .then((result) => { if (result && result.ok) setWslAgentVersions(result); })
-        .catch(() => {});
-    }
+    detectComponents();
   }, [platformTab]);
+
+  useEffect(() => {
+    // 安装/升级结束后重探测，按钮文案随之从“安装”切到“更新”
+    if (install.result) detectComponents();
+  }, [install.result]);
 
   const run = async (actionKey, label) => {
     if (running) return;
@@ -298,22 +316,47 @@ export default function Tools({ lastPayload }) {
               </span>
             </div>
             <div className="tool-desc">{t(component.descKey)}</div>
-            {component.key === "ai-tools" ? <AgentVersionRow platform={platformTab} payloadVersions={versions} wslVersions={wslAgentVersions} /> : null}
+            {component.key === "ai-tools" ? (
+              <AgentVersionRow
+                platform={platformTab}
+                payloadVersions={versions}
+                detected={detected}
+                disabled={Boolean(running)}
+                onUpgrade={(key, label) => run(key, label)}
+              />
+            ) : null}
             {component.key === "openssh" && statuses.openssh && statuses.openssh.output ? (
               <div className="tool-status">{statuses.openssh.output}</div>
             ) : null}
             <div className="tool-actions">
-              {component.actions.map((action) => (
-                <button
-                  type="button"
-                  key={action.key}
-                  className={`tool-btn${action.ghost ? " ghost" : ""}`}
-                  disabled={Boolean(running)}
-                  onClick={() => run(action.key, t(action.labelKey))}
-                >
-                  {running && running.label === t(action.labelKey) ? t("tools.running") : t(action.labelKey)}
-                </button>
-              ))}
+              {component.actions.map((action) => {
+                if (action.labelKey) {
+                  return (
+                    <button
+                      type="button"
+                      key={action.key}
+                      className={`tool-btn${action.ghost ? " ghost" : ""}`}
+                      disabled={Boolean(running)}
+                      onClick={() => run(action.key, t(action.labelKey))}
+                    >
+                      {running && running.label === t(action.labelKey) ? t("tools.running") : t(action.labelKey)}
+                    </button>
+                  );
+                }
+                const installed = Boolean(detected && detected[action.detect]);
+                const label = `${t(installed ? "tools.update" : "tools.install")}${action.agent ? ` ${action.agent}` : ""}`;
+                return (
+                  <button
+                    type="button"
+                    key={action.key}
+                    className={`tool-btn${action.ghost ? " ghost" : ""}`}
+                    disabled={Boolean(running)}
+                    onClick={() => run(action.key, label)}
+                  >
+                    {running && running.label === label ? t("tools.running") : label}
+                  </button>
+                );
+              })}
             </div>
           </div>
         ))}

@@ -9,7 +9,7 @@
 // （Rust + axum，配额/分析/设置全原生）提供，python 引擎已移除。
 
 const { app, BrowserWindow, ipcMain, net } = require("electron");
-const { spawn, execSync } = require("child_process");
+const { spawn, execSync, exec } = require("child_process");
 const os = require("os");
 const path = require("path");
 const fs = require("fs");
@@ -1269,21 +1269,43 @@ ipcMain.handle("run-component", async (_event, component, environment, windowsSe
   if (!spec) return { ok: false, error: "no installable target for this component" };
   return startInstall(`component:${component}`, spec);
 });
-// WSL 侧 agent 版本探测（Tools 页 ai-tools 卡）：交互式 bash（NVM/PATH）
-// 跑 kimi/codex --version 提 semver；latest 由渲染层取 usage 载荷（最新版
-// 与平台无关）。探测不到返回 null（未安装）。
-ipcMain.handle("wsl-agent-versions", async () => {
-  if (process.platform !== "win32") return { ok: false, error: "not supported" };
+// 组件探测（Tools 页）：kimi/codex/node 返回已装版本（null=未装），
+// openssh/kdesk 返回是否部署。Windows 侧经 cmd.exe（npm .cmd 垫片）+
+// where/schtasks；WSL 侧在数据源发行版内交互式 bash 探测（NVM/PATH 生效）。
+// kdesk 仅 Windows：以 setup_elevated 注册的 KdeskAutoDeploy 计划任务为准。
+ipcMain.handle("component-detect", async (_event, environment) => {
+  const semver = (text) => {
+    const m = String(text || "").match(/[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?/);
+    return m ? m[0] : null;
+  };
+  if (environment !== "wsl") {
+    if (process.platform !== "win32") return { ok: false, error: "not supported" };
+    const winProbe = (command) => new Promise((resolve) => {
+      exec(`cmd.exe /C ${command} --version 2>nul`, { timeout: 15000, windowsHide: true },
+        (err, stdout) => resolve(semver(stdout)));
+    });
+    const winHas = (command) => new Promise((resolve) => {
+      exec(command, { timeout: 15000, windowsHide: true },
+        (err, stdout) => resolve(!err && String(stdout || "").trim().length > 0));
+    });
+    const [kimi, codex, node, openssh, kdesk] = await Promise.all([
+      winProbe("kimi"), winProbe("codex"), winProbe("node"),
+      winHas("where sshd"),
+      winHas("schtasks /query /tn KdeskAutoDeploy"),
+    ]);
+    return { ok: true, components: { kimi, codex, node, openssh, kdesk } };
+  }
   const distro = await resolveWslDistro();
   if (!distro) return { ok: false, error: "no WSL distro configured" };
-  const probe = async (command) => {
-    const r = await wslCommand(distro, [command + " --version 2>/dev/null || true"], { timeoutMs: 20000 });
-    const text = String((r && r.stdout) || "") + String((r && r.stderr) || "");
-    const m = text.match(/[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?/);
-    return (r && !r.error && m) ? m[0] : null;
-  };
-  const [kimi, codex] = await Promise.all([probe("kimi"), probe("codex")]);
-  return { ok: true, kimi, codex };
+  const probe = (command) => wslCommand(distro,
+    [command + " --version 2>/dev/null || true"], { timeoutMs: 20000 })
+    .then((r) => (r && !r.error ? semver(String(r.stdout || "") + String(r.stderr || "")) : null));
+  const hasSshd = wslCommand(distro, ["command -v sshd >/dev/null 2>&1 && echo yes || true"], { timeoutMs: 15000 })
+    .then((r) => /yes/.test(String((r && r.stdout) || "")));
+  const [kimi, codex, node, openssh] = await Promise.all([
+    probe("kimi"), probe("codex"), probe("node"), hasSshd,
+  ]);
+  return { ok: true, components: { kimi, codex, node, openssh, kdesk: false } };
 });
 
 ipcMain.handle("install-cancel", () => {
