@@ -601,6 +601,9 @@ td b { font-weight: 600; }
 .tool-head { display: flex; align-items: center; gap: 8px; }
 .tool-name { font-weight: 700; font-size: 13px; }
 .tool-platform { font-size: 9px; color: var(--faint); border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; }
+.tool-vers { display: flex; gap: 14px; margin: 2px 0 8px; }
+.tool-ver { font-size: 10px; color: var(--dim); font-variant-numeric: tabular-nums; }
+.tool-ver .new { color: var(--accent); font-weight: 600; }
 .tool-desc { font-size: 11px; color: var(--dim); line-height: 1.5; }
 .tool-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 2px; }
 .tool-btn {

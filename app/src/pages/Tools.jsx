@@ -6,6 +6,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useInstallState, setInstallRunning, setInstallResult, clearInstallLog } from "../installState.js";
 import { t, useLang } from "../i18n.js";
+import { isNewerVersion } from "../utils.js";
 
 const COMPONENTS = [
   {
@@ -44,6 +45,31 @@ const COMPONENTS = [
   },
 ];
 
+// ai-tools 卡的 agent 版本行：当前版本随 Tab 取（Windows 用 usage 载荷探测、
+// WSL 用发行版内探测），最新版本取 usage 载荷（npm/github 与平台无关），
+// 有更新时显示 → latest，与用量配额卡的版本徽章同口径。
+function AgentVersionRow({ platform, payloadVersions, wslVersions }) {
+  const agents = [
+    { label: "Kimi", payloadKey: "Kimi Code", current: platform === "wsl" ? (wslVersions && wslVersions.kimi) : ((payloadVersions["Kimi Code"] || {}).current) },
+    { label: "Codex", payloadKey: "OpenAI Codex", current: platform === "wsl" ? (wslVersions && wslVersions.codex) : ((payloadVersions["OpenAI Codex"] || {}).current) },
+  ];
+  return (
+    <div className="tool-vers">
+      {agents.map((agent) => {
+        const latest = ((payloadVersions[agent.payloadKey] || {}).latest) || "";
+        const newer = agent.current && latest && isNewerVersion(latest, agent.current);
+        return (
+          <span key={agent.label} className="tool-ver">
+            {agent.label}
+            {agent.current ? ` v${agent.current}` : ""}
+            {newer ? <span className="new"> → {latest}</span> : null}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
 const TAB_KEY = "tools.platform-tab";
 
 export default function Tools({ lastPayload }) {
@@ -64,6 +90,8 @@ export default function Tools({ lastPayload }) {
   const setRunning = setInstallRunning;
   const clearTerm = clearInstallLog;
   const [statuses, setStatuses] = useState({});
+  // WSL 侧 kimi/codex 已装版本（进入 WSL Tab 时探测；Windows Tab 用 usage 载荷）
+  const [wslAgentVersions, setWslAgentVersions] = useState(null);
   const [backend, setBackend] = useState(null);
   const [sshList, setSshList] = useState([]);
   const [sshForm, setSshForm] = useState({ host: "", port: "22", user: "" });
@@ -73,6 +101,7 @@ export default function Tools({ lastPayload }) {
 
   const data = (lastPayload && lastPayload.data) || {};
   const environment = data.environment || "wsl";
+  const versions = data.versions || {};
   const windowsSetupScript = data.windows_setup_script || "";
 
   useEffect(() => {
@@ -124,6 +153,11 @@ export default function Tools({ lastPayload }) {
   useEffect(() => {
     // 切换平台 Tab 时刷新 openssh 状态（失败静默，按钮可手动重试）
     refreshSshStatus();
+    if (platformTab === "wsl") {
+      window.api.wslAgentVersions()
+        .then((result) => { if (result && result.ok) setWslAgentVersions(result); })
+        .catch(() => {});
+    }
   }, [platformTab]);
 
   const run = async (actionKey, label) => {
@@ -264,6 +298,7 @@ export default function Tools({ lastPayload }) {
               </span>
             </div>
             <div className="tool-desc">{t(component.descKey)}</div>
+            {component.key === "ai-tools" ? <AgentVersionRow platform={platformTab} payloadVersions={versions} wslVersions={wslAgentVersions} /> : null}
             {component.key === "openssh" && statuses.openssh && statuses.openssh.output ? (
               <div className="tool-status">{statuses.openssh.output}</div>
             ) : null}

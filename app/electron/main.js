@@ -1091,13 +1091,19 @@ function aiToolsSpec(flags, environment, windowsSetupScript) {
 // 仓库脚本在 Windows 文件系统上，先取配置的数据源发行版，再经 wslpath 把
 // 脚本路径转成发行版内路径，用交互式 bash 跑（保留 NVM/PATH，与 WSL 模式
 // 同一条链路）。返回 null 表示无可用发行版（未安装/未配置）。
-async function localWslScriptSpec(scriptWinPath, scriptArgs) {
-  if (!backendPort) return null;
-  let distro = "";
+// 解析 WSL 目标发行版：WSL 模式用启动器传入的发行版，本地模式读设置的
+// 数据源发行版。返回空串表示无可用发行版。
+async function resolveWslDistro() {
+  if (WSL_BACKEND) return WSL_DISTRO || "";
+  if (!backendPort) return "";
   try {
     const settings = await backendFetch("/api/settings", 10000);
-    distro = (settings && settings.wsl_distro) || "";
-  } catch { /* 设置不可达时按未配置处理 */ }
+    return (settings && settings.wsl_distro) || "";
+  } catch { return ""; }
+}
+
+async function localWslScriptSpec(scriptWinPath, scriptArgs) {
+  const distro = await resolveWslDistro();
   if (!distro) return null;
   const escaped = scriptWinPath.replace(/'/g, "'\''");
   const conv = await wslCommand(distro, ["wslpath -a -u '" + escaped + "'"], { timeoutMs: 15000 });
@@ -1263,6 +1269,23 @@ ipcMain.handle("run-component", async (_event, component, environment, windowsSe
   if (!spec) return { ok: false, error: "no installable target for this component" };
   return startInstall(`component:${component}`, spec);
 });
+// WSL 侧 agent 版本探测（Tools 页 ai-tools 卡）：交互式 bash（NVM/PATH）
+// 跑 kimi/codex --version 提 semver；latest 由渲染层取 usage 载荷（最新版
+// 与平台无关）。探测不到返回 null（未安装）。
+ipcMain.handle("wsl-agent-versions", async () => {
+  if (process.platform !== "win32") return { ok: false, error: "not supported" };
+  const distro = await resolveWslDistro();
+  if (!distro) return { ok: false, error: "no WSL distro configured" };
+  const probe = async (command) => {
+    const r = await wslCommand(distro, [command + " --version 2>/dev/null || true"], { timeoutMs: 20000 });
+    const text = String((r && r.stdout) || "") + String((r && r.stderr) || "");
+    const m = text.match(/[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?/);
+    return (r && !r.error && m) ? m[0] : null;
+  };
+  const [kimi, codex] = await Promise.all([probe("kimi"), probe("codex")]);
+  return { ok: true, kimi, codex };
+});
+
 ipcMain.handle("install-cancel", () => {
   if (!installChild) return false;
   installCancelled = true;

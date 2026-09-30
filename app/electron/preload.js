@@ -55,6 +55,7 @@ contextBridge.exposeInMainWorld("api", {
   runComponent: (component, environment, windowsSetupScript) =>
     ipcRenderer.invoke("run-component", component, environment, windowsSetupScript),
   cancelInstall: () => ipcRenderer.invoke("install-cancel"),
+  wslAgentVersions: () => ipcRenderer.invoke("wsl-agent-versions"),
   componentStatus: (component, environment) =>
     ipcRenderer.invoke("component-status", component, environment),
 });
