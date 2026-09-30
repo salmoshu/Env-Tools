@@ -142,8 +142,9 @@ export default function Tools({ lastPayload }) {
     }
   };
 
+  // Tab 值是 wsl，组件平台清单用 linux（v0.3.0 的映射在 v0.7.11 Tab 改造时丢失）
   const visibleComponents = COMPONENTS.filter((component) =>
-    component.platforms.includes(platformTab));
+    component.platforms.includes(platformTab === "windows" ? "windows" : "linux"));
 
   return (
     <div className="page">

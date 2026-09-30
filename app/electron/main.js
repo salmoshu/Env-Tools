@@ -1087,6 +1087,28 @@ function aiToolsSpec(flags, environment, windowsSetupScript) {
   };
 }
 
+// 本地 Windows 模式下的 WSL 侧执行：数据源在本机，但安装目标是 WSL 发行版。
+// 仓库脚本在 Windows 文件系统上，先取配置的数据源发行版，再经 wslpath 把
+// 脚本路径转成发行版内路径，用交互式 bash 跑（保留 NVM/PATH，与 WSL 模式
+// 同一条链路）。返回 null 表示无可用发行版（未安装/未配置）。
+async function localWslScriptSpec(scriptWinPath, scriptArgs) {
+  if (!backendPort) return null;
+  let distro = "";
+  try {
+    const settings = await backendFetch("/api/settings", 10000);
+    distro = (settings && settings.wsl_distro) || "";
+  } catch { /* 设置不可达时按未配置处理 */ }
+  if (!distro) return null;
+  const escaped = scriptWinPath.replace(/'/g, "'\''");
+  const conv = await wslCommand(distro, ["wslpath -a -u '" + escaped + "'"], { timeoutMs: 15000 });
+  const wslPath = String((conv && conv.stdout) || "").trim().split("\n")[0].replace("\0", "");
+  if (!wslPath || wslPath.includes(" ")) return null;
+  return {
+    command: "wsl.exe",
+    args: ["-d", distro, "--exec", "bash", "-ic", 'exec bash "$1" "${@:2}"', "env-tools-install", wslPath, ...scriptArgs],
+  };
+}
+
 function componentSpec(component, environment, windowsSetupScript) {
   // 通用组件：repo 根 setup 脚本 + 组件名位置参数（setup.sh nodejs / setup.ps1 nodejs）
   if (environment === "windows" && WSL_BACKEND) {
@@ -1223,12 +1245,22 @@ ipcMain.handle("upgrade-agents", (_event, providers, environment, windowsSetupSc
   if (!spec) return Promise.resolve({ ok: false, error: "no upgradable target" });
   return startInstall("upgrade", spec);
 });
-ipcMain.handle("run-component", (_event, component, environment, windowsSetupScript) => {
+ipcMain.handle("run-component", async (_event, component, environment, windowsSetupScript) => {
   // kimi/codex 是 ai-tools 组件的子开关（setup.ps1 的 Component 参数不接受它们），
   // 走 aiToolsSpec 生成 --kimi/--codex 标志，与看板升级同一条链路
   const kind = component === "kimi" || component === "codex" ? "ai-tools" : String(component);
-  const spec = installSpec(kind, component, environment, windowsSetupScript);
-  if (!spec) return Promise.resolve({ ok: false, error: "no installable target for this component" });
+  let spec;
+  if (environment === "wsl" && !WSL_BACKEND && process.platform === "win32") {
+    // 本地 Windows 模式的 WSL Tab：目标 = 设置里配置的数据源发行版
+    const scriptArgs = kind === "ai-tools"
+      ? ["ai-tools", COMPONENT_FLAGS[component]].filter(Boolean)
+      : [component];
+    spec = await localWslScriptSpec(path.join(REPO_ROOT, "scripts", "setup.sh"), scriptArgs);
+    if (!spec) return { ok: false, error: "no WSL distro configured — set the data-source distro in Settings" };
+  } else {
+    spec = installSpec(kind, component, environment, windowsSetupScript);
+  }
+  if (!spec) return { ok: false, error: "no installable target for this component" };
   return startInstall(`component:${component}`, spec);
 });
 ipcMain.handle("install-cancel", () => {
@@ -1241,9 +1273,17 @@ ipcMain.handle("component-status", async (_event, component, environment) => {
   // 目前只有 openssh 有 status 子命令；其余组件的“状态”由安装结果体现
   if (component !== "openssh") return { ok: false, error: "no status command" };
   const timeoutMs = 30 * 1000;
+  // 本地 Windows 模式的 WSL Tab：tools.sh 在配置的发行版内执行
+  let wslLocalSpec = null;
+  if (environment === "wsl" && !WSL_BACKEND && process.platform === "win32") {
+    wslLocalSpec = await localWslScriptSpec(path.join(REPO_ROOT, "scripts", "tools.sh"), ["openssh", "--status"]);
+    if (!wslLocalSpec) return { ok: false, error: "no WSL distro configured" };
+  }
   return new Promise((resolve) => {
     let spec;
-    if (environment === "windows" && WSL_BACKEND) {
+    if (wslLocalSpec) {
+      spec = wslLocalSpec;
+    } else if (environment === "windows" && WSL_BACKEND) {
       spec = { command: "powershell.exe", args: ["-NoProfile", "-Command",
         "Get-Service sshd | Select-Object -Property Status,StartType | Format-List"] };
     } else if (WSL_BACKEND) {
