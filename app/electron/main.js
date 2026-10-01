@@ -515,9 +515,11 @@ function findLinuxAgentBinary() {
   return fs.existsSync(dev) ? dev : "";
 }
 
-function wslCommand(distro, args, { input = null, timeoutMs = 30000 } = {}) {
+function wslCommand(distro, args, { input = null, timeoutMs = 30000, interactive = false } = {}) {
+  // interactive：用 bash -ic 加载 .bashrc（NVM 等自装 CLI 的 PATH 只在交互
+  // shell 里生效）；默认 -c 用于系统级命令（wslpath/command -v 等）
   return new Promise((resolve) => {
-    const child = spawn("wsl.exe", ["-d", distro, "--exec", "bash", "-c", ...args], {
+    const child = spawn("wsl.exe", ["-d", distro, "--exec", "bash", interactive ? "-ic" : "-c", ...args], {
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });
@@ -1298,7 +1300,7 @@ ipcMain.handle("component-detect", async (_event, environment) => {
   const distro = await resolveWslDistro();
   if (!distro) return { ok: false, error: "no WSL distro configured" };
   const probe = (command) => wslCommand(distro,
-    [command + " --version 2>/dev/null || true"], { timeoutMs: 20000 })
+    [command + " --version 2>/dev/null || true"], { timeoutMs: 20000, interactive: true })
     .then((r) => (r && !r.error ? semver(String(r.stdout || "") + String(r.stderr || "")) : null));
   const hasSshd = wslCommand(distro, ["command -v sshd >/dev/null 2>&1 && echo yes || true"], { timeoutMs: 15000 })
     .then((r) => /yes/.test(String((r && r.stdout) || "")));
