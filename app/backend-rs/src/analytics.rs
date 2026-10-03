@@ -33,8 +33,10 @@ pub struct TurnRecord {
     pub cache_read: i64,
     pub cache_creation: i64,
     pub sid: String,
-    /// 该次请求的纯生成时长（秒）= duration_ms − TTFT。仅 ZCode 数据源
-    /// 逐请求可得；kimi/codex 文件源没有该信息，为 0。
+    /// 该次请求的纯生成时长（秒）。ZCode（SQLite duration−TTFT）与
+    /// kimi（usage.record − llm.request）逐请求可得；codex 由
+    /// token_usage_record 与边界事件（工具产出/用户消息/上一响应完成）
+    /// 的时间差推导，含 TTFT/prefill。其余来源为 0（回退吞吐口径）。
     pub gen_seconds: f64,
 }
 
@@ -52,6 +54,15 @@ pub struct FileState {
     /// 不落盘：跨进程复用半截配对起点没有意义
     #[serde(skip)]
     pub pending_llm_ms: i64,
+    /// codex：生成时段起点（毫秒，0 = 无）。边界事件（task_started/
+    /// 工具产出/用户消息/上一条 token_usage_record）推进；下一条
+    /// token_usage_record 与之相减得该次响应时长。不落盘，理由同上
+    #[serde(skip)]
+    pub codex_boundary_ms: i64,
+    /// codex：token_usage_record 算出的本响应生成时长，待赠给紧随其后
+    /// 的 token_count 记录（该记录承载 usage 展示）。不落盘
+    #[serde(skip)]
+    pub pending_span_secs: f64,
 }
 
 /// 进程内增量状态：跨请求累积，重复调用只读取各文件新增字节。
@@ -81,7 +92,9 @@ struct ScanCache {
     files: HashMap<String, FileState>,
 }
 
-const SCAN_CACHE_VERSION: u32 = 1;
+// v2：codex TPOT——gen_seconds 需要 token_usage_record 全量回填，
+// 旧缓存（v1）里 codex 记录 gen_seconds 恒为 0，触发一次冷扫重建
+const SCAN_CACHE_VERSION: u32 = 2;
 
 impl AnalyticsState {
     /// 首轮扫描前从磁盘水合增量缓存（只生效一次）。水合后首轮扫描照常跑：
@@ -213,6 +226,64 @@ fn codex_model(line: &str) -> Option<String> {
     json_string_after(line, "\"model\":")
 }
 
+/// rollout 时间戳 → 毫秒。生成时段的量级是秒级、span 精度要毫秒，
+/// 不能复用秒级的 codex_timestamp
+fn codex_timestamp_ms(line: &str) -> Option<i64> {
+    let raw = json_string_after(line, "\"timestamp\":")?;
+    let raw = raw.trim_end_matches('Z');
+    let dt = DateTime::parse_from_rfc3339(&format!("{raw}+00:00")).ok()?;
+    Some(dt.timestamp_millis())
+}
+
+/// 单次响应生成时长的合理上限（秒）：超过即视为边界追踪失配
+/// （如续跑会话里跨天的大段空闲被误计入），丢弃该段
+const CODEX_SPAN_MAX_SECS: f64 = 3600.0;
+
+/// token_usage_record 行 → (本响应输出 token, 生成时长秒)。
+/// 时长 = 本行时间戳 − boundary_ms（最近一次边界事件）。
+/// boundary_ms 为 0（跨进程半截配对）或差值超上限时返回 0.0
+pub(crate) fn parse_codex_usage_record(line: &str, boundary_ms: i64) -> Option<(i64, f64)> {
+    if !line.contains("\"token_usage_record\"") {
+        return None;
+    }
+    let rec: serde_json::Value = serde_json::from_str(line).ok()?;
+    if rec.get("type")?.as_str()? != "token_usage_record" {
+        return None;
+    }
+    let ts_ms = codex_timestamp_ms(line)?;
+    let usage = rec.get("payload")?.get("usage")?;
+    let output = count_field(usage, "output_tokens");
+    let span = if boundary_ms > 0 && ts_ms > boundary_ms {
+        (ts_ms - boundary_ms) as f64 / 1000.0
+    } else {
+        0.0
+    };
+    let span = if span > CODEX_SPAN_MAX_SECS { 0.0 } else { span };
+    Some((output, span))
+}
+
+/// 边界事件识别：task_started / response_item 中的工具产出
+/// （*_call_output 等）/ 用户消息——它们标记下一次模型请求的起点。
+/// 返回该行的毫秒时间戳；非边界行返回 None
+pub(crate) fn codex_boundary_event(line: &str) -> Option<i64> {
+    if !(line.contains("\"task_started\"") || line.contains("\"response_item\"")) {
+        return None;
+    }
+    let rec: serde_json::Value = serde_json::from_str(line).ok()?;
+    let top = rec.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    let payload = rec.get("payload")?;
+    let kind = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    let boundary = top == "event_msg" && kind == "task_started"
+        || top == "response_item"
+            && (kind.ends_with("_output")
+                || kind == "message" && payload.get("role").and_then(|v| v.as_str()) == Some("user"));
+    if boundary {
+        codex_timestamp_ms(line)
+    } else {
+        None
+    }
+}
+
 pub(crate) fn parse_codex_token_line(line: &str, model: &str, sid: &str) -> Option<TurnRecord> {
     if !line.contains("\"token_count\"") {
         return None;
@@ -276,6 +347,19 @@ fn kimi_session_id(path: &Path) -> String {
         }
     }
     "(unknown)".into()
+}
+
+/// 会话"当前模型"只认主代理文件（agents/main/wire.jsonl）：子代理可能携带
+/// 切换前的旧模型继续产出记录。codex/zcode 源无子代理概念，恒算主代理。
+fn is_main_agent_file(path_key: &str, source: Source) -> bool {
+    if source != Source::Kimi {
+        return true;
+    }
+    Path::new(path_key)
+        .parent()
+        .and_then(|p| p.file_name())
+        .map(|name| name == "main")
+        .unwrap_or(false)
 }
 
 fn codex_default_session_id(path: &Path) -> String {
@@ -558,6 +642,10 @@ struct SessionRow {
     model_totals: HashMap<String, i64>,
     /// 时间戳最新的 usage 记录所用模型（速率卡展示的"当前在用模型"）
     last_model: String,
+    /// 仅主代理（agents/main/wire.jsonl）口径的最新模型与其时间戳：
+    /// 子代理可能带着切换前的旧模型继续跑，不应盖过主代理的"当前模型"
+    last_model_main: String,
+    last_main_ts: i64,
     input: i64,
     output: i64,
     cache_read: i64,
@@ -635,6 +723,8 @@ impl AnalyticsState {
                             source,
                             cwds: HashMap::new(),
                             pending_llm_ms: 0,
+                            codex_boundary_ms: 0,
+                            pending_span_secs: 0.0,
                         },
                     );
                     dirty = true;
@@ -686,8 +776,23 @@ impl AnalyticsState {
                         state.cwds.insert(session_id.clone(), cwd);
                         dirty = true;
                     }
-                    if let Some(record) = parse_codex_token_line(line, &current_model, &session_id)
+                    // TPOT 口径：边界事件推进生成时段起点；
+                    // token_usage_record 结算本响应时长，转赠给紧随其后的
+                    // token_count 记录（它承载该响应的 usage 数据）
+                    if let Some(ts_ms) = codex_boundary_event(line) {
+                        state.codex_boundary_ms = ts_ms;
+                    }
+                    if let Some((_out, span)) =
+                        parse_codex_usage_record(line, state.codex_boundary_ms)
                     {
+                        state.pending_span_secs = span;
+                        state.codex_boundary_ms = codex_timestamp_ms(line).unwrap_or(0);
+                    }
+                    if let Some(mut record) =
+                        parse_codex_token_line(line, &current_model, &session_id)
+                    {
+                        record.gen_seconds = state.pending_span_secs;
+                        state.pending_span_secs = 0.0;
                         state.records.push(record);
                         dirty = true;
                     }
@@ -725,6 +830,8 @@ impl AnalyticsState {
                         source: Source::ZCode,
                         cwds: HashMap::new(),
                         pending_llm_ms: 0,
+                        codex_boundary_ms: 0,
+                        pending_span_secs: 0.0,
                     },
                 );
                 dirty = true;
@@ -820,7 +927,8 @@ impl AnalyticsState {
         // 日期格式化按天缓存：同一日期只在首次出现时 format
         let mut date_cache: HashMap<i32, String> = HashMap::new();
 
-        for state in self.files.values() {
+        for (file_key, state) in &self.files {
+            let main_file = is_main_agent_file(file_key, state.source);
             for record in &state.records {
                 let record_agent = agent_of(state.source, &record.model);
                 if agent != "all" && record_agent != agent {
@@ -915,6 +1023,8 @@ impl AnalyticsState {
                         agent_totals: HashMap::new(),
                         model_totals: HashMap::new(),
                         last_model: String::new(),
+                        last_model_main: String::new(),
+                        last_main_ts: 0,
                         input: 0,
                         output: 0,
                         cache_read: 0,
@@ -938,6 +1048,11 @@ impl AnalyticsState {
                 // 多 agent 文件合扫时记录不按时间交错有序，仅在时间戳推进时更新
                 if record.ts >= session.last {
                     session.last_model = record.model.clone();
+                }
+                // 主代理口径单独推进：速率卡优先展示它，避免子代理旧模型盖顶
+                if main_file && record.ts >= session.last_main_ts {
+                    session.last_main_ts = record.ts;
+                    session.last_model_main = record.model.clone();
                 }
                 session.first = session.first.min(record.ts);
                 session.last = session.last.max(record.ts);
@@ -973,8 +1088,8 @@ impl AnalyticsState {
 
         // 顶部速率卡数据：最近活跃的三个会话（不按项目去重），各行含
         // 项目 / 会话 id / 最近请求的模型 / 速率。速率口径与 Sessions 表 Rate 列一致
-        //（会话 output token / 会话时长）；模型取会话内时间戳最新的记录所用模型
-        //（用户视角的"当前在用模型"），token 占比口径见 Sessions 明细表。
+        //（会话 output token / 会话时长）；模型取主代理最近一次请求所用模型
+        //（子代理可能带旧模型继续跑，不算数；会话无子代理时即全会话最新记录）。
         // 业界面板惯例：会话级 TPS 用于体验视图，滑窗 TPM 用于配额视图。
         let mut latest_rows: Vec<&SessionRow> = sessions.values().collect();
         latest_rows.sort_by(|a, b| b.last.cmp(&a.last).then(b.total.cmp(&a.total)));
@@ -988,7 +1103,9 @@ impl AnalyticsState {
                     .max_by_key(|(_, total)| **total)
                     .map(|(name, _)| *name)
                     .unwrap_or("kimi");
-                let model = if !s.last_model.is_empty() {
+                let model = if !s.last_model_main.is_empty() {
+                    s.last_model_main.clone()
+                } else if !s.last_model.is_empty() {
                     s.last_model.clone()
                 } else {
                     s.model_totals

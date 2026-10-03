@@ -88,6 +88,97 @@ fn codex_meta_cwd_accepts_both_layouts() {
     assert!(crate::analytics::parse_codex_meta_cwd(empty_cwd).is_none());
 }
 
+/// codex rollout 行构造器：顶层 type + payload，毫秒级时间戳
+fn cx_line(iso: &str, top: &str, payload: &str) -> String {
+    format!(r#"{{"timestamp":"{iso}","type":"{top}","payload":{payload}}}"#)
+}
+
+fn cx_usage(iso: &str, output: i64) -> String {
+    cx_line(
+        iso,
+        "token_usage_record",
+        &format!(r#"{{"usage":{{"input_tokens":10,"output_tokens":{output}}}}}"#),
+    )
+}
+
+fn cx_token_count(iso: &str, output: i64) -> String {
+    cx_line(
+        iso,
+        "event_msg",
+        &format!(
+            r#"{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":10,"cached_input_tokens":0,"output_tokens":{output}}},"total_token_usage":{{"input_tokens":10,"output_tokens":{output}}}}}}}"#
+        ),
+    )
+}
+
+#[test]
+fn codex_tpot_pairs_usage_record_with_token_count() {
+    let dir = tempfile_dir();
+    let home = dir.join("home");
+    let rollout = home
+        .join(".codex")
+        .join("sessions")
+        .join("2026")
+        .join("09")
+        .join("26")
+        .join("rollout-2026-09-26T08-00-00-01a0test-0000-0000-00000000cafe.jsonl");
+    let lines = vec![
+        cx_line("2026-09-26T08:00:00.000Z", "session_meta", r#"{"cwd":"/home/u/proj"}"#),
+        cx_line("2026-09-26T08:00:00.100Z", "event_msg", r#"{"type":"task_started"}"#),
+        cx_line("2026-09-26T08:00:00.200Z", "response_item", r#"{"type":"message","role":"user"}"#),
+        cx_line("2026-09-26T08:00:02.000Z", "response_item", r#"{"type":"reasoning"}"#),
+        // R1：用户消息 00.200 → 响应完成 04.000，生成 3.8s
+        cx_usage("2026-09-26T08:00:04.000Z", 100),
+        cx_line("2026-09-26T08:00:06.000Z", "response_item", r#"{"type":"custom_tool_call_output"}"#),
+        cx_token_count("2026-09-26T08:00:06.100Z", 100),
+        // R2：工具产出 06.000 是新起点（而非 R1 完成时刻），生成 1.5s
+        cx_line("2026-09-26T08:00:07.000Z", "response_item", r#"{"type":"reasoning"}"#),
+        cx_usage("2026-09-26T08:00:07.500Z", 50),
+        cx_token_count("2026-09-26T08:00:07.600Z", 50),
+        // R3：间隔 10 分钟的空闲由用户消息边界截断，只计 2.0s
+        cx_line("2026-09-26T08:10:00.000Z", "response_item", r#"{"type":"message","role":"user"}"#),
+        cx_usage("2026-09-26T08:10:02.000Z", 10),
+        cx_token_count("2026-09-26T08:10:02.100Z", 10),
+        // R4：span 超过 1h 上限（边界 10:00:03 → 完成 12:00:03），丢弃
+        cx_line("2026-09-26T08:10:03.000Z", "response_item", r#"{"type":"function_call_output"}"#),
+        cx_usage("2026-09-26T12:00:03.000Z", 5),
+        cx_token_count("2026-09-26T12:00:03.100Z", 5),
+    ];
+    write_file(&rollout, &lines);
+
+    let mut state = AnalyticsState::default();
+    assert!(state.scan(&[], &[home.join(".codex")], &[], 1_790_900_000));
+    let records: Vec<_> = state
+        .files
+        .values()
+        .flat_map(|f| f.records.iter())
+        .collect();
+    assert_eq!(records.len(), 4, "四条 token_count 记录");
+    let assert_close = |got: f64, want: f64| {
+        assert!((got - want).abs() < 0.01, "gen_seconds {got} != {want}");
+    };
+    assert_close(records[0].gen_seconds, 3.8);
+    assert_close(records[1].gen_seconds, 1.5);
+    assert_close(records[2].gen_seconds, 2.0);
+    assert_close(records[3].gen_seconds, 0.0);
+
+    // 端到端：gen_rate = Σoutput / Σspan = 165 / 7.3
+    let now = chrono::Local
+        .with_ymd_and_hms(2026, 9, 26, 20, 0, 0)
+        .unwrap();
+    let all = state.aggregate(7, "all", now);
+    let sessions = all["sessions"].as_array().unwrap();
+    assert_eq!(sessions.len(), 1);
+    let gen_rate = sessions[0]["gen_rate"].as_f64().unwrap();
+    assert!(
+        (gen_rate - 165.0 / 7.3).abs() < 0.05,
+        "gen_rate {gen_rate} != {}",
+        165.0 / 7.3
+    );
+    // 会话寿命吞吐（旧口径）仍可用：分母是首末记录差
+    assert!(sessions[0]["rate"].as_f64().unwrap() < 1.0);
+}
+
 #[test]
 fn kimi_line_normalizes_millis_and_rejects_out_of_range() {
     // 毫秒时间戳按秒解释
@@ -319,4 +410,45 @@ fn scan_cache_roundtrip_survives_restart() {
     third.scan(&[home.join(".kimi-code")], &[], &[], now.timestamp());
     let appended = third.aggregate(7, "all", now);
     assert_eq!(appended["kpi"]["today_total"], 165);
+}
+
+#[test]
+fn rate_card_prefers_main_agent_over_subagent() {
+    let dir = tempfile_dir();
+    let home = dir.join("home");
+    let base = home
+        .join(".kimi-code")
+        .join("sessions")
+        .join("session_a")
+        .join("agents");
+    let ts = chrono::Local
+        .with_ymd_and_hms(2026, 9, 16, 8, 0, 0)
+        .unwrap()
+        .timestamp();
+    // 主代理 8:00 已切到 k3；子代理 9:00 仍带切换前的旧模型产记录（更新但不算数）
+    write_file(
+        &base.join("main").join("wire.jsonl"),
+        &[kimi_line(ts, "kimi-code/k3", 10, 0, 0, 0)],
+    );
+    write_file(
+        &base.join("agent-9").join("wire.jsonl"),
+        &[kimi_line(ts + 3600, "kimi-code/k3-256k", 100_000, 0, 0, 0)],
+    );
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("session_index.jsonl"),
+        "{\"sessionId\":\"session_a\",\"workDir\":\"/w/a/projects/demo\"}\n",
+    )
+    .unwrap();
+
+    let mut state = AnalyticsState::default();
+    state.scan(&[home.join(".kimi-code")], &[], &[], 1_789_100_000);
+    let now = chrono::Local
+        .with_ymd_and_hms(2026, 9, 16, 12, 0, 0)
+        .unwrap();
+    let all = state.aggregate(7, "all", now);
+    assert_eq!(
+        all["kpi"]["rate"]["latest_sessions"][0]["model"], "kimi-code/k3",
+        "主代理模型优先于时间更新的子代理"
+    );
 }

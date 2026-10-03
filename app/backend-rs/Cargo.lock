@@ -293,7 +293,7 @@ dependencies = [
 
 [[package]]
 name = "env-tools-api"
-version = "0.7.20"
+version = "0.7.21"
 dependencies = [
  "aes-gcm",
  "axum",
