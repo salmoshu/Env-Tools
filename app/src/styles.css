@@ -606,6 +606,23 @@ td b { font-weight: 600; }
 
 /* --- Tools 组件页 --- */
 .tools-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+.wsl-distros {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin: 10px 0 2px;
+}
+.wsl-distros-label { font-size: 9px; color: var(--faint); text-transform: uppercase; letter-spacing: 0.04em; }
+.wsl-distro {
+  display: inline-flex; align-items: baseline; gap: 6px;
+  border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px;
+}
+.wsl-distro.current { border-color: var(--accent-border); background: var(--accent-soft); }
+.wsl-distro.disabled { opacity: 0.45; cursor: default; }
+.wsl-distro:not(.disabled):not(.current) { cursor: pointer; }
+.wsl-distro:not(.disabled):not(.current):hover { border-color: var(--faint); }
+.wsl-distro-name { font-size: 10px; font-weight: 600; }
+.wsl-distro-ver { font-size: 9px; color: var(--dim); font-variant-numeric: tabular-nums; }
+.wsl-distro.current .wsl-distro-ver { color: var(--accent); }
+.wsl-distro-tag { font-size: 9px; color: var(--accent); font-weight: 600; }
 .tool-card {
   background: var(--card); border: 1px solid var(--border); border-radius: 12px;
   padding: 14px 16px; box-shadow: var(--shadow-card); display: flex; flex-direction: column; gap: 8px;

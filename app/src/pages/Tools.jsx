@@ -1,5 +1,7 @@
 // Tools 页：Env-Tools 其它组件（nodejs / kdesk / openssh / ai-tools）的图形化
 // 安装与升级入口。v0.7.11 起按平台 Tab（Windows / WSL）分区管理，不再混排；
+// WSL Tab 顶部为发行版条：展示系统版本（os-release），点击可切换组件管理
+// 目标（与设置页的数据源发行版解耦；无 bash 的发行版不可选）。
 // Remote targets 收进 "+" 按钮展开。动作统一跑仓库根的 setup 脚本（WSL 内
 // 交互式 bash 以保留 NVM/PATH），输出按行流式滚动；openssh 额外提供状态查看。
 
@@ -82,6 +84,9 @@ function AgentVersionRow({ payloadVersions, detected, disabled, onUpgrade }) {
 }
 
 const TAB_KEY = "tools.platform-tab";
+// WSL Tab 的组件管理目标发行版（与设置页的数据源发行版解耦：装哪台就探哪台，
+// 不连带改分析数据源）。空串 = 未定，回退数据源发行版。
+const WSL_TARGET_KEY = "tools.wsl-target";
 
 export default function Tools({ lastPayload }) {
   useLang();
@@ -103,6 +108,12 @@ export default function Tools({ lastPayload }) {
   const [statuses, setStatuses] = useState({});
   // 当前 Tab 的组件探测：{kimi,codex,node:版本|null, openssh,kdesk:bool}
   const [detected, setDetected] = useState(null);
+  // WSL Tab 的发行版清单：[{name, version, current, manageable}]，null=未加载
+  const [wslDistros, setWslDistros] = useState(null);
+  // 组件管理目标（仅影响 Tools 页动作，持久化在 localStorage）
+  const [wslTarget, setWslTarget] = useState(() => {
+    try { return localStorage.getItem(WSL_TARGET_KEY) || ""; } catch { return ""; }
+  });
   const [backend, setBackend] = useState(null);
   const [sshList, setSshList] = useState([]);
   const [sshForm, setSshForm] = useState({ host: "", port: "22", user: "" });
@@ -154,7 +165,8 @@ export default function Tools({ lastPayload }) {
   const refreshSshStatus = async () => {
     setStatuses((prev) => ({ ...prev, openssh: { busy: true } }));
     try {
-      const result = await window.api.componentStatus("openssh", platformTab);
+      const result = await window.api.componentStatus(
+        "openssh", platformTab, platformTab === "wsl" ? wslTarget : undefined);
       setStatuses((prev) => ({ ...prev, openssh: { output: result.output || result.error || "" } }));
     } catch (err) {
       setStatuses((prev) => ({ ...prev, openssh: { output: String(err.message || err) } }));
@@ -162,21 +174,46 @@ export default function Tools({ lastPayload }) {
   };
 
   const detectComponents = () => {
-    window.api.componentDetect(platformTab)
+    window.api.componentDetect(platformTab, platformTab === "wsl" ? wslTarget : undefined)
       .then((result) => { if (result && result.ok) setDetected(result.components || {}); })
       .catch(() => {});
   };
 
   useEffect(() => {
-    // 切换平台 Tab 时刷新 openssh 状态与组件探测（失败静默，按钮可手动重试）
+    // 切换平台 Tab 或管理目标发行版时刷新 openssh 状态与组件探测。
+    // WSL Tab 目标未定时等清单到达再探（否则先探数据源发行版、清单到达
+    // 再探一次目标，双份 wsl 冷启动）；清单拉取失败时 wslDistros 为空数组，
+    // 以空目标探测，主进程回落数据源发行版。
+    if (platformTab === "wsl" && !wslTarget && wslDistros === null) return;
     refreshSshStatus();
     detectComponents();
-  }, [platformTab]);
+  }, [platformTab, wslTarget, wslDistros]);
+
+  useEffect(() => {
+    // 清单就绪后校验管理目标：已存偏好仍可用则保留；否则取数据源发行版，
+    // 再退而取第一个可管理发行版（docker-desktop 等无 bash 的不可选）
+    if (!wslDistros || wslDistros.length === 0) return;
+    const manageable = wslDistros.filter((d) => d.manageable);
+    if (manageable.length === 0) return;
+    if (manageable.some((d) => d.name === wslTarget)) return;
+    const next = (manageable.find((d) => d.current) || manageable[0]).name;
+    setWslTarget(next);
+    try { localStorage.setItem(WSL_TARGET_KEY, next); } catch {}
+  }, [wslDistros, wslTarget]);
 
   useEffect(() => {
     // 安装/升级结束后重探测，按钮文案随之从“安装”切到“更新”
     if (install.result) detectComponents();
   }, [install.result]);
+
+  useEffect(() => {
+    // 首次切到 WSL Tab 时拉取发行版清单（逐发行版进 distro 读 os-release，
+    // 冷启动要几秒，按需加载且只拉一次；失败置空列表，探测走数据源回退）
+    if (platformTab !== "wsl" || wslDistros) return;
+    window.api.wslDistros()
+      .then((result) => { if (result && result.ok) setWslDistros(result.distros || []); })
+      .catch(() => setWslDistros([]));
+  }, [platformTab, wslDistros]);
 
   const run = async (actionKey, label) => {
     if (running) return;
@@ -187,7 +224,8 @@ export default function Tools({ lastPayload }) {
     setInstallRunning({ label });
     clearInstallLog();
     try {
-      const result = await window.api.runComponent(actionKey, platformTab, windowsSetupScript);
+      const result = await window.api.runComponent(
+        actionKey, platformTab, windowsSetupScript, platformTab === "wsl" ? wslTarget : undefined);
       setInstallResult({ ok: Boolean(result && result.ok), error: result && result.error });
     } catch (err) {
       setInstallResult({ ok: false, error: String(err.message || err) });
@@ -304,6 +342,39 @@ export default function Tools({ lastPayload }) {
           </div>
           {sshNote ? <div className="settings-note" style={{ marginTop: 6 }}>{sshNote}</div> : null}
         </section>
+      )}
+
+      {platformTab === "wsl" && wslDistros && wslDistros.length > 0 && (
+        <div className="wsl-distros">
+          <span className="wsl-distros-label">{t("tools.wslDistros")}</span>
+          {wslDistros.map((distro) => {
+            const selected = distro.name === wslTarget;
+            const clickable = distro.manageable && !selected && !running;
+            const fire = () => {
+              if (!clickable) return;
+              setWslTarget(distro.name);
+              try { localStorage.setItem(WSL_TARGET_KEY, distro.name); } catch {}
+              setDetected(null); // 旧目标的探测结果作废，effect 重探
+            };
+            return (
+              <span
+                key={distro.name}
+                className={`wsl-distro${selected ? " current" : ""}${distro.manageable ? "" : " disabled"}`}
+                role={clickable ? "button" : undefined}
+                tabIndex={clickable ? 0 : undefined}
+                title={!distro.manageable
+                  ? t("tools.wslNotManageable")
+                  : clickable ? t("tools.wslTargetHint") : undefined}
+                onClick={clickable ? fire : undefined}
+                onKeyDown={clickable ? activateOnKeys(fire) : undefined}
+              >
+                <span className="wsl-distro-name">{distro.name}</span>
+                {distro.version ? <span className="wsl-distro-ver">{distro.version}</span> : null}
+                {selected ? <span className="wsl-distro-tag">{t("tools.wslCurrent")}</span> : null}
+              </span>
+            );
+          })}
+        </div>
       )}
 
       <div className="tools-grid">

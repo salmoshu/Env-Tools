@@ -449,8 +449,12 @@ function EnvironmentPanel({ settings, onSaved }) {
   const current = (settings && settings.environment) || "";
   const [distro, setDistro] = useState((settings && settings.wsl_distro) || "");
   useEffect(() => {
-    setDistro((prev) => (wslDistros.includes(prev) ? prev : (wslDistros[0] || "")));
-  }, [wslDistros.join("|")]);
+    // 以设置载荷的 wsl_distro 为准同步（挂载时 settings 尚为 null，初值是
+    // 空串——若只按“不在列表则取首项”回落，重开页面会把已保存的发行版
+    // 显示回第一项，看起来像“选不上”）。配置值无效时才回落首项。
+    const configured = (settings && settings.wsl_distro) || "";
+    setDistro(wslDistros.includes(configured) ? configured : (wslDistros[0] || ""));
+  }, [wslDistros.join("|"), (settings && settings.wsl_distro) || ""]);
   if (available.length < 2 && wslDistros.length === 0) return null;
   const save = async (values) => {
     setNote({ cls: "settings-note", text: t("state.saving") });

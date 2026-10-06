@@ -1126,16 +1126,17 @@ async function resolveWslDistro() {
   } catch { return ""; }
 }
 
-async function localWslScriptSpec(scriptWinPath, scriptArgs) {
-  const distro = await resolveWslDistro();
-  if (!distro) return null;
+async function localWslScriptSpec(scriptWinPath, scriptArgs, distro) {
+  // distro：Tools 页显式指定的管理目标发行版；缺省回落数据源发行版
+  const target = (typeof distro === "string" && distro.trim()) ? distro.trim() : await resolveWslDistro();
+  if (!target) return null;
   const escaped = scriptWinPath.replace(/'/g, "'\''");
-  const conv = await wslCommand(distro, ["wslpath -a -u '" + escaped + "'"], { timeoutMs: 15000 });
+  const conv = await wslCommand(target, ["wslpath -a -u '" + escaped + "'"], { timeoutMs: 15000 });
   const wslPath = String((conv && conv.stdout) || "").trim().split("\n")[0].replace("\0", "");
   if (!wslPath || wslPath.includes(" ")) return null;
   return {
     command: "wsl.exe",
-    args: ["-d", distro, "--exec", "bash", "-ic", 'exec bash "$1" "${@:2}"', "env-tools-install", wslPath, ...scriptArgs],
+    args: ["-d", target, "--exec", "bash", "-ic", 'exec bash "$1" "${@:2}"', "env-tools-install", wslPath, ...scriptArgs],
   };
 }
 
@@ -1275,17 +1276,17 @@ ipcMain.handle("upgrade-agents", (_event, providers, environment, windowsSetupSc
   if (!spec) return Promise.resolve({ ok: false, error: "no upgradable target" });
   return startInstall("upgrade", spec);
 });
-ipcMain.handle("run-component", async (_event, component, environment, windowsSetupScript) => {
+ipcMain.handle("run-component", async (_event, component, environment, windowsSetupScript, distro) => {
   // kimi/codex 是 ai-tools 组件的子开关（setup.ps1 的 Component 参数不接受它们），
   // 走 aiToolsSpec 生成 --kimi/--codex 标志，与看板升级同一条链路
   const kind = component === "kimi" || component === "codex" ? "ai-tools" : String(component);
   let spec;
   if (environment === "wsl" && !WSL_BACKEND && process.platform === "win32") {
-    // 本地 Windows 模式的 WSL Tab：目标 = 设置里配置的数据源发行版
+    // 本地 Windows 模式的 WSL Tab：目标 = 显式指定的管理目标，缺省为设置的数据源发行版
     const scriptArgs = kind === "ai-tools"
       ? ["ai-tools", COMPONENT_FLAGS[component]].filter(Boolean)
       : [component];
-    spec = await localWslScriptSpec(path.join(REPO_ROOT, "scripts", "setup.sh"), scriptArgs);
+    spec = await localWslScriptSpec(path.join(REPO_ROOT, "scripts", "setup.sh"), scriptArgs, distro);
     if (!spec) return { ok: false, error: "no WSL distro configured — set the data-source distro in Settings" };
   } else {
     spec = installSpec(kind, component, environment, windowsSetupScript);
@@ -1295,9 +1296,10 @@ ipcMain.handle("run-component", async (_event, component, environment, windowsSe
 });
 // 组件探测（Tools 页）：kimi/codex/node 返回已装版本（null=未装），
 // openssh/kdesk 返回是否部署。Windows 侧经 cmd.exe（npm .cmd 垫片）+
-// where/schtasks；WSL 侧在数据源发行版内交互式 bash 探测（NVM/PATH 生效）。
-// kdesk 仅 Windows：以 setup_elevated 注册的 KdeskAutoDeploy 计划任务为准。
-ipcMain.handle("component-detect", async (_event, environment) => {
+// where/schtasks；WSL 侧在目标发行版（显式 distro 参数优先，缺省为数据源
+// 发行版）内交互式 bash 探测（NVM/PATH 生效）。kdesk 仅 Windows：以
+// setup_elevated 注册的 KdeskAutoDeploy 计划任务为准。
+ipcMain.handle("component-detect", async (_event, environment, distro) => {
   const semver = (text) => {
     const m = String(text || "").match(/[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?/);
     return m ? m[0] : null;
@@ -1319,17 +1321,95 @@ ipcMain.handle("component-detect", async (_event, environment) => {
     ]);
     return { ok: true, components: { kimi, codex, node, openssh, kdesk } };
   }
-  const distro = await resolveWslDistro();
-  if (!distro) return { ok: false, error: "no WSL distro configured" };
-  const probe = (command) => wslCommand(distro,
+  const target = (typeof distro === "string" && distro.trim())
+    ? distro.trim()
+    : await resolveWslDistro();
+  if (!target) return { ok: false, error: "no WSL distro configured" };
+  const probe = (command) => wslCommand(target,
     [command + " --version 2>/dev/null || true"], { timeoutMs: 20000, interactive: true })
     .then((r) => (r && !r.error ? semver(String(r.stdout || "") + String(r.stderr || "")) : null));
-  const hasSshd = wslCommand(distro, ["command -v sshd >/dev/null 2>&1 && echo yes || true"], { timeoutMs: 15000 })
+  const hasSshd = wslCommand(target, ["command -v sshd >/dev/null 2>&1 && echo yes || true"], { timeoutMs: 15000 })
     .then((r) => /yes/.test(String((r && r.stdout) || "")));
   const [kimi, codex, node, openssh] = await Promise.all([
     probe("kimi"), probe("codex"), probe("node"), hasSshd,
   ]);
   return { ok: true, components: { kimi, codex, node, openssh, kdesk: false } };
+});
+
+// WSL 发行版清单（Tools 页 WSL Tab）：名称 + 系统版本（/etc/os-release 的
+// PRETTY_NAME，次选 VERSION_ID）+ 当前数据源目标标记 + manageable（有 bash、
+// 可作为组件管理目标；docker-desktop 等最小发行版不可）。docker-desktop 等
+// 最小发行版没有 bash，wslCommand 不可用，版本探测改用 --exec cat 直连不经
+// shell；单个发行版探测失败只丢版本号不丢名字（超时/冷启动兜底 12s）。
+function wslOsRelease(distro) {
+  return new Promise((resolve) => {
+    const child = spawn("wsl.exe", ["-d", distro, "--exec", "cat", "/etc/os-release"],
+      { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
+    let out = "";
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(out);
+    };
+    const timer = setTimeout(() => { try { child.kill(); } catch {} finish(); }, 12000);
+    child.stdout.on("data", (d) => (out += String(d)));
+    child.on("error", finish);
+    child.on("close", finish);
+  });
+}
+
+// 发行版可管理性探测：bash 存在才能跑组件探测/安装脚本（setup.sh 链路）
+function wslHasBash(distro) {
+  return new Promise((resolve) => {
+    const child = spawn("wsl.exe", ["-d", distro, "--exec", "bash", "-c", "echo ok"],
+      { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
+    let out = "";
+    let settled = false;
+    const finish = (ok) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(ok);
+    };
+    const timer = setTimeout(() => { try { child.kill(); } catch {} finish(false); }, 12000);
+    child.stdout.on("data", (d) => (out += String(d)));
+    child.on("error", () => finish(false));
+    child.on("close", () => finish(/ok/.test(out)));
+  });
+}
+
+ipcMain.handle("wsl-distros", async () => {
+  if (process.platform !== "win32") return { ok: false, error: "not supported" };
+  const raw = await new Promise((resolve) => {
+    const child = spawn("wsl.exe", ["--list", "--quiet"], { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
+    let out = "";
+    child.stdout.on("data", (d) => (out += String(d)));
+    child.on("error", () => resolve(""));
+    child.on("close", () => resolve(out));
+    setTimeout(() => resolve(out), 8000);
+  });
+  const names = raw
+    .replace(/\0/g, "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const current = await resolveWslDistro();
+  const distros = await Promise.all(names.map(async (name) => {
+    const [text, hasBash] = await Promise.all([wslOsRelease(name), wslHasBash(name)]);
+    const release = String(text).replace(/\0/g, "");
+    const version = (release.match(/^PRETTY_NAME="([^"]+)"/m) || [])[1]
+      || (release.match(/^VERSION_ID="?([^"\n]+)"?/m) || [])[1]
+      || "";
+    return {
+      name,
+      version: version.trim(),
+      current: Boolean(current) && name === current,
+      manageable: hasBash,
+    };
+  }));
+  return { ok: true, distros };
 });
 
 ipcMain.handle("install-cancel", () => {
@@ -1338,14 +1418,14 @@ ipcMain.handle("install-cancel", () => {
   killInstallTree(installChild);
   return true;
 });
-ipcMain.handle("component-status", async (_event, component, environment) => {
+ipcMain.handle("component-status", async (_event, component, environment, distro) => {
   // 目前只有 openssh 有 status 子命令；其余组件的“状态”由安装结果体现
   if (component !== "openssh") return { ok: false, error: "no status command" };
   const timeoutMs = 30 * 1000;
-  // 本地 Windows 模式的 WSL Tab：tools.sh 在配置的发行版内执行
+  // 本地 Windows 模式的 WSL Tab：tools.sh 在目标发行版（显式 distro 优先）内执行
   let wslLocalSpec = null;
   if (environment === "wsl" && !WSL_BACKEND && process.platform === "win32") {
-    wslLocalSpec = await localWslScriptSpec(path.join(REPO_ROOT, "scripts", "tools.sh"), ["openssh", "--status"]);
+    wslLocalSpec = await localWslScriptSpec(path.join(REPO_ROOT, "scripts", "tools.sh"), ["openssh", "--status"], distro);
     if (!wslLocalSpec) return { ok: false, error: "no WSL distro configured" };
   }
   return new Promise((resolve) => {

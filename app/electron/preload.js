@@ -53,10 +53,11 @@ contextBridge.exposeInMainWorld("api", {
   // 安装 / 升级（看板版本徽章升级与 Tools 组件共用运行器）
   upgrade: (targets, environment, windowsSetupScript) =>
     ipcRenderer.invoke("upgrade-agents", targets, environment, windowsSetupScript),
-  runComponent: (component, environment, windowsSetupScript) =>
-    ipcRenderer.invoke("run-component", component, environment, windowsSetupScript),
+  runComponent: (component, environment, windowsSetupScript, distro) =>
+    ipcRenderer.invoke("run-component", component, environment, windowsSetupScript, distro),
   cancelInstall: () => ipcRenderer.invoke("install-cancel"),
-  componentDetect: (environment) => ipcRenderer.invoke("component-detect", environment),
-  componentStatus: (component, environment) =>
-    ipcRenderer.invoke("component-status", component, environment),
+  componentDetect: (environment, distro) => ipcRenderer.invoke("component-detect", environment, distro),
+  componentStatus: (component, environment, distro) =>
+    ipcRenderer.invoke("component-status", component, environment, distro),
+  wslDistros: () => ipcRenderer.invoke("wsl-distros"),
 });
