@@ -1,2 +1,7 @@
 # 语言统计口径：构建产物不计入 GitHub linguist 语言占比
 app/dist/** linguist-generated
+
+# Shell 脚本一律 LF：本地 Windows 模式下 WSL 直接经 /mnt/e 执行这些脚本，
+# CRLF 会让 bash 把行尾 \r 拼进选项名（set -euo pipefail 报 invalid option
+# name）。eol=lf 覆盖 core.autocrlf，任何平台检出都保持 LF。
+*.sh text eol=lf
