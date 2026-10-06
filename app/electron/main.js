@@ -814,6 +814,28 @@ ipcMain.handle("get-usage", async (_event, targetId) => {
   return await fetchUsage();
 });
 
+// 套餐配额重置：GLM 用 5h/7d 重置卡，Codex 消耗速率限制重置额度。
+// 同步刷新语义：后端重置成功时已失效配额缓存，这里先等任何在途的配额
+// 拉取收尾（它可能还拿着重置前的旧数据），再 await 一次全新广播——IPC
+// 返回时所有窗口的卡片已是重置后的数值，前端结果提示即所见即所得
+ipcMain.handle("quota-reset", async (_event, provider, resetType) => {
+  const path = provider === "glm"
+    ? "/api/quota/reset/glm"
+    : provider === "codex"
+      ? "/api/quota/reset/codex"
+      : null;
+  if (!path) return { ok: false, error: `unknown provider: ${provider}` };
+  const body = provider === "glm" ? { reset_type: resetType } : {};
+  const result = await backendJson(path, body, FETCH_TIMEOUT_MS);
+  if (result && result.ok) {
+    if (usageFetchPromise) {
+      try { await usageFetchPromise; } catch {}
+    }
+    try { await pushUsage(); } catch {}
+  }
+  return result;
+});
+
 ipcMain.handle("get-analytics", async (_event, days, agent, targetId) => {
   const aggregate = targetId === "aggregate";
   const query = `?days=${encodeURIComponent(days || 30)}&agent=${encodeURIComponent(agent || "all")}` +

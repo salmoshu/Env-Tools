@@ -4,10 +4,12 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  activateOnKeys, fmtSpan, isNewerVersion, levelClass, timeFractionOf, fmtReset,
+  activateOnKeys, fmtSpan, isNewerVersion, levelClass, nearQuotaLimit, QUOTA_RESET_THRESHOLD,
+  timeFractionOf, fmtReset, windowUsagePct,
 } from "../utils.js";
 import { t, useLang } from "../i18n.js";
 import { useInstallState, setInstallRunning, setInstallResult, dismissInstallResult } from "../installState.js";
+import ResetButton from "../components/ResetButton.jsx";
 import UpgradeOverlay from "../components/UpgradeOverlay.jsx";
 
 const DISPLAY_SELECTION_KEY = "ai-usage-monitor.display-providers";
@@ -265,6 +267,9 @@ export default function Board({ lastPayload }) {
                 return (
                   <div className={`limit-resets${Number(applicable) > 0 ? " ready" : ""}`}>
                     {t("dash.resetChances")}: {parts.join(" · ")}
+                    {Number(available) > 0 && nearQuotaLimit(account) ? (
+                      <ResetButton provider="codex" what={t("dash.resetWhatCodex")}>{t("dash.resetNow")}</ResetButton>
+                    ) : null}
                   </div>
                 );
               })()}
@@ -290,6 +295,12 @@ export default function Board({ lastPayload }) {
                 return (
                   <div className="limit-resets ready">
                     {t("dash.resetChances")}: {parts.join(" · ")}{expiry}
+                    {five.length && windowUsagePct(account, "5h") >= QUOTA_RESET_THRESHOLD ? (
+                      <ResetButton provider="glm" resetType="FIVE_HOUR" what={t("dash.resetWhat5h")}>{t("dash.resetUse5h")}</ResetButton>
+                    ) : null}
+                    {week.length && windowUsagePct(account, "7d") >= QUOTA_RESET_THRESHOLD ? (
+                      <ResetButton provider="glm" resetType="WEEK" what={t("dash.resetWhat7d")}>{t("dash.resetUse7d")}</ResetButton>
+                    ) : null}
                   </div>
                 );
               })()}

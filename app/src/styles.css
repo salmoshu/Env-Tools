@@ -345,6 +345,18 @@ td b { font-weight: 600; }
 .qmembership.error { color: var(--red); }
 .limit-resets { margin: 1px 0 2px; color: var(--faint); font-size: 10px; font-variant-numeric: tabular-nums; }
 .limit-resets.ready { color: var(--green); }
+/* 配额重置按钮：≥95% 用量才出现，点击弹确认对话框，结果内联展示 */
+.reset-action-btn {
+  margin-left: 8px; padding: 0 7px; font-size: 10px; line-height: 16px;
+  color: var(--green); background: transparent;
+  border: 1px solid currentColor; border-radius: 6px; cursor: pointer;
+  opacity: 0.85; transition: opacity 0.15s ease, background 0.15s ease;
+}
+.reset-action-btn:hover { opacity: 1; background: var(--accent-softer); }
+.reset-action-btn:disabled { opacity: 0.45; cursor: default; }
+.reset-action-result { margin-left: 8px; cursor: pointer; user-select: none; }
+.reset-action-result.ok { color: var(--green); font-weight: 600; }
+.reset-action-result.err { color: var(--red); }
 .bar { position: relative; height: 8px; background: var(--track); border-radius: 999px; overflow: visible; }
 .bar > .fill { height: 100%; border-radius: 999px; transition: width 0.5s ease; }
 .fill.low { background: var(--green); }

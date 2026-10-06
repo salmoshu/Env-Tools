@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld("api", {
   // 数据与刷新
   onUsageUpdate: (callback) => subscribe("usage-update", callback),
   getUsage: (target) => ipcRenderer.invoke("get-usage", target),
+  quotaReset: (provider, resetType) => ipcRenderer.invoke("quota-reset", provider, resetType),
   updateCheck: () => ipcRenderer.invoke("update-check"),
   updateInstall: () => ipcRenderer.invoke("update-install"),
   onUpdateProgress: (callback) => subscribe("update-progress", (payload) => callback(payload)),

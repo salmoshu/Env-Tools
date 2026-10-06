@@ -23,7 +23,7 @@ use chrono::{DateTime, Local, TimeZone, Utc};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use super::http::get_json_headers;
+use super::http::{get_json_headers, post_json};
 use super::util::{env_timeout, iso_seconds, parse_timestamp};
 use crate::settings::{env_enabled, env_value, local_home};
 
@@ -174,39 +174,114 @@ pub fn normalize_reset_status(data: &Value, now: DateTime<Local>) -> Value {
     })
 }
 
+/// 读取 ZCode 本机凭证（zcode jwt + bigmodel maas token）；任何一步失败返回 None。
+fn load_zcode_credentials() -> Option<(String, String)> {
+    let path = env_value("ZCODE_CREDENTIALS_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            local_home()
+                .join(".zcode")
+                .join("v2")
+                .join("credentials.json")
+        });
+    let creds = crate::settings::read_json(&path).ok()?;
+    let key = cipher_key();
+    let jwt = credential_value(&creds, "zcodejwttoken", &key)?;
+    let maas = credential_value(&creds, "oauth:bigmodel:access_token", &key)?;
+    Some((jwt, maas))
+}
+
+/// 状态接口地址（env 可覆盖）。
+fn reset_status_url() -> String {
+    env_value("GLM_RESET_URL").unwrap_or_else(|| RESET_STATUS_URL.into())
+}
+
+/// 触发接口地址：由状态地址推导（去尾部 /status 换 /use，与 ZCode 一致）。
+fn reset_use_url() -> String {
+    let base = reset_status_url();
+    let base = base.trim_end_matches('/');
+    match base.strip_suffix("/status") {
+        Some(stem) => format!("{stem}/use"),
+        None => format!("{base}/use"),
+    }
+}
+
+/// ZCode 重置接口的公共请求头（status / use 一致，逆向自 ZCode 客户端）。
+fn zcode_headers(jwt: &str, maas: &str) -> [(String, String); 4] {
+    [
+        ("Authorization".to_string(), format!("Bearer {jwt}")),
+        ("X-Bigmodel-Authorization".to_string(), maas.to_string()),
+        ("Bigmodel-Target-Type".to_string(), "PERSONAL".to_string()),
+        ("User-Agent".to_string(), "ZCode/3.11.2".to_string()),
+    ]
+}
+
 /// 查询重置卡状态；无 ZCode 凭证 / 解密失败 / 接口异常均返回 None（静默跳过）。
 pub fn collect_reset_cards() -> Option<Value> {
     if !env_enabled("GLM_RESET_CARDS", true) {
         return None;
     }
-    let path = env_value("ZCODE_CREDENTIALS_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| local_home().join(".zcode").join("v2").join("credentials.json"));
-    let creds = crate::settings::read_json(&path).ok()?;
-    let key = cipher_key();
-    let jwt = credential_value(&creds, "zcodejwttoken", &key)?;
-    let maas = credential_value(&creds, "oauth:bigmodel:access_token", &key)?;
-    let url = env_value("GLM_RESET_URL").unwrap_or_else(|| RESET_STATUS_URL.into());
+    let (jwt, maas) = load_zcode_credentials()?;
     let use_proxy = env_enabled("GLM_USE_PROXY", true);
     let timeout = env_timeout("GLM_RESET_TIMEOUT", 8);
-    let authorization = format!("Bearer {jwt}");
-    let response = get_json_headers(
-        &url,
-        &[
-            ("Authorization", authorization.as_str()),
-            ("X-Bigmodel-Authorization", maas.as_str()),
-            ("Bigmodel-Target-Type", "PERSONAL"),
-            ("User-Agent", "ZCode/3.11.2"),
-        ],
-        use_proxy,
-        timeout,
-    )
-    .ok()?;
+    let headers = zcode_headers(&jwt, &maas);
+    let refs: Vec<(&str, &str)> = headers
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    let response = get_json_headers(&reset_status_url(), &refs, use_proxy, timeout).ok()?;
     if response.get("code").and_then(|v| v.as_i64()) != Some(0) {
         return None;
     }
     let data = response.get("data").filter(|v| v.is_object())?;
     Some(normalize_reset_status(data, Local::now()))
+}
+
+/// 使用一张重置卡（POST {base}/use，逆向自 ZCode useCodingPlanReset）。
+/// reset_type 仅接受 FIVE_HOUR / WEEK；与状态查询的静默降级不同，这里把
+/// 失败原因透传给前端展示。幂等键一次一换，服务端按 key 去重。
+pub fn use_reset_card(reset_type: &str) -> Result<Value, String> {
+    let reset_type = match reset_type.trim().to_ascii_uppercase().as_str() {
+        "FIVE_HOUR" | "5H" => "FIVE_HOUR",
+        "WEEK" | "7D" => "WEEK",
+        other => return Err(format!("invalid reset_type: {other}")),
+    };
+    if !env_enabled("GLM_RESET_CARDS", true) {
+        return Err("GLM reset cards disabled (GLM_RESET_CARDS=0)".into());
+    }
+    let (jwt, maas) = load_zcode_credentials()
+        .ok_or_else(|| "ZCode credentials unavailable; open ZCode once and retry".to_string())?;
+    let use_proxy = env_enabled("GLM_USE_PROXY", true);
+    let timeout = env_timeout("GLM_RESET_TIMEOUT", 8);
+    let headers = zcode_headers(&jwt, &maas);
+    let mut refs: Vec<(&str, &str)> = headers
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    refs.push(("Content-Type", "application/json"));
+    let body = serde_json::json!({
+        "idempotency_key": super::util::random_token(),
+        "reset_type": reset_type,
+    })
+    .to_string();
+    let response = post_json(&reset_use_url(), &refs, &body, use_proxy, timeout)?;
+    if response.get("code").and_then(|v| v.as_i64()) != Some(0) {
+        let msg = response
+            .get("msg")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("unknown error");
+        return Err(format!("GLM reset rejected: {msg}"));
+    }
+    let used = response
+        .get("data")
+        .and_then(|d| d.get("used"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if !used {
+        return Err("GLM reset not confirmed by server".into());
+    }
+    Ok(serde_json::json!({ "used": true, "reset_type": reset_type }))
 }
 
 #[cfg(test)]
@@ -256,7 +331,10 @@ mod tests {
             b64url_encode(tag),
             b64url_encode(cipher)
         );
-        assert_eq!(decrypt_value(&key, &packed).as_deref(), Some("secret-token"));
+        assert_eq!(
+            decrypt_value(&key, &packed).as_deref(),
+            Some("secret-token")
+        );
         // 密钥不符 / 非密文 / 段数错误均拒绝
         assert_eq!(decrypt_value(&[8u8; 32], &packed), None);
         assert_eq!(decrypt_value(&key, "plain-text"), None);

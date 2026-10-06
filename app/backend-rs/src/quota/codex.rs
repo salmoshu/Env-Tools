@@ -4,13 +4,15 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 
-use super::http::build_agent;
+use super::http::{build_agent, post_json};
 use super::membership::attach_manual_membership;
 use super::util::{env_timeout, fetched_now, normalize_window, num_of};
-use super::find_file_across_homes;
+use super::{credential_homes, find_file_across_homes};
 use crate::settings::{env_enabled, env_value};
 
 const CODEX_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
+const CODEX_RESET_CONSUME_URL: &str =
+    "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume";
 
 fn codex_credential(homes: &[PathBuf]) -> Option<PathBuf> {
     let mut homes = homes.to_vec();
@@ -48,11 +50,20 @@ pub fn normalize_codex(data: &Value) -> Value {
         .cloned()
         .unwrap_or_else(|| serde_json::json!({}));
     let mut windows: Vec<Value> = Vec::new();
-    for key in ["primary_window", "primaryWindow", "secondary_window", "secondaryWindow"] {
+    for key in [
+        "primary_window",
+        "primaryWindow",
+        "secondary_window",
+        "secondaryWindow",
+    ] {
         let window = rate_limit.get(key).filter(|v| v.is_object());
         let Some(window) = window else { continue };
         let seconds = num_of(window.get("limit_window_seconds")) as i64;
-        windows.push(normalize_window(&window_label(seconds, "Window"), window, Some(seconds)));
+        windows.push(normalize_window(
+            &window_label(seconds, "Window"),
+            window,
+            Some(seconds),
+        ));
     }
     let mut result = serde_json::json!({
         "provider": "OpenAI Codex",
@@ -61,11 +72,18 @@ pub fn normalize_codex(data: &Value) -> Value {
         "credits": data.get("credits").cloned().unwrap_or(Value::Null),
         "fetched_at": fetched_now(),
     });
-    if reset_credits.as_object().map(|o| !o.is_empty()).unwrap_or(false) {
+    if reset_credits
+        .as_object()
+        .map(|o| !o.is_empty())
+        .unwrap_or(false)
+    {
         let mut normalized = serde_json::Map::new();
         for (key, alternatives) in [
             ("available_count", ["available_count", "availableCount"]),
-            ("applicable_available_count", ["applicable_available_count", "applicableAvailableCount"]),
+            (
+                "applicable_available_count",
+                ["applicable_available_count", "applicableAvailableCount"],
+            ),
         ] {
             for alternative in alternatives {
                 let raw = reset_credits.get(alternative).filter(|v| !v.is_null());
@@ -91,14 +109,23 @@ pub fn collect(homes: &[PathBuf], errors: &mut Vec<Value>) -> Option<Value> {
             return None;
         }
     };
-    let tokens = credentials.get("tokens").cloned().unwrap_or_else(|| serde_json::json!({}));
-    let access_token = tokens.get("access_token").and_then(|v| v.as_str()).unwrap_or("");
+    let tokens = credentials
+        .get("tokens")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let access_token = tokens
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     if access_token.is_empty() {
         errors.push(serde_json::json!({ "provider": "OpenAI Codex",
             "error": "access_token missing in Codex credentials; run `codex login`" }));
         return None;
     }
-    let account_id = tokens.get("account_id").and_then(|v| v.as_str()).unwrap_or("");
+    let account_id = tokens
+        .get("account_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let use_proxy = env_enabled("CODEX_USE_PROXY", true);
     // 该接口经代理偶尔慢，压到 20s 上限避免拖垮整个 /api/usage
     let timeout = env_timeout("CODEX_TIMEOUT", 30).min(20);
@@ -115,11 +142,14 @@ pub fn collect(homes: &[PathBuf], errors: &mut Vec<Value>) -> Option<Value> {
         Ok(response) => response
             .into_json()
             .map_err(|err| format!("Invalid API response: {err}")),
-        Err(ureq::Error::Status(401, _)) => Err(
-            "Codex login expired; run `codex login` and retry".to_string(),
-        ),
+        Err(ureq::Error::Status(401, _)) => {
+            Err("Codex login expired; run `codex login` and retry".to_string())
+        }
         Err(ureq::Error::Status(code, response)) => {
-            let reason = response.header("http_status_message").unwrap_or("error").to_string();
+            let reason = response
+                .header("http_status_message")
+                .unwrap_or("error")
+                .to_string();
             Err(format!("HTTP {code}: {reason}"))
         }
         Err(err) => Err(format!("Network request failed: {err}")),
@@ -158,4 +188,45 @@ pub fn collect(homes: &[PathBuf], errors: &mut Vec<Value>) -> Option<Value> {
             }
         }
     }
+}
+
+/// 消耗一个速率限制重置额度（wham rate-limit-reset-credits/consume，口径同
+/// codex CLI 的 backend-client）。返回 {"code": "reset"|"nothing_to_reset"|
+/// "no_credit"|"already_redeemed", "windows_reset": n}；网络/HTTP 错误返回 Err。
+pub fn consume_reset_credit() -> Result<Value, String> {
+    let homes = credential_homes();
+    let path = codex_credential(&homes)
+        .ok_or_else(|| "Codex credentials not found; run `codex login`".to_string())?;
+    let credentials = crate::settings::read_json(&path).map_err(|err| err.to_string())?;
+    let tokens = credentials
+        .get("tokens")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let access_token = tokens
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if access_token.is_empty() {
+        return Err("access_token missing in Codex credentials; run `codex login`".into());
+    }
+    let account_id = tokens
+        .get("account_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let use_proxy = env_enabled("CODEX_USE_PROXY", true);
+    let timeout = env_timeout("CODEX_TIMEOUT", 30).min(20);
+    let url =
+        env_value("CODEX_RESET_CONSUME_URL").unwrap_or_else(|| CODEX_RESET_CONSUME_URL.into());
+    let authorization = format!("Bearer {access_token}");
+    let mut headers: Vec<(&str, &str)> = vec![
+        ("Accept", "application/json"),
+        ("User-Agent", "codex-cli/1.0"),
+        ("Authorization", authorization.as_str()),
+        ("Content-Type", "application/json"),
+    ];
+    if !account_id.is_empty() {
+        headers.push(("ChatGPT-Account-Id", account_id));
+    }
+    let body = serde_json::json!({ "redeem_request_id": super::util::random_token() }).to_string();
+    post_json(&url, &headers, &body, use_proxy, timeout)
 }

@@ -6,13 +6,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AGENT_COLORS, AGENT_LABELS, abbrev, activateOnKeys, fmt, fmtPct, fmtReset, fmtSpan, fmtTimestamp,
-  isNewerVersion, levelClass, timeFractionOf,
+  isNewerVersion, levelClass, nearQuotaLimit, QUOTA_RESET_THRESHOLD, timeFractionOf, windowUsagePct,
 } from "../utils.js";
 import {
   CalendarHeatmap, DonutChart, LineChart, MODEL_PALETTE,
   SERIES_DEFS, StackedBars, ProjectBars, ValueLineChart,
 } from "../components/charts.jsx";
 import { RefreshIcon } from "../components/Titlebar.jsx";
+import ResetButton from "../components/ResetButton.jsx";
 import UpgradeOverlay from "../components/UpgradeOverlay.jsx";
 import { t, useLang } from "../i18n.js";
 import { useInstallState, setInstallRunning, setInstallResult, dismissInstallResult } from "../installState.js";
@@ -165,6 +166,9 @@ function QuotaCard({ account, versions, onUpgrade, upgrading }) {
         return (
           <div className={`limit-resets${Number(applicable) > 0 ? " ready" : ""}`}>
             {t("dash.resetChances")}: {parts.join(" · ")}
+            {Number(available) > 0 && nearQuotaLimit(account) ? (
+              <ResetButton provider="codex" what={t("dash.resetWhatCodex")}>{t("dash.resetNow")}</ResetButton>
+            ) : null}
           </div>
         );
       })()}
@@ -190,6 +194,12 @@ function QuotaCard({ account, versions, onUpgrade, upgrading }) {
         return (
           <div className="limit-resets ready">
             {t("dash.resetChances")}: {parts.join(" · ")}{expiry}
+            {five.length && windowUsagePct(account, "5h") >= QUOTA_RESET_THRESHOLD ? (
+              <ResetButton provider="glm" resetType="FIVE_HOUR" what={t("dash.resetWhat5h")}>{t("dash.resetUse5h")}</ResetButton>
+            ) : null}
+            {week.length && windowUsagePct(account, "7d") >= QUOTA_RESET_THRESHOLD ? (
+              <ResetButton provider="glm" resetType="WEEK" what={t("dash.resetWhat7d")}>{t("dash.resetUse7d")}</ResetButton>
+            ) : null}
           </div>
         );
       })()}
@@ -661,6 +671,9 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
           <div className="kpi-sub">
             {wowHtml}
             {wowHtml ? ` ${t("dash.kpiWeekSub")}` : (kpi.prev_week_total > 0 ? "" : t("dash.kpiWeekSub"))}
+            {kpi.prev_week_total > 0
+              ? ` · ${t("dash.kpiWeekBase").replace("{v}", abbrev(kpi.prev_week_total))}`
+              : ""}
           </div>
         </div>
         <div className="kpi-card">

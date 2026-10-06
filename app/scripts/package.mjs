@@ -102,14 +102,33 @@ console.log("[package] component install scripts bundled into resources/");
 const version = JSON.parse(fs.readFileSync(path.join(root, "package.json"))).version;
 const archiveBase = `env-tools-desktop-v${version}-${platformArg}-x64`;
 if (platformArg === "win32") {
-  execSync(
-    `powershell -NoProfile -Command "Compress-Archive -Path '${pkgDir}' -DestinationPath '${path.join(outDir, archiveBase + ".zip")}' -Force"`,
-    { stdio: "inherit" },
-  );
+  const zipPath = path.join(outDir, archiveBase + ".zip");
+  try {
+    // 首选 bsdtar（Windows 自带 System32\tar.exe，-a 按扩展名产 zip）：流式写入
+    // 内存占用小，规避 Compress-Archive 在大目录上的 OutOfMemoryException
+    execSync(
+      `${JSON.stringify("C:\\Windows\\System32\\tar.exe")} -a -cf ${JSON.stringify(zipPath)} ` +
+      `-C ${JSON.stringify(outDir)} ${JSON.stringify(path.basename(pkgDir))}`,
+      { stdio: "inherit" },
+    );
+  } catch {
+    // 兜底 Compress-Archive；SilentlyContinue：无控制台/重定向环境下其
+    // Write-Progress 会因缓冲区尺寸抛 PSArgumentException 把整步打挂
+    execSync(
+      `powershell -NoProfile -Command "$ProgressPreference='SilentlyContinue'; Compress-Archive -Path '${pkgDir}' -DestinationPath '${zipPath}' -Force"`,
+      { stdio: "inherit" },
+    );
+  }
   // 5. NSIS setup 安装器（v0.7.0 起 Windows 官方分发形态；/S 静默安装兼容）
   const setupPath = path.join(outDir, `env-tools-setup-v${version}-win32-x64.exe`);
   const nsi = path.join(root, "scripts", "installer.nsi");
+  // NSIS_HOME / NSISDIR 可指向安装目录或 makensis.exe 本体（便携解压场景），
+  // 其后依次尝试 PATH 与默认安装位置
+  const fromEnv = [process.env.NSIS_HOME, process.env.NSISDIR]
+    .filter(Boolean)
+    .map((p) => (p.toLowerCase().endsWith(".exe") ? p : path.join(p, "makensis.exe")));
   const makensisCandidates = [
+    ...fromEnv,
     "makensis",
     "C:\\Program Files (x86)\\NSIS\\makensis.exe",
     "C:\\Program Files\\NSIS\\makensis.exe",

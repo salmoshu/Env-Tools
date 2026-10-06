@@ -2,11 +2,32 @@
 
 use chrono::{DateTime, Datelike, Duration as ChronoDuration, Local, NaiveDateTime, TimeZone, Utc};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use crate::settings::env_value;
 
+/// 幂等键/一次性随机串：sha256(时间戳||pid||自增计数) 的前 32 个 hex 字符。
+/// ZCode 重置接口要求 ≤64 字符，32 hex 安全且无需引入 rand/uuid 依赖。
+pub fn random_token() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let material = format!(
+        "{nanos}:{}:{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    );
+    let digest = Sha256::digest(material.as_bytes());
+    digest.iter().take(16).map(|b| format!("{b:02x}")).collect()
+}
+
 pub fn env_timeout(name: &str, default: u64) -> u64 {
-    env_value(name).and_then(|v| v.parse().ok()).unwrap_or(default)
+    env_value(name)
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
 }
 
 /// 数字或数字字符串 → f64；缺失/非法为 0。
@@ -63,7 +84,11 @@ pub fn seconds_until(value: Option<&Value>, now: DateTime<Utc>) -> Option<i64> {
     match value {
         Value::Number(n) => {
             let numeric = n.as_f64()?;
-            let numeric = if numeric > 10_000_000_000.0 { numeric / 1000.0 } else { numeric };
+            let numeric = if numeric > 10_000_000_000.0 {
+                numeric / 1000.0
+            } else {
+                numeric
+            };
             Some((numeric as i64 - now.timestamp()).max(0))
         }
         Value::String(text) => {
@@ -121,7 +146,11 @@ fn one_month_before(moment: DateTime<Utc>) -> DateTime<Utc> {
 }
 
 pub fn days_in_month(year: i32, month: u32) -> u32 {
-    let (next_year, next_month) = if month == 12 { (year + 1, 1) } else { (year, month + 1) };
+    let (next_year, next_month) = if month == 12 {
+        (year + 1, 1)
+    } else {
+        (year, month + 1)
+    };
     let first_next = Utc
         .with_ymd_and_hms(next_year, next_month, 1, 0, 0, 0)
         .single()
@@ -150,7 +179,12 @@ pub fn add_calendar_months_utc(moment: DateTime<Utc>, months: i64) -> DateTime<U
 }
 
 /// percent() 的 Rust 版：used > remaining/limit > used*100/limit，截断到 0..100。
-pub fn percent(used: Option<&Value>, remaining: Option<&Value>, limit: Option<&Value>, used_amount: Option<&Value>) -> f64 {
+pub fn percent(
+    used: Option<&Value>,
+    remaining: Option<&Value>,
+    limit: Option<&Value>,
+    used_amount: Option<&Value>,
+) -> f64 {
     if let Some(value) = used.and_then(num_opt) {
         return value.clamp(0.0, 100.0);
     }
@@ -169,9 +203,7 @@ pub fn percent(used: Option<&Value>, remaining: Option<&Value>, limit: Option<&V
 
 /// Kimi/Codex 窗口归一化：reset_after_seconds 缺失时由 reset_at/resetTime 推算。
 pub fn normalize_window(label: &str, data: &Value, default_seconds: Option<i64>) -> Value {
-    let mut reset_after = data
-        .get("reset_after_seconds")
-        .and_then(num_opt);
+    let mut reset_after = data.get("reset_after_seconds").and_then(num_opt);
     if reset_after.is_none() {
         reset_after = seconds_until(
             data.get("reset_at").or_else(|| data.get("resetTime")),

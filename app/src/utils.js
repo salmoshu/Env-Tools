@@ -20,6 +20,23 @@ export function fmtPct(fraction) {
   return fraction == null ? "-" : (fraction * 100).toFixed(1) + "%";
 }
 
+// 配额重置按钮的出现门槛：任一窗口用量 ≥95%（剩余 <5%）才允许重置，
+// 避免额度充裕时误触浪费重置机会
+export const QUOTA_RESET_THRESHOLD = 95;
+
+// 指定窗口（按标签片段匹配，如 "5h" / "7d"）的用量百分比；无数据返回 0
+export function windowUsagePct(account, labelPart) {
+  const w = (account.windows || []).find((item) => String(item.label || "").includes(labelPart));
+  return w && w.used_percent != null ? Number(w.used_percent) : 0;
+}
+
+// 是否有任一窗口用量接近见底（≥threshold%）
+export function nearQuotaLimit(account, threshold = QUOTA_RESET_THRESHOLD) {
+  return (account.windows || []).some(
+    (item) => item.used_percent != null && Number(item.used_percent) >= threshold,
+  );
+}
+
 export function fmtTimestamp(seconds, withSeconds = false) {
   const date = new Date(seconds * 1000);
   if (Number.isNaN(date.getTime())) return "-";

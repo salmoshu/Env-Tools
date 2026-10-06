@@ -411,6 +411,52 @@ async fn cache_clear(axum::extract::State(state): axum::extract::State<AppState>
     Json(serde_json::json!({ "ok": true }))
 }
 
+/// 重置成功后失效配额缓存：下一次 /api/usage 强制重新拉取（前端随即刷新
+/// 看到的就是新窗口/新剩余次数）。
+async fn invalidate_usage_cache(state: &AppState) {
+    state.cache.entries.lock().await.remove("usage");
+}
+
+/// GLM Coding Plan：使用一张 5h/7d 重置卡（body {"reset_type":"FIVE_HOUR"|"WEEK"}）
+async fn quota_reset_glm(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    Json(payload): Json<Value>,
+) -> Json<Value> {
+    let reset_type = payload
+        .get("reset_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let result = tokio::task::spawn_blocking(move || quota::use_glm_reset_card(&reset_type))
+        .await
+        .unwrap_or_else(|err| Err(format!("reset worker failed: {err}")));
+    match result {
+        Ok(data) => {
+            invalidate_usage_cache(&state).await;
+            Json(serde_json::json!({ "ok": true, "data": data }))
+        }
+        Err(err) => Json(error_payload(err)),
+    }
+}
+
+/// OpenAI Codex：消耗一个速率限制重置额度（wham rate-limit-reset-credits/consume）
+async fn quota_reset_codex(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> Json<Value> {
+    let result = tokio::task::spawn_blocking(quota::consume_codex_reset_credit)
+        .await
+        .unwrap_or_else(|err| Err(format!("reset worker failed: {err}")));
+    match result {
+        Ok(data) => {
+            // code=reset 才代表真正重置成功；其它代码（nothing_to_reset 等）
+            // 缓存照样失效，前端刷新后能看到最新窗口状态
+            invalidate_usage_cache(&state).await;
+            Json(serde_json::json!({ "ok": true, "data": data }))
+        }
+        Err(err) => Json(error_payload(err)),
+    }
+}
+
 async fn backend_status() -> Json<Value> {
     Json(settings::backend_status_payload())
 }
@@ -516,6 +562,8 @@ async fn main() {
         .route("/api/settings", get(get_settings).post(update_settings))
         .route("/api/api-keys", get(api_key_status).post(save_api_keys))
         .route("/api/cache-clear", post(cache_clear))
+        .route("/api/quota/reset/glm", post(quota_reset_glm))
+        .route("/api/quota/reset/codex", post(quota_reset_codex))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth_guard,

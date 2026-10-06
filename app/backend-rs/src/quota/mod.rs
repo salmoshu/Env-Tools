@@ -24,6 +24,9 @@ pub(crate) mod membership;
 mod util;
 
 pub use http::build_agent;
+// 重置触发接口：/api/quota/reset/* 路由调用（失败原因透传前端）
+pub use codex::consume_reset_credit as consume_codex_reset_credit;
+pub use glm_reset::use_reset_card as use_glm_reset_card;
 // 归一化函数供 quota_tests 调用（release 构建中 crate 内未直接引用）
 #[cfg(test)]
 pub use codex::normalize_codex;
