@@ -452,3 +452,152 @@ fn rate_card_prefers_main_agent_over_subagent() {
         "主代理模型优先于时间更新的子代理"
     );
 }
+
+fn append_lines(path: &Path, lines: &[String]) {
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+    for line in lines {
+        writeln!(file, "{line}").unwrap();
+    }
+}
+
+#[test]
+fn codex_model_persists_across_incremental_chunks_and_restart() {
+    // 回归：token_count 行自身不带模型名，模型只在 turn_context 等行出现。
+    // 增量扫描只读新增字节，段内没有带模型的行时曾把记录落成 (unknown)
+    let dir = tempfile_dir();
+    let home = dir.join("home");
+    let rollout = home
+        .join(".codex")
+        .join("sessions")
+        .join("2026")
+        .join("09")
+        .join("26")
+        .join("rollout-2026-09-26T08-00-00-01a0test-0000-0000-00000000beef.jsonl");
+    let ctx = cx_line(
+        "2026-09-26T08:00:00.000Z",
+        "turn_context",
+        r#"{"cwd":"/home/u/proj","model":"gpt-6.1-sol"}"#,
+    );
+    write_file(&rollout, &[ctx, cx_token_count("2026-09-26T08:00:06.100Z", 100)]);
+
+    let models_of = |state: &AnalyticsState| -> Vec<String> {
+        state
+            .files
+            .values()
+            .flat_map(|f| f.records.iter().map(|r| r.model.clone()))
+            .collect()
+    };
+
+    let mut state = AnalyticsState::default();
+    assert!(state.scan(&[], &[home.join(".codex")], &[], 1_790_900_000));
+    assert_eq!(models_of(&state), ["gpt-6.1-sol"]);
+
+    // 增量段以裸 token_count 开头（上一批已读过模型行）：沿用持久化的当前模型；
+    // 段内出现新 turn_context 则正常换模
+    append_lines(
+        &rollout,
+        &[
+            cx_token_count("2026-09-26T08:05:06.100Z", 50),
+            cx_line(
+                "2026-09-26T08:05:30.000Z",
+                "turn_context",
+                r#"{"cwd":"/home/u/proj","model":"gpt-5.6-sol"}"#,
+            ),
+            cx_token_count("2026-09-26T08:05:36.100Z", 25),
+        ],
+    );
+    assert!(state.scan(&[], &[home.join(".codex")], &[], 1_790_900_000));
+    assert_eq!(
+        models_of(&state),
+        ["gpt-6.1-sol", "gpt-6.1-sol", "gpt-5.6-sol"],
+        "增量段裸 token_count 不再是 (unknown)"
+    );
+
+    // 进程重启（扫描缓存水合）后续扫：当前模型随缓存落盘，仍不断档
+    let cache = dir.join("scan-cache-local.json");
+    state.save_cache(&cache);
+    append_lines(&rollout, &[cx_token_count("2026-09-26T08:06:06.100Z", 10)]);
+    let mut second = AnalyticsState::default();
+    second.hydrate_once(&cache);
+    second.scan(&[], &[home.join(".codex")], &[], 1_790_900_000);
+    assert_eq!(
+        models_of(&second),
+        ["gpt-6.1-sol", "gpt-6.1-sol", "gpt-5.6-sol", "gpt-5.6-sol"],
+        "重启续扫沿用缓存里的当前模型"
+    );
+}
+
+#[test]
+fn active_1h_groups_projects_sessions_and_models() {
+    let dir = tempfile_dir();
+    let home = dir.join("home");
+    let kimi_home = home.join(".kimi-code");
+    let ts = chrono::Local
+        .with_ymd_and_hms(2026, 9, 16, 8, 0, 0)
+        .unwrap()
+        .timestamp();
+    // alpha：近窗内两条记录（两个模型各一条）
+    write_file(
+        &kimi_home.join("sessions").join("session_a").join("wire.jsonl"),
+        &[
+            kimi_line(ts, "kimi-code/k3", 0, 30, 0, 0),
+            kimi_line(ts + 60, "kimi-code/k3-256k", 0, 30, 0, 0),
+        ],
+    );
+    // beta：近窗内一条记录
+    write_file(
+        &kimi_home.join("sessions").join("session_b").join("wire.jsonl"),
+        &[kimi_line(ts + 30, "deepseek/deepseek-v4-flash", 0, 10, 0, 0)],
+    );
+    // alpha 的旧会话：超出 1h 窗，不应出现在活跃视图
+    write_file(
+        &kimi_home.join("sessions").join("session_c").join("wire.jsonl"),
+        &[kimi_line(ts - 4000, "kimi-code/k3", 0, 999, 0, 0)],
+    );
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        kimi_home.join("session_index.jsonl"),
+        "{\"sessionId\":\"session_a\",\"workDir\":\"/w/a/projects/alpha\"}\n\
+         {\"sessionId\":\"session_b\",\"workDir\":\"/w/a/projects/beta\"}\n\
+         {\"sessionId\":\"session_c\",\"workDir\":\"/w/a/projects/alpha\"}\n",
+    )
+    .unwrap();
+
+    let now = chrono::Local
+        .with_ymd_and_hms(2026, 9, 16, 8, 2, 0)
+        .unwrap();
+    let mut state = AnalyticsState::default();
+    state.scan(&[kimi_home], &[], &[], now.timestamp());
+    let all = state.aggregate(7, "all", now);
+    let active = &all["kpi"]["rate"]["active_1h"];
+    assert_eq!(active["window_seconds"], 3600);
+    assert_eq!(active["tokens"], 70, "窗口总量不含超窗旧会话");
+
+    let projects = active["projects"].as_array().unwrap();
+    assert_eq!(projects.len(), 2, "超窗会话不产生项目条目");
+    // 项目按 token 降序：alpha(60) > beta(10)
+    assert_eq!(projects[0]["name"], "alpha");
+    assert_eq!(projects[0]["tokens"], 60);
+    assert_eq!(projects[0]["path"], "/w/a/projects/alpha");
+    assert_eq!(projects[1]["name"], "beta");
+
+    // 会话级：速率 = output ÷ 活跃时段 = 60 / 60s
+    let sessions = projects[0]["sessions"].as_array().unwrap();
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0]["session_id"], "session_a");
+    assert_eq!(sessions[0]["rate"], 1.0);
+    assert!(sessions[0]["gen_rate"].is_null(), "kimi 源无逐请求计时");
+
+    // 模型级：按 token 降序（同量按名升序），单记录模型速率为空
+    let models = sessions[0]["models"].as_array().unwrap();
+    assert_eq!(models.len(), 2);
+    assert_eq!(models[0]["model"], "kimi-code/k3");
+    assert_eq!(models[0]["output"], 30);
+    assert!(models[0]["rate"].is_null());
+    assert_eq!(models[1]["model"], "kimi-code/k3-256k");
+
+    // beta 会话按模型名归因 deepseek
+    let beta_sessions = projects[1]["sessions"].as_array().unwrap();
+    assert_eq!(beta_sessions[0]["agent"], "deepseek");
+}

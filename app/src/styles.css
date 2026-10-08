@@ -972,3 +972,65 @@ h2, .panel-title { letter-spacing: 0.01em; }
 tbody tr:nth-child(even) { background: var(--hover-soft); }
 /* 终端面板：品牌 mono 字体已是 --font-num */
 .term-body { font-family: var(--font-num); }
+
+/* --- v0.7.24：速率卡溢出防护 + 全屏近 1h 活跃视图 + 会话明细分组 --- */
+/* 窗口未最大化时网格轨道会被内容顶宽：kpi 卡允许收缩，行内数值不折行、超出裁剪 */
+.kpi-card { min-width: 0; }
+.rate-rows { min-width: 0; }
+.rate-row { overflow: hidden; }
+.rate-row .rate-val { white-space: nowrap; }
+/* 速率卡标题行：文案省略号 + 右侧铺满按钮 */
+.rate-label { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.rate-label .rate-label-text {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.rate-label .card-expand-btn { height: 20px; padding: 0 7px; flex-shrink: 0; }
+
+/* 速率卡铺满视图：近 1h 活跃（项目 → 会话 → 模型） */
+.kpi-card.card-expanded { padding: 14px 18px; }
+.act-list { display: grid; gap: 12px; margin-top: 6px; }
+.act-proj {
+  border: 1px solid var(--border); border-radius: 10px;
+  padding: 10px 12px; background: var(--inset); min-width: 0;
+}
+.act-proj-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.act-proj-name {
+  font-weight: 700; font-size: 12px; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.act-proj-stats {
+  color: var(--faint); font-size: 10px; white-space: nowrap;
+  flex-shrink: 0; font-variant-numeric: tabular-nums;
+}
+.act-session { padding: 7px 0 2px; border-top: 1px solid var(--border); margin-top: 7px; }
+.act-session-row { display: flex; align-items: center; gap: 10px; font-size: 11px; }
+.act-sid { flex-shrink: 0; }
+.act-agent {
+  font-size: 9px; font-weight: 600; color: var(--accent); flex-shrink: 0;
+  border: 1px solid var(--accent-border-soft); background: var(--accent-softer);
+  border-radius: 999px; padding: 0 7px;
+}
+.act-meta {
+  flex: 1; min-width: 0; color: var(--faint); font-size: 10px;
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.act-rate {
+  color: var(--accent); font-family: var(--font-num); font-variant-numeric: tabular-nums;
+  white-space: nowrap; flex-shrink: 0;
+}
+.act-models { margin: 4px 0 2px 14px; display: grid; gap: 2px; }
+.act-model-row { display: flex; align-items: center; gap: 10px; font-size: 10px; }
+.act-model-name {
+  color: var(--dim); min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* 会话明细分组行： zebra 与 hover 都不覆盖分组底色 */
+tbody tr.group-row, tbody tr.group-row:nth-child(even) { background: var(--sidebar-bg); }
+tbody tr.group-row:hover { background: var(--sidebar-bg); }
+tr.group-row td {
+  color: var(--dim); font-weight: 600; font-size: 11px;
+  border-top: 1px solid var(--hairline);
+}
+tr.group-row .group-stats { margin-left: 10px; color: var(--faint); font-weight: 400; font-size: 10px; }

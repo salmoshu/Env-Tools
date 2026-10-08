@@ -63,6 +63,12 @@ pub struct FileState {
     /// 的 token_count 记录（该记录承载 usage 展示）。不落盘
     #[serde(skip)]
     pub pending_span_secs: f64,
+    /// codex：当前模型，跨增量批次携带。token_count 行自身不带模型名，
+    /// 模型只出现在 turn_context / thread_settings_applied / world_state
+    /// 行；增量段内没遇到这些行时沿用上次值，否则该段记录全部落成
+    /// (unknown)。随扫描缓存落盘，进程重启续扫也不断档
+    #[serde(default)]
+    pub current_model: String,
 }
 
 /// 进程内增量状态：跨请求累积，重复调用只读取各文件新增字节。
@@ -94,7 +100,9 @@ struct ScanCache {
 
 // v2：codex TPOT——gen_seconds 需要 token_usage_record 全量回填，
 // 旧缓存（v1）里 codex 记录 gen_seconds 恒为 0，触发一次冷扫重建
-const SCAN_CACHE_VERSION: u32 = 2;
+// v3：codex 模型跨批次持久化——旧缓存里增量段记录 model 恒为
+// "(unknown)"（token_count 行不带模型），触发一次冷扫重建历史
+const SCAN_CACHE_VERSION: u32 = 3;
 
 impl AnalyticsState {
     /// 首轮扫描前从磁盘水合增量缓存（只生效一次）。水合后首轮扫描照常跑：
@@ -658,6 +666,33 @@ struct SessionRow {
     gen_seconds: f64,
 }
 
+/// 近 1h 活跃明细（速率卡全屏视图）：会话内按模型分桶
+#[derive(Default)]
+struct ActiveModelRow {
+    output: i64,
+    total: i64,
+    requests: i64,
+    first: i64,
+    last: i64,
+    gen_seconds: f64,
+}
+
+/// 近 1h 活跃明细：会话级累加（窗口内口径，与 Sessions 表速率同定义）
+#[derive(Default)]
+struct ActiveSessionRow {
+    sid: String,
+    project: String,
+    work_dir: String,
+    agent_totals: HashMap<&'static str, i64>,
+    models: HashMap<String, ActiveModelRow>,
+    output: i64,
+    total: i64,
+    requests: i64,
+    first: i64,
+    last: i64,
+    gen_seconds: f64,
+}
+
 impl AnalyticsState {
     /// 扫描多个来源（任一可为空切片），返回是否有变化。语义与 Python 版一致：
     /// 文件截断重写时丢弃该文件旧记录从头统计；文件消失时保留历史记录
@@ -725,6 +760,7 @@ impl AnalyticsState {
                             pending_llm_ms: 0,
                             codex_boundary_ms: 0,
                             pending_span_secs: 0.0,
+                            current_model: String::new(),
                         },
                     );
                     dirty = true;
@@ -741,10 +777,10 @@ impl AnalyticsState {
                 if restarted {
                     state.records.clear();
                     state.cwds.clear();
+                    state.current_model.clear();
                     dirty = true;
                 }
                 let session_id = session_id_of(&wire);
-                let mut current_model = String::new();
                 for line in text.split('\n') {
                     if source == Source::Kimi {
                         // llm.request：记录起始时刻，供下一个 usage.record 配对
@@ -769,7 +805,7 @@ impl AnalyticsState {
                         continue;
                     }
                     if let Some(model) = codex_model(line) {
-                        current_model = model;
+                        state.current_model = model;
                     }
                     if let Some(cwd) = parse_codex_meta_cwd(line) {
                         // rollout 文件与会话一一对应，统一用文件级会话 ID
@@ -789,7 +825,7 @@ impl AnalyticsState {
                         state.codex_boundary_ms = codex_timestamp_ms(line).unwrap_or(0);
                     }
                     if let Some(mut record) =
-                        parse_codex_token_line(line, &current_model, &session_id)
+                        parse_codex_token_line(line, &state.current_model, &session_id)
                     {
                         record.gen_seconds = state.pending_span_secs;
                         state.pending_span_secs = 0.0;
@@ -832,6 +868,7 @@ impl AnalyticsState {
                         pending_llm_ms: 0,
                         codex_boundary_ms: 0,
                         pending_span_secs: 0.0,
+                        current_model: String::new(),
                     },
                 );
                 dirty = true;
@@ -924,6 +961,8 @@ impl AnalyticsState {
         let mut recent60_tokens = 0i64;
         let mut recent15_by_project: HashMap<String, i64> = HashMap::new();
         let mut recent60_by_project: HashMap<String, i64> = HashMap::new();
+        // 近 1h 活跃明细（速率卡全屏视图）：sid → 会话行（内含模型分桶）
+        let mut active: HashMap<String, ActiveSessionRow> = HashMap::new();
         // 日期格式化按天缓存：同一日期只在首次出现时 format
         let mut date_cache: HashMap<i32, String> = HashMap::new();
 
@@ -960,6 +999,38 @@ impl AnalyticsState {
                     recent60_tokens += total;
                     let pname = project_name(&work_dir).to_string();
                     *recent60_by_project.entry(pname.clone()).or_default() += total;
+                    // 近 1h 活跃明细：会话级 + 会话内模型级双口径累加
+                    let act = active
+                        .entry(record.sid.clone())
+                        .or_insert_with(|| ActiveSessionRow {
+                            sid: record.sid.clone(),
+                            project: pname.clone(),
+                            work_dir: work_dir.clone(),
+                            first: record.ts,
+                            last: record.ts,
+                            ..Default::default()
+                        });
+                    *act.agent_totals.entry(record_agent).or_default() += total;
+                    act.output += record.output;
+                    act.total += total;
+                    act.requests += 1;
+                    act.first = act.first.min(record.ts);
+                    act.last = act.last.max(record.ts);
+                    act.gen_seconds += record.gen_seconds;
+                    let am = act
+                        .models
+                        .entry(record.model.clone())
+                        .or_insert_with(|| ActiveModelRow {
+                            first: record.ts,
+                            last: record.ts,
+                            ..Default::default()
+                        });
+                    am.output += record.output;
+                    am.total += total;
+                    am.requests += 1;
+                    am.first = am.first.min(record.ts);
+                    am.last = am.last.max(record.ts);
+                    am.gen_seconds += record.gen_seconds;
                     if record.ts >= now_sec - 900 {
                         recent15_tokens += total;
                         recent15_requests += 1;
@@ -1045,12 +1116,13 @@ impl AnalyticsState {
                 session.cache_read += record.cache_read;
                 session.cache_creation += record.cache_creation;
                 session.requests += 1;
-                // 多 agent 文件合扫时记录不按时间交错有序，仅在时间戳推进时更新
-                if record.ts >= session.last {
+                // 多 agent 文件合扫时记录不按时间交错有序，仅在时间戳推进时更新；
+                // "(unknown)" 是探测失败占位而非真实换模，不覆盖已知模型
+                if record.ts >= session.last && record.model != "(unknown)" {
                     session.last_model = record.model.clone();
                 }
                 // 主代理口径单独推进：速率卡优先展示它，避免子代理旧模型盖顶
-                if main_file && record.ts >= session.last_main_ts {
+                if main_file && record.model != "(unknown)" && record.ts >= session.last_main_ts {
                     session.last_main_ts = record.ts;
                     session.last_model_main = record.model.clone();
                 }
@@ -1141,6 +1213,99 @@ impl AnalyticsState {
                 })
             })
             .collect();
+
+        // 速率口径与 Sessions 表一致：吞吐 = output ÷ 活跃时段（单记录会话为空）；
+        // TPOT = output ÷ 纯生成时长（逐请求计时不可得时为空）
+        let span_rate = |output: i64, first: i64, last: i64| -> serde_json::Value {
+            if last > first {
+                serde_json::json!((output as f64 / (last - first) as f64 * 100.0).round() / 100.0)
+            } else {
+                serde_json::Value::Null
+            }
+        };
+        let tpot_rate = |output: i64, gen_seconds: f64| -> serde_json::Value {
+            if gen_seconds > 0.0 {
+                serde_json::json!((output as f64 / gen_seconds * 100.0).round() / 100.0)
+            } else {
+                serde_json::Value::Null
+            }
+        };
+
+        // 近 1h 活跃视图（速率卡全屏）：项目 → 会话 → 模型三级。
+        // 同名项目跨路径合并（路径取贡献最大会话的目录），项目按 token 降序、
+        // 会话按最近活跃降序、模型按 token 降序
+        let mut act_projects: HashMap<String, Vec<&ActiveSessionRow>> = HashMap::new();
+        for act in active.values() {
+            act_projects.entry(act.project.clone()).or_default().push(act);
+        }
+        let mut active_projects: Vec<serde_json::Value> = act_projects
+            .into_iter()
+            .map(|(name, mut sessions)| {
+                sessions.sort_by(|a, b| b.last.cmp(&a.last).then(b.total.cmp(&a.total)));
+                let path = sessions
+                    .iter()
+                    .max_by_key(|s| s.total)
+                    .map(|s| normalize_work_dir(&s.work_dir))
+                    .unwrap_or_default();
+                let tokens: i64 = sessions.iter().map(|s| s.total).sum();
+                let output: i64 = sessions.iter().map(|s| s.output).sum();
+                let requests: i64 = sessions.iter().map(|s| s.requests).sum();
+                let session_rows: Vec<serde_json::Value> = sessions
+                    .iter()
+                    .map(|s| {
+                        let dominant = s
+                            .agent_totals
+                            .iter()
+                            .max_by_key(|(_, total)| **total)
+                            .map(|(name, _)| *name)
+                            .unwrap_or("kimi");
+                        let mut model_rows: Vec<(&String, &ActiveModelRow)> =
+                            s.models.iter().collect();
+                        model_rows.sort_by(|a, b| b.1.total.cmp(&a.1.total).then(a.0.cmp(b.0)));
+                        let models: Vec<serde_json::Value> = model_rows
+                            .iter()
+                            .map(|(model, m)| {
+                                serde_json::json!({
+                                    "model": model,
+                                    "tokens": m.total,
+                                    "output": m.output,
+                                    "requests": m.requests,
+                                    "rate": span_rate(m.output, m.first, m.last),
+                                    "gen_rate": tpot_rate(m.output, m.gen_seconds),
+                                    "last": m.last,
+                                })
+                            })
+                            .collect();
+                        serde_json::json!({
+                            "session_id": s.sid,
+                            "agent": dominant,
+                            "tokens": s.total,
+                            "output": s.output,
+                            "requests": s.requests,
+                            "first": s.first,
+                            "last": s.last,
+                            "ended_ago_seconds": (now_sec - s.last).max(0),
+                            "rate": span_rate(s.output, s.first, s.last),
+                            "gen_rate": tpot_rate(s.output, s.gen_seconds),
+                            "models": models,
+                        })
+                    })
+                    .collect();
+                serde_json::json!({
+                    "name": name,
+                    "path": path,
+                    "tokens": tokens,
+                    "output": output,
+                    "requests": requests,
+                    "sessions": session_rows,
+                })
+            })
+            .collect();
+        active_projects.sort_by(|a, b| {
+            b["tokens"].as_i64().cmp(&a["tokens"].as_i64()).then_with(|| {
+                a["name"].as_str().cmp(&b["name"].as_str())
+            })
+        });
 
         let daily_out: Vec<serde_json::Value> = day_list
             .iter()
@@ -1376,6 +1541,12 @@ impl AnalyticsState {
                     "by_project_15m": rate15_rows,
                     "by_project_60m": rate60_rows,
                     "latest_sessions": latest_sessions,
+                    // 速率卡全屏视图：近 1h 活跃的项目 → 会话 → 模型明细
+                    "active_1h": {
+                        "window_seconds": 3600,
+                        "tokens": recent60_tokens,
+                        "projects": active_projects,
+                    },
                 },
             },
         })

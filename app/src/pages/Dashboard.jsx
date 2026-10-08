@@ -45,6 +45,12 @@ function writeAnalyticsCache(combo, payload) {
 const AGENT_KEY = "ai-usage-monitor.analytics-agent";
 const TARGET_KEY = "ai-usage-monitor.target";
 const TREND_KEY = "ai-usage-monitor.trend-granularity";
+// 会话明细：分组 / 排序偏好持久化；可排序的数值列（表头点击切换升降序）
+const SESSIONS_SORT_KEY = "ai-usage-monitor.sessions-sort";
+const SESSIONS_GROUP_KEY = "ai-usage-monitor.sessions-group";
+const SESSION_SORTABLE = ["input", "output", "cache_read", "requests", "first", "last", "total", "rate"];
+const SESSION_GROUP_OPTIONS = ["none", "project", "agent"];
+const SESSION_ROW_CAP = 200;
 // 设置页"显示"面板的 provider 勾选（与悬浮看板共用同一 localStorage 键）
 const DISPLAY_SELECTION_KEY = "ai-usage-monitor.display-providers";
 
@@ -287,7 +293,21 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
     try { return localStorage.getItem(TARGET_KEY) || "aggregate"; } catch { return "aggregate"; }
   });
   const [usage, setUsage] = useState(null);
-  const [sessionsSort, setSessionsSort] = useState({ key: "total", dir: -1 });
+  const [sessionsSort, setSessionsSort] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(SESSIONS_SORT_KEY) || "null");
+      if (saved && SESSION_SORTABLE.includes(saved.key) && (saved.dir === 1 || saved.dir === -1)) {
+        return saved;
+      }
+    } catch {}
+    return { key: "total", dir: -1 };
+  });
+  const [sessionsGroup, setSessionsGroup] = useState(() => {
+    try {
+      const saved = localStorage.getItem(SESSIONS_GROUP_KEY);
+      return SESSION_GROUP_OPTIONS.includes(saved) ? saved : "none";
+    } catch { return "none"; }
+  });
   const [showHourly, setShowHourly] = useState(false);
   const [trendGran, setTrendGran] = useState(() => {
     try { return localStorage.getItem(TREND_KEY) || "day"; } catch { return "day"; }
@@ -565,12 +585,48 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
     }
   }, [install.running, usagePayload, onRefresh]);
 
-  const rows = (analytics && analytics.sessions || []).slice()
-    .sort((a, b) => ((a[sessionsSort.key] || 0) - (b[sessionsSort.key] || 0)) * sessionsSort.dir)
-    .slice(0, 200);
+  // 速率展示口径：设置页 speedMode = gen 时优先纯生成速率（无逐请求计时回退吞吐）
+  const fmtRate = (v) => (v >= 100 ? abbrev(Math.round(v)) : v.toFixed(1));
+  const pickRate = (item) =>
+    speedMode === "gen" ? (item.gen_rate != null ? item.gen_rate : item.rate) : item.rate;
+  const rateText = (item) => {
+    const v = pickRate(item);
+    return v != null ? `${fmtRate(v)} tok/s` : "—";
+  };
+
+  // 排序作用于全集；分组与 200 行渲染上限在排序之后套用
+  const sortedRows = (analytics && analytics.sessions || []).slice()
+    .sort((a, b) => ((a[sessionsSort.key] || 0) - (b[sessionsSort.key] || 0)) * sessionsSort.dir);
+  // 分组：组间按组总 token 降序，组内沿用当前排序键；全局最多渲染 200 行数据
+  let groupPlan = null;
+  if (sessionsGroup !== "none") {
+    const groups = new Map();
+    for (const s of sortedRows) {
+      const key = sessionsGroup === "project" ? (s.project || "(unknown)") : (s.agent || "?");
+      if (!groups.has(key)) groups.set(key, { key, workDir: s.work_dir || "", rows: [], total: 0 });
+      const g = groups.get(key);
+      g.rows.push(s);
+      g.total += s.total || 0;
+    }
+    let left = SESSION_ROW_CAP;
+    groupPlan = [...groups.values()]
+      .sort((a, b) => b.total - a.total || a.key.localeCompare(b.key))
+      .map((g) => {
+        const shown = g.rows.slice(0, Math.max(0, left));
+        left -= shown.length;
+        return { ...g, shown };
+      });
+  }
   const header = (key, label, left = false) => {
-    const sortable = ["first", "last", "total", "rate"].includes(key);
+    const sortable = SESSION_SORTABLE.includes(key);
     const arrow = sessionsSort.key === key ? (sessionsSort.dir < 0 ? " ▼" : " ▲") : "";
+    const toggleSort = () => {
+      setSessionsSort((prev) => {
+        const next = prev.key === key ? { key, dir: -prev.dir } : { key, dir: -1 };
+        try { localStorage.setItem(SESSIONS_SORT_KEY, JSON.stringify(next)); } catch {}
+        return next;
+      });
+    };
     return (
       <th
         className={`${sortable ? "sortable" : ""}${left ? " l" : ""}`}
@@ -579,20 +635,37 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
         tabIndex={sortable ? 0 : undefined}
         onClick={() => {
           if (!sortable) return;
-          setSessionsSort((prev) => prev.key === key
-            ? { key, dir: -prev.dir }
-            : { key, dir: -1 });
+          toggleSort();
         }}
-        onKeyDown={sortable ? activateOnKeys(() => {
-          setSessionsSort((prev) => prev.key === key
-            ? { key, dir: -prev.dir }
-            : { key, dir: -1 });
-        }) : undefined}
+        onKeyDown={sortable ? activateOnKeys(toggleSort) : undefined}
       >
         {label}{arrow}
       </th>
     );
   };
+
+  const renderSessionRow = (session) => (
+    <tr key={session.session_id}>
+      <td className="l mono" title={session.session_id}>
+        {session.session_id.replace("session_", "").replace(/^codex-/, "").slice(0, 8)}…
+      </td>
+      <td className="l" title={session.work_dir}>{session.project}</td>
+      <td className="l">{session.agent}</td>
+      <td className="l mono" title={(session.models || []).join(", ")}>
+        {(session.models || []).length > 1
+          ? `${session.models.length} models`
+          : ((session.models || [])[0] || "-")}
+      </td>
+      <td>{fmt(session.input)}</td>
+      <td>{fmt(session.output)}</td>
+      <td>{fmt(session.cache_read)}</td>
+      <td>{fmt(session.requests)}</td>
+      <td className="l mono">{fmtTimestamp(session.first)}</td>
+      <td className="l mono">{fmtTimestamp(session.last)}</td>
+      <td><b>{fmt(session.total)}</b></td>
+      <td className="mono">{rateText(session)}</td>
+    </tr>
+  );
 
   return (
     <div className="page page-flex">
@@ -684,18 +757,77 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
           <div className="kpi-label">{t("dash.kpiCacheToday")}</div>
           <div className="kpi-value">{fmtPct(todayCacheRate)}</div>
         </div>
-        <div className="kpi-card">
-          <div className="kpi-label">
-            {lang === "zh"
-              ? `${t("dash.kpiRate")}（${t("dash.rateLatestHint")}）`
-              : `${t("dash.kpiRate")} (${t("dash.rateLatestHint")})`}
+        <div className={cardCls("rate", "kpi-card")}>
+          <div className="kpi-label rate-label">
+            <span className="rate-label-text">
+              {lang === "zh"
+                ? `${t("dash.kpiRate")}（${expandedCard === "rate" ? t("dash.rateActive1h") : t("dash.rateLatestHint")}）`
+                : `${t("dash.kpiRate")} (${expandedCard === "rate" ? t("dash.rateActive1h") : t("dash.rateLatestHint")})`}
+            </span>
+            {expandBtn("rate")}
           </div>
-          {(() => {
+          {expandedCard === "rate" ? (() => {
+            // 全屏：近 1h 活跃明细（项目 → 会话 → 模型），旧版远端后端无此字段时回退空态
+            const active = (kpi.rate || {}).active_1h;
+            const projects = (active && active.projects) || [];
+            if (!projects.length) {
+              return <div className="status">{t("state.noData")}</div>;
+            }
+            const sessionCount = projects.reduce((n, p) => n + (p.sessions || []).length, 0);
+            return (
+              <>
+                <div className="table-hint">
+                  {t("dash.rateActiveSummary")
+                    .replace("{p}", String(projects.length))
+                    .replace("{n}", String(sessionCount))
+                    .replace("{t}", abbrev(active.tokens || 0))}
+                </div>
+                <div className="act-list">
+                  {projects.map((proj) => (
+                    <div className="act-proj" key={proj.name}>
+                      <div className="act-proj-head">
+                        <span className="act-proj-name" title={proj.path || proj.name}>{proj.name}</span>
+                        <span className="act-proj-stats">
+                          {fmt(proj.tokens)} {t("dash.tokens")} · {t("dash.sessionsCount").replace("{n}", String((proj.sessions || []).length))}
+                        </span>
+                      </div>
+                      {(proj.sessions || []).map((s) => (
+                        <div className="act-session" key={s.session_id}>
+                          <div className="act-session-row">
+                            <span className="mono act-sid" title={s.session_id}>
+                              {String(s.session_id).replace("session_", "").replace(/^codex-/, "").slice(0, 8)}…
+                            </span>
+                            <span className="act-agent">{s.agent}</span>
+                            <span className="act-meta">
+                              {fmt(s.output)} out · {s.requests} req · {t("dash.rateEndedAgo").replace("{d}", fmtSpan(s.ended_ago_seconds || 0))}
+                            </span>
+                            <span className="act-rate" title={t(speedMode === "gen" ? "dash.speedHint" : "dash.speedHintThroughput")}>
+                              {rateText(s)}
+                            </span>
+                          </div>
+                          <div className="act-models">
+                            {(s.models || []).map((m) => (
+                              <div className="act-model-row" key={m.model}>
+                                <span className="mono act-model-name" title={m.model}>{m.model}</span>
+                                <span className="act-meta">
+                                  {fmt(m.tokens)} {t("dash.tokens")} · {fmt(m.output)} out · {m.requests} req
+                                </span>
+                                <span className="act-rate">{rateText(m)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              </>
+            );
+          })() : (() => {
             const latest = (kpi.rate || {}).latest_sessions || [];
             if (!latest.length) {
               return <div className="kpi-sub">{t("state.noData")}</div>;
             }
-            const fmtRate = (v) => (v >= 100 ? abbrev(Math.round(v)) : v.toFixed(1));
             // 同名项目出现多次时用 #1/#2/#3 区分（按最近活跃排序，#1 最新）；
             // 完整会话 id 在悬浮提示里，行内不再占空间
             const projCount = {};
@@ -715,15 +847,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                       <span className="rate-name">{item.project}</span>
                       {tag ? <span className="rate-tag">{tag}</span> : null}
                       <span className="rate-model">{item.model || item.agent || "—"}</span>
-                      <span className="rate-val">
-                        {(() => {
-                          const useGen = speedMode === "gen";
-                          const v = useGen
-                            ? (item.gen_rate != null ? item.gen_rate : item.rate)
-                            : item.rate;
-                          return v != null ? `${fmtRate(v)} tok/s` : "—";
-                        })()}
-                      </span>
+                      <span className="rate-val">{rateText(item)}</span>
                     </div>
                   );
                 })}
@@ -931,7 +1055,23 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
       <section className={cardCls("sessions")}>
         <div className="card-head-row">
           <h2>{t("dash.sessions")}</h2>
-          {expandBtn("sessions")}
+          <div className="card-head-actions">
+            <label className="days-field">{t("dash.groupBy")}
+              <select
+                className="control"
+                value={sessionsGroup}
+                onChange={(event) => {
+                  setSessionsGroup(event.target.value);
+                  try { localStorage.setItem(SESSIONS_GROUP_KEY, event.target.value); } catch {}
+                }}
+              >
+                {SESSION_GROUP_OPTIONS.map((value) => (
+                  <option key={value} value={value}>{t(`dash.group${value[0].toUpperCase()}${value.slice(1)}`)}</option>
+                ))}
+              </select>
+            </label>
+            {expandBtn("sessions")}
+          </div>
         </div>
         <div className="table-hint">{t("dash.sessionsHint")}</div>
         <div className="table-hint" style={{ opacity: 0.7 }}>
@@ -947,7 +1087,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                 {header("models", "Models", true)}
                 {header("input", "Input")}
                 {header("output", "Output")}
-                {header("cache", "CacheRead")}
+                {header("cache_read", "CacheRead")}
                 {header("requests", "Requests")}
                 {header("first", "Start", true)}
                 {header("last", "End", true)}
@@ -955,39 +1095,25 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                 {header("rate", "Speed")}
               </tr>
             </thead>
-            <tbody>
-              {rows.map((session) => (
-                <tr key={session.session_id}>
-                  <td className="l mono" title={session.session_id}>
-                    {session.session_id.replace("session_", "").replace(/^codex-/, "").slice(0, 8)}…
-                  </td>
-                  <td className="l" title={session.work_dir}>{session.project}</td>
-                  <td className="l">{session.agent}</td>
-                  <td className="l mono" title={(session.models || []).join(", ")}>
-                    {(session.models || []).length > 1
-                      ? `${session.models.length} models`
-                      : ((session.models || [])[0] || "-")}
-                  </td>
-                  <td>{fmt(session.input)}</td>
-                  <td>{fmt(session.output)}</td>
-                  <td>{fmt(session.cache_read)}</td>
-                  <td>{fmt(session.requests)}</td>
-                  <td className="l mono">{fmtTimestamp(session.first)}</td>
-                  <td className="l mono">{fmtTimestamp(session.last)}</td>
-                  <td><b>{fmt(session.total)}</b></td>
-                  <td className="mono">
-                    {(() => {
-                      const useGen = speedMode === "gen";
-                      const v = useGen
-                        ? (session.gen_rate != null ? session.gen_rate : session.rate)
-                        : session.rate;
-                      if (v == null) return "—";
-                      return `${v >= 100 ? abbrev(Math.round(v)) : v.toFixed(1)} tok/s`;
-                    })()}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
+            {sessionsGroup === "none" ? (
+              <tbody>
+                {sortedRows.slice(0, SESSION_ROW_CAP).map(renderSessionRow)}
+              </tbody>
+            ) : (
+              (groupPlan || []).map((g) => (
+                <tbody key={g.key}>
+                  <tr className="group-row">
+                    <td className="l" colSpan={12} title={g.workDir || g.key}>
+                      {sessionsGroup === "agent" ? (AGENT_LABELS[g.key] || g.key) : g.key}
+                      <span className="group-stats">
+                        {t("dash.sessionsCount").replace("{n}", String(g.rows.length))} · {fmt(g.total)} {t("dash.tokens")}
+                      </span>
+                    </td>
+                  </tr>
+                  {g.shown.map(renderSessionRow)}
+                </tbody>
+              ))
+            )}
           </table>
         </div>
       </section>
