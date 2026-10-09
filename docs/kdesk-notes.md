@@ -72,6 +72,33 @@
   `Get-Process kwallpaper | Select Name,StartTime`，若 kwallpaper 比优化器晚启动 = 补丁丢失；
   对比安装目录与备份的 `kwallpaper.exe` 哈希可确认是否被升级。
 
+## 坑 5：三种「点了没反应」的静默失效（2026-10-09 排查实录）
+
+- **安装版应用 kdesk 按钮假成功**：kdesk 厂商负载（数百 MB）不随应用分发，
+  但按钮仍直连随包的 `resources\scripts\setup.ps1`——提权子进程派发到
+  `windows\kdesk\setup_elevated.ps1` 时死于 ParseFile，而父进程提权拉起后即
+  `exit 0`，界面显示成功实际什么都没发生、setup.log 零记录。
+  修复：main.js `kdeskSpec` 先探测负载——负载在走正常入口；缺失且本机注册过
+  `KdeskAutoDeploy` 则改触 `schtasks /run`（免 UAC、指向仓库侧真实负载）；
+  两者皆无给可读报错。
+- **计划任务里 `powershell -File <中文路径>` 静默失败且退出码 0**：任务启动
+  链路上 `-File` 的非 ASCII 路径不会被正确传递（实测 `-Command "& '<同路径>'"`
+  正常、ASCII 路径 `-File` 正常、中文路径 `-File` 退出码 0 但脚本根本没跑）。
+  修复：任务动作改 `-Command "& '<路径>'"` 形态注册。
+- **schtasks /Create 默认电池闸门**：`DisallowStartIfOnBatteries` 默认开——
+  笔记本拔电后登录任务全部静默跳过（`/Run` 显示成功）。修复：注册任务用
+  `Register-ScheduledTask` 显式 `-AllowStartIfOnBatteries -DontStopIfGoingOnBatteries`。
+- 附带：根目录 `setup.cmd`/`tools.cmd` 在入口脚本收进 `scripts\`（363b639）后
+  仍指根目录旧路径，已改为转发 `scripts\` 并保留根目录回退；
+  main.js `windowsSetupScriptFor` 的路径重写同样补了新旧两代布局兼容。
+- 排查手法：探针脚本（零参数、输出路径烧死为纯 ASCII、脚本本体 ASCII）+
+  `Register-ScheduledTask` 逐变量对照注册，比读代码猜快得多。
+- 假象警告：setup.log 本体一直是干净 UTF-8；经某些 bash/GBK 显示管线读它，
+  会出现**部分行**中文变乱码的假象（字节级 `od -tx1` 对比即可证伪），
+  别被带偏去修根本不存在的编码问题。另：探针脚本内容若用 ASCII 编码写入
+  含中文的路径字符串，中文会被替换成 `?`，探针会「假失败」——探针输出路径
+  必须用 `$env:TEMP` 等纯 ASCII 位置。
+
 ## 常用检查命令
 
 ```powershell

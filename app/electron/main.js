@@ -1050,12 +1050,17 @@ function repoScriptPath(relative) {
 }
 
 // 数据源切到 Windows 环境时，安装目标也是 Windows 侧；脚本路径由后端以
-// UNC 形式给出（main.js 运行在 Windows 本地）。
+// UNC 形式给出（main.js 运行在 Windows 本地）。后端给的是 ai-tools 组件脚本
+// 路径，通用组件要改走仓库入口 setup 脚本：v0.7.24+ 入口在 <root>\scripts\，
+// 更早的仓库布局在 <root>\ 根——按存在性选择，兼容 WSL 侧新旧两代仓库。
 function windowsSetupScriptFor(kind, windowsSetupScript) {
   if (typeof windowsSetupScript !== "string" || !windowsSetupScript) return "";
-  if (kind === "ai-tools") return windowsSetupScript;
-  return windowsSetupScript.replace(
-    /\\windows\\ai-tools\\setup_ai_tools\.ps1$/i, "\\setup.ps1");
+  const m = windowsSetupScript.match(/^(.*)\\windows\\ai-tools\\setup_ai_tools\.ps1$/i);
+  if (kind === "ai-tools" || !m) return windowsSetupScript;
+  const modern = `${m[1]}\\scripts\\setup.ps1`;
+  if (fs.existsSync(modern)) return modern;
+  const legacy = `${m[1]}\\setup.ps1`;
+  return fs.existsSync(legacy) ? legacy : modern;
 }
 
 // PowerShell 安装子进程统一封装：输出按 UTF-8 编码，中文系统的错误文案
@@ -1140,7 +1145,58 @@ async function localWslScriptSpec(scriptWinPath, scriptArgs, distro) {
   };
 }
 
+// kdesk 厂商负载（数百 MB 安装包/快照/壁纸缓存）不随应用分发（package.mjs
+// 显式排除 windows/kdesk）。此前按钮直连 setup 入口：负载缺失时提权子进程死在
+// 组件脚本解析预检，而父进程提权拉起后即 exit 0——界面显示成功但实际什么都没
+// 发生。这里先探测再放行：负载在（仓库内运行/自定义打包）走正常入口；负载缺失
+// 但本机注册过装机登录任务 KdeskAutoDeploy（任务动作指向仓库侧
+// setup_elevated.ps1，/RL HIGHEST 免 UAC）就改触计划任务，等效完整部署；
+// 两者皆无给可读报错并附仓库侧操作指引。
+function kdeskScheduledTaskExists() {
+  if (process.platform !== "win32") return false;
+  try {
+    execSync("schtasks /query /tn KdeskAutoDeploy",
+      { stdio: "ignore", windowsHide: true, timeout: 15000 });
+    return true;
+  } catch { return false; }
+}
+
+function kdeskSpec(environment, windowsSetupScript) {
+  let script = "";
+  if (environment === "windows" && WSL_BACKEND) {
+    script = windowsSetupScriptFor("kdesk", windowsSetupScript);
+  } else if (process.platform === "win32") {
+    script = path.join(REPO_ROOT, "scripts", "setup.ps1");
+  }
+  // 入口脚本两种布局：<root>\scripts\setup.ps1（v0.7.24+）或 <root>\setup.ps1（旧）
+  const root = /\\scripts\\setup\.ps1$/i.test(script || "")
+    ? path.dirname(path.dirname(script))
+    : path.dirname(script || "");
+  const payload = path.join(root, "windows", "kdesk", "setup_elevated.ps1");
+  if (script && fs.existsSync(script) && fs.existsSync(payload)) {
+    return { command: "powershell.exe", args: psInstallArgs(script, ["kdesk"]), script };
+  }
+  if (kdeskScheduledTaskExists()) {
+    return {
+      command: "schtasks",
+      args: ["/run", "/tn", "KdeskAutoDeploy"],
+      script: "",
+      note: "kdesk vendor payload not bundled with this app package — triggered the repo-side logon task KdeskAutoDeploy instead (deployment continues in the background)",
+    };
+  }
+  return {
+    command: "powershell.exe",
+    args: psInstallArgs(script, ["kdesk"]),
+    script,
+    payload,
+    note: "kdesk vendor payload not bundled with this app package",
+  };
+}
+
 function componentSpec(component, environment, windowsSetupScript) {
+  // kdesk 负载不随应用分发（package.mjs 显式排除 windows/kdesk），单独走
+  // kdeskSpec：负载探测 + KdeskAutoDeploy 计划任务回退，见其注释
+  if (component === "kdesk") return kdeskSpec(environment, windowsSetupScript);
   // 通用组件：repo 根 setup 脚本 + 组件名位置参数（setup.sh nodejs / setup.ps1 nodejs）
   if (environment === "windows" && WSL_BACKEND) {
     const script = windowsSetupScriptFor(component, windowsSetupScript);
@@ -1208,6 +1264,20 @@ function startInstall(runKey, spec) {
         error: `component payload not bundled with this app package: ${spec.script}`,
       });
       return;
+    }
+    // kdesk 专属：入口脚本随包分发但厂商负载被排除，提前拦下给出可读指引
+    if (spec.payload && !fs.existsSync(spec.payload)) {
+      resolve({
+        ok: false,
+        error: `kdesk vendor payload not bundled with this app package: ${spec.payload}` +
+          ` — deploy from the Env-Tools repo instead (scripts\\setup.ps1 kdesk)`,
+      });
+      return;
+    }
+    if (spec.note) {
+      for (const w of liveWindows()) {
+        w.webContents.send("install-progress", { key: runKey, line: spec.note });
+      }
     }
     const child = spawn(spec.command, spec.args, {
       stdio: ["ignore", "pipe", "pipe"],

@@ -124,9 +124,27 @@ Remove-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 
 # elevated scheduled task at logon: no UAC prompts ever again.
 # Runs THIS full setup (equivalent to `scripts/setup.ps1 kdesk`) at every logon, so each
 # boot gets snapshot restore + update block + optimizer, not just the light deploy.
+# 注册要点（三者缺一都会「静默无效」）：
+# 1. 用 -Command "& '<path>'" 而非 -File：任务启动链路上 powershell -File 遇
+#    中文路径会静默不执行且退出码为 0（-Command 内联同路径则正常，已实测）；
+# 2. Register-ScheduledTask 显式 -AllowStartIfOnBatteries：schtasks /Create 的
+#    默认是电池供电不启动，笔记本拔电后登录任务全部静默跳过；
+# 3. -RunLevel Highest 等价原 /RL HIGHEST，免 UAC。
 $setupScript = $PSCommandPath
-schtasks /Create /TN 'KdeskAutoDeploy' /TR "powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$setupScript`"" /SC ONLOGON /RL HIGHEST /F
-Log "schtasks exit=$LASTEXITCODE (task runs: $setupScript)"
+try {
+    $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
+        -Argument ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "& ''' + $setupScript + '''"')
+    $trigger = New-ScheduledTaskTrigger -AtLogOn
+    $principal = New-ScheduledTaskPrincipal -UserId ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) `
+        -LogonType Interactive -RunLevel Highest
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+        -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Days 3)
+    Register-ScheduledTask -TaskName 'KdeskAutoDeploy' -Action $action -Trigger $trigger `
+        -Principal $principal -Settings $settings -Force | Out-Null
+    Log "logon task registered (runs via -Command: $setupScript)"
+} catch {
+    Log "logon task register failed: $($_.Exception.Message)"
+}
 
 # redirect the wallpaper cache into the project directory and migrate existing data
 try {
