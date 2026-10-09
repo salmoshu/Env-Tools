@@ -26,3 +26,6 @@ app/release/
 app/release-staging/
 app/backend-rs/target/
 windows/kdesk/kdesk_33_1_backup/
+
+# agent
+.zcode
