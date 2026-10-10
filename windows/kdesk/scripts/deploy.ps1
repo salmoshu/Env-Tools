@@ -60,8 +60,16 @@ Get-Process -Name 'kdesk*','kwallpaper*','cmlive','kvipgui','infocenter','keyema
 Start-Sleep -Seconds 2
 try { Stop-KdeskService } catch { Log "service stop: $($_.Exception.Message)" }
 
-$restoreCode = Invoke-KdeskSnapshotRestore -Backup $backup -Target $target -LogFile $log
-Log "restore robocopy exit=$restoreCode (0-7 = success)"
+if (Test-Path -LiteralPath (Join-Path $backup 'kwallpaper.exe') -PathType Leaf) {
+    $restoreCode = Invoke-KdeskSnapshotRestore -Backup $backup -Target $target -LogFile $log
+    Log "restore robocopy exit=$restoreCode (0-7 = success)"
+    if ($restoreCode -gt 7) {
+        Log 'WARNING: snapshot restore failed; keeping existing install files'
+    }
+} else {
+    # v0.7.25：快照是 gitignore 的本机目录，缺失时跳过版本还原（否则必然 exit 16）
+    Log 'snapshot backup missing; skipping version restore'
+}
 
 # re-apply the auto-update block (hosts entries + IFEO on cmlive.exe)
 Disable-KdeskAutoUpdate -LogFile $log

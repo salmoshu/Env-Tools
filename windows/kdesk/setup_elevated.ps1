@@ -80,6 +80,19 @@ if ([string]::IsNullOrWhiteSpace($target)) {
 
 $target | Set-Content -LiteralPath $pathCache -Encoding UTF8
 
+# v0.7.25 黑屏修复（一）：快照备份是 gitignore 的本机目录，换机/清盘后会缺失。
+# 原逻辑无条件 robocopy 快照 → 源不存在 exit 16 → exit 1 中止——而此时
+# kwallpaper 已被杀掉，再也没人把它拉起来，桌面一直黑屏。
+# 现在先把"本次部署的形态"定下来：没快照但有已安装副本 → 跳过版本还原继续跑；
+# 两者都没有 → 在杀任何进程之前就退出（无需恢复现场）。
+$hasSnapshot = Test-Path -LiteralPath (Join-Path $backup 'kwallpaper.exe') -PathType Leaf
+$hasInstalled = Test-Path -LiteralPath (Join-Path $target 'kwallpaper.exe') -PathType Leaf
+if (-not $hasSnapshot -and -not $hasInstalled) {
+    Log 'ERROR: no snapshot backup and no installed kwallpaper found, abort (nothing was stopped)'
+    Log '=== setup aborted ==='
+    exit 1
+}
+
 Get-Process -Name 'kdesk*','kwallpaper*','cmlive','kvipgui','infocenter','keyemain' -ErrorAction SilentlyContinue |
     Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
@@ -88,17 +101,29 @@ try { Stop-KdeskService } catch { Log "service stop: $($_.Exception.Message)" }
 # Restore the 33_1 snapshot into the target. For a portable deployment this also
 # performs the initial copy of the backup into the portable directory.
 New-Item -ItemType Directory -Path $target -Force | Out-Null
-$restoreCode = Invoke-KdeskSnapshotRestore -Backup $backup -Target $target -LogFile $log
-Log "snapshot restore robocopy exit=$restoreCode (0-7 = success)"
-if ($restoreCode -gt 7) {
-    Log 'ERROR: unable to copy the snapshot into the target dir'
-    Log '=== setup aborted ==='
-    exit 1
+$restoreFailed = $false
+if ($hasSnapshot) {
+    $restoreCode = Invoke-KdeskSnapshotRestore -Backup $backup -Target $target -LogFile $log
+    Log "snapshot restore robocopy exit=$restoreCode (0-7 = success)"
+    if ($restoreCode -gt 7) {
+        # v0.7.25 黑屏修复（二）：还原失败不再中止。中止路径发生在杀掉壁纸进程
+        # 之后，服务与 kwallpaper 永不重启，桌面必然黑屏。还原失败只意味着本次
+        # 跳过"版本回退"，已安装文件保持原样，后续照常拉起桌面。
+        $restoreFailed = $true
+        Log 'WARNING: snapshot restore failed; keeping existing install files and continuing'
+    }
+} else {
+    Log 'snapshot backup missing; skipping version restore (installed copy left as-is)'
 }
 
-# (re)build the snapshot from the current install dir
-robocopy $target $backup /MIR /R:2 /W:2 /NFL /NDL /NJH /NJS /NP | Out-Null
-Log "backup robocopy exit=$LASTEXITCODE (0-7 = success)"
+# (re)build the snapshot from the current install dir. When the snapshot was
+# missing this re-establishes it from the intact install (self-heal), so future
+# logons get the normal restore path again. Skipped after a failed restore —
+# the target may be a half-copied mix and must not become the new snapshot.
+if (-not $restoreFailed) {
+    robocopy $target $backup /MIR /R:2 /W:2 /NFL /NDL /NJH /NJS /NP | Out-Null
+    Log "backup robocopy exit=$LASTEXITCODE (0-7 = success)"
+}
 
 # 持久屏蔽桌面助手（改名 + IFEO），放在快照刷新之后，保证还原/刷新都不会复活它
 Disable-KdeskAssistant -Target $target -Backup $backup -LogFile $log
@@ -165,4 +190,18 @@ if ($waited -ge 0) {
 Start-Sleep -Seconds 10   # let the app finish initializing
 
 Invoke-KdeskOptimizer -Optimizer (Get-KdeskOptimizer -Dir $dir) -LogFile $log
+
+# v0.7.25 黑屏修复（三）：最终防线——优化器可能把 kwallpaper 补丁失败/带崩，
+# 结束前确认它还活着；不在就再拉一次。到这一步无论结果如何都不再退出，
+# 保证"杀掉的壁纸进程一定有人负责拉起"。
+if (-not (Get-Process -Name 'kwallpaper' -ErrorAction SilentlyContinue)) {
+    Log 'kwallpaper not running after optimizer; starting it again'
+    Start-Process -FilePath (Join-Path $target 'kwallpaper.exe') -ErrorAction SilentlyContinue
+    $retryWaited = Wait-KdeskWallpaperReady -TimeoutSeconds 30
+    if ($retryWaited -ge 0) {
+        Log "kwallpaper UI ready after retry (waited ${retryWaited}s)"
+    } else {
+        Log 'WARNING: kwallpaper still not detected after retry'
+    }
+}
 Log '=== setup done ==='
