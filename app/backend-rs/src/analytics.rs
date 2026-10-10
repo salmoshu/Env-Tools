@@ -15,6 +15,8 @@ use chrono::{DateTime, Datelike, Local, TimeZone, Timelike};
 pub const RECORD_RETENTION_DAYS: i64 = 400;
 pub const SESSION_CAP: usize = 500;
 pub const AGENTS: [&str; 5] = ["all", "kimi", "codex", "glm", "deepseek"];
+/// 速率卡全屏"活跃明细"窗口：近 1 天（15m/60m 速率 KPI 仍按各自短窗计算）
+pub const ACTIVE_WINDOW_SECS: i64 = 86_400;
 
 #[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Source {
@@ -666,7 +668,7 @@ struct SessionRow {
     gen_seconds: f64,
 }
 
-/// 近 1h 活跃明细（速率卡全屏视图）：会话内按模型分桶
+/// 近 1 天活跃明细（速率卡全屏视图）：会话内按模型分桶
 #[derive(Default)]
 struct ActiveModelRow {
     output: i64,
@@ -677,7 +679,7 @@ struct ActiveModelRow {
     gen_seconds: f64,
 }
 
-/// 近 1h 活跃明细：会话级累加（窗口内口径，与 Sessions 表速率同定义）
+/// 近 1 天活跃明细：会话级累加（窗口内口径，与 Sessions 表速率同定义）
 #[derive(Default)]
 struct ActiveSessionRow {
     sid: String,
@@ -961,8 +963,9 @@ impl AnalyticsState {
         let mut recent60_tokens = 0i64;
         let mut recent15_by_project: HashMap<String, i64> = HashMap::new();
         let mut recent60_by_project: HashMap<String, i64> = HashMap::new();
-        // 近 1h 活跃明细（速率卡全屏视图）：sid → 会话行（内含模型分桶）
+        // 近 1 天活跃明细（速率卡全屏视图）：sid → 会话行（内含模型分桶）
         let mut active: HashMap<String, ActiveSessionRow> = HashMap::new();
+        let mut active_day_tokens = 0i64;
         // 日期格式化按天缓存：同一日期只在首次出现时 format
         let mut date_cache: HashMap<i32, String> = HashMap::new();
 
@@ -995,11 +998,14 @@ impl AnalyticsState {
                     .clone();
                 let total =
                     record.input + record.output + record.cache_read + record.cache_creation;
-                if record.ts >= now_sec - 3600 {
-                    recent60_tokens += total;
+                if record.ts >= now_sec - ACTIVE_WINDOW_SECS {
+                    active_day_tokens += total;
                     let pname = project_name(&work_dir).to_string();
-                    *recent60_by_project.entry(pname.clone()).or_default() += total;
-                    // 近 1h 活跃明细：会话级 + 会话内模型级双口径累加
+                    if record.ts >= now_sec - 3600 {
+                        recent60_tokens += total;
+                        *recent60_by_project.entry(pname.clone()).or_default() += total;
+                    }
+                    // 近 1 天活跃明细：会话级 + 会话内模型级双口径累加
                     let act = active
                         .entry(record.sid.clone())
                         .or_insert_with(|| ActiveSessionRow {
@@ -1231,7 +1237,7 @@ impl AnalyticsState {
             }
         };
 
-        // 近 1h 活跃视图（速率卡全屏）：项目 → 会话 → 模型三级。
+        // 近 1 天活跃视图（速率卡全屏）：项目 → 会话 → 模型三级。
         // 同名项目跨路径合并（路径取贡献最大会话的目录），项目按 token 降序、
         // 会话按最近活跃降序、模型按 token 降序
         let mut act_projects: HashMap<String, Vec<&ActiveSessionRow>> = HashMap::new();
@@ -1541,10 +1547,10 @@ impl AnalyticsState {
                     "by_project_15m": rate15_rows,
                     "by_project_60m": rate60_rows,
                     "latest_sessions": latest_sessions,
-                    // 速率卡全屏视图：近 1h 活跃的项目 → 会话 → 模型明细
-                    "active_1h": {
-                        "window_seconds": 3600,
-                        "tokens": recent60_tokens,
+                    // 速率卡全屏视图：近 1 天活跃的项目 → 会话 → 模型明细
+                    "active_1d": {
+                        "window_seconds": ACTIVE_WINDOW_SECS,
+                        "tokens": active_day_tokens,
                         "projects": active_projects,
                     },
                 },

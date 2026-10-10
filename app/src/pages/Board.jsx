@@ -265,7 +265,7 @@ export default function Board({ lastPayload }) {
                   parts.push(Number(applicable) > 0 ? t("dash.resetUsableNow") : t("dash.resetAfterLimit"));
                 }
                 return (
-                  <div className={`limit-resets${Number(applicable) > 0 ? " ready" : ""}`}>
+                  <div className="limit-resets">
                     {t("dash.resetChances")}: {parts.join(" · ")}
                     {Number(available) > 0 && nearQuotaLimit(account) ? (
                       <ResetButton provider="codex" what={t("dash.resetWhatCodex")}>{t("dash.resetNow")}</ResetButton>
@@ -293,7 +293,7 @@ export default function Board({ lastPayload }) {
                   expiry = ` · ${t("dash.resetChancesEarliest")} ${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
                 }
                 return (
-                  <div className="limit-resets ready">
+                  <div className="limit-resets">
                     {t("dash.resetChances")}: {parts.join(" · ")}{expiry}
                     {five.length && windowUsagePct(account, "5h") >= QUOTA_RESET_THRESHOLD ? (
                       <ResetButton provider="glm" resetType="FIVE_HOUR" what={t("dash.resetWhat5h")}>{t("dash.resetUse5h")}</ResetButton>

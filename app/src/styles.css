@@ -343,8 +343,8 @@ td b { font-weight: 600; }
 .qmembership em { margin-left: auto; color: var(--warn); font-style: normal; white-space: nowrap; }
 .qmembership em.ended { color: var(--red); }
 .qmembership.error { color: var(--red); }
-.limit-resets { margin: 1px 0 2px; color: var(--faint); font-size: 10px; font-variant-numeric: tabular-nums; }
-.limit-resets.ready { color: var(--green); }
+/* 重置机会行统一绿色（GLM 重置卡与 Codex 速率重置同色，不再按可用状态灰绿切换） */
+.limit-resets { margin: 1px 0 2px; color: var(--green); font-size: 10px; font-variant-numeric: tabular-nums; }
 /* 配额重置按钮：≥95% 用量才出现，点击弹确认对话框，结果内联展示 */
 .reset-action-btn {
   margin-left: 8px; padding: 0 7px; font-size: 10px; line-height: 16px;
@@ -1034,3 +1034,13 @@ tr.group-row td {
   border-top: 1px solid var(--hairline);
 }
 tr.group-row .group-stats { margin-left: 10px; color: var(--faint); font-weight: 400; font-size: 10px; }
+
+/* 会话明细重组（v0.7.25）：Token 构成迷你条（与每日 Token 图同色系）、占比与活跃列 */
+.sess-tokens { white-space: nowrap; }
+.sess-bar {
+  display: inline-flex; width: 64px; height: 4px; margin-left: 7px; vertical-align: 1px;
+  border-radius: 2px; overflow: hidden; background: var(--track); flex: none;
+}
+.sess-bar i { display: block; height: 100%; }
+.sess-share { color: var(--dim); }
+.sess-ago { color: var(--faint); }

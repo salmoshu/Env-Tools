@@ -529,7 +529,7 @@ fn codex_model_persists_across_incremental_chunks_and_restart() {
 }
 
 #[test]
-fn active_1h_groups_projects_sessions_and_models() {
+fn active_1d_groups_projects_sessions_and_models() {
     let dir = tempfile_dir();
     let home = dir.join("home");
     let kimi_home = home.join(".kimi-code");
@@ -550,10 +550,10 @@ fn active_1h_groups_projects_sessions_and_models() {
         &kimi_home.join("sessions").join("session_b").join("wire.jsonl"),
         &[kimi_line(ts + 30, "deepseek/deepseek-v4-flash", 0, 10, 0, 0)],
     );
-    // alpha 的旧会话：超出 1h 窗，不应出现在活跃视图
+    // alpha 的旧会话：超出 1 天窗，不应出现在活跃视图
     write_file(
         &kimi_home.join("sessions").join("session_c").join("wire.jsonl"),
-        &[kimi_line(ts - 4000, "kimi-code/k3", 0, 999, 0, 0)],
+        &[kimi_line(ts - 26 * 3600, "kimi-code/k3", 0, 999, 0, 0)],
     );
     std::fs::create_dir_all(&home).unwrap();
     std::fs::write(
@@ -570,8 +570,8 @@ fn active_1h_groups_projects_sessions_and_models() {
     let mut state = AnalyticsState::default();
     state.scan(&[kimi_home], &[], &[], now.timestamp());
     let all = state.aggregate(7, "all", now);
-    let active = &all["kpi"]["rate"]["active_1h"];
-    assert_eq!(active["window_seconds"], 3600);
+    let active = &all["kpi"]["rate"]["active_1d"];
+    assert_eq!(active["window_seconds"], 86_400);
     assert_eq!(active["tokens"], 70, "窗口总量不含超窗旧会话");
 
     let projects = active["projects"].as_array().unwrap();

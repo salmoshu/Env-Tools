@@ -48,7 +48,9 @@ const TREND_KEY = "ai-usage-monitor.trend-granularity";
 // 会话明细：分组 / 排序偏好持久化；可排序的数值列（表头点击切换升降序）
 const SESSIONS_SORT_KEY = "ai-usage-monitor.sessions-sort";
 const SESSIONS_GROUP_KEY = "ai-usage-monitor.sessions-group";
-const SESSION_SORTABLE = ["input", "output", "cache_read", "requests", "first", "last", "total", "rate"];
+const SESSION_SORTABLE = ["total", "requests", "last", "rate"];
+// 会话行"结束于 X 前"阈值：更近的视为仍在进行
+const SESSION_LIVE_THRESHOLD_SEC = 300;
 const SESSION_GROUP_OPTIONS = ["none", "project", "agent"];
 const SESSION_ROW_CAP = 200;
 // 设置页"显示"面板的 provider 勾选（与悬浮看板共用同一 localStorage 键）
@@ -170,7 +172,7 @@ function QuotaCard({ account, versions, onUpgrade, upgrading }) {
           parts.push(Number(applicable) > 0 ? t("dash.resetUsableNow") : t("dash.resetAfterLimit"));
         }
         return (
-          <div className={`limit-resets${Number(applicable) > 0 ? " ready" : ""}`}>
+          <div className="limit-resets">
             {t("dash.resetChances")}: {parts.join(" · ")}
             {Number(available) > 0 && nearQuotaLimit(account) ? (
               <ResetButton provider="codex" what={t("dash.resetWhatCodex")}>{t("dash.resetNow")}</ResetButton>
@@ -198,7 +200,7 @@ function QuotaCard({ account, versions, onUpgrade, upgrading }) {
           expiry = ` · ${t("dash.resetChancesEarliest")} ${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
         }
         return (
-          <div className="limit-resets ready">
+          <div className="limit-resets">
             {t("dash.resetChances")}: {parts.join(" · ")}{expiry}
             {five.length && windowUsagePct(account, "5h") >= QUOTA_RESET_THRESHOLD ? (
               <ResetButton provider="glm" resetType="FIVE_HOUR" what={t("dash.resetWhat5h")}>{t("dash.resetUse5h")}</ResetButton>
@@ -594,8 +596,13 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
     return v != null ? `${fmtRate(v)} tok/s` : "—";
   };
 
-  // 排序作用于全集；分组与 200 行渲染上限在排序之后套用
-  const sortedRows = (analytics && analytics.sessions || []).slice()
+  // 排序作用于全集；分组与 200 行渲染上限在排序之后套用。
+  // 列组织（v0.7.25 重组）：Token 三列合一（总量 + 构成迷你条，悬浮看明细）、
+  // 起止两列合一（活跃跨度 + 结束于），新增占比列——列数 12 → 9
+  const sessionsAll = (analytics && analytics.sessions) || [];
+  const sessionsGrand = sessionsAll.reduce((sum, s) => sum + (s.total || 0), 0);
+  const nowSec = Math.floor(Date.now() / 1000);
+  const sortedRows = sessionsAll.slice()
     .sort((a, b) => ((a[sessionsSort.key] || 0) - (b[sessionsSort.key] || 0)) * sessionsSort.dir);
   // 分组：组间按组总 token 降序，组内沿用当前排序键；全局最多渲染 200 行数据
   let groupPlan = null;
@@ -644,28 +651,56 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
     );
   };
 
-  const renderSessionRow = (session) => (
-    <tr key={session.session_id}>
-      <td className="l mono" title={session.session_id}>
-        {session.session_id.replace("session_", "").replace(/^codex-/, "").slice(0, 8)}…
-      </td>
-      <td className="l" title={session.work_dir}>{session.project}</td>
-      <td className="l">{session.agent}</td>
-      <td className="l mono" title={(session.models || []).join(", ")}>
-        {(session.models || []).length > 1
-          ? `${session.models.length} models`
-          : ((session.models || [])[0] || "-")}
-      </td>
-      <td>{fmt(session.input)}</td>
-      <td>{fmt(session.output)}</td>
-      <td>{fmt(session.cache_read)}</td>
-      <td>{fmt(session.requests)}</td>
-      <td className="l mono">{fmtTimestamp(session.first)}</td>
-      <td className="l mono">{fmtTimestamp(session.last)}</td>
-      <td><b>{fmt(session.total)}</b></td>
-      <td className="mono">{rateText(session)}</td>
-    </tr>
-  );
+  const renderSessionRow = (session) => {
+    const comps = [
+      ["input", session.input],
+      ["output", session.output],
+      ["cache_read", session.cache_read],
+      ["cache_creation", session.cache_creation],
+    ];
+    const base = Math.max(1, session.total || 0);
+    const share = sessionsGrand > 0 ? ((session.total || 0) / sessionsGrand) * 100 : 0;
+    const ago = Math.max(0, nowSec - (session.last || 0));
+    return (
+      <tr key={session.session_id}>
+        <td className="l mono" title={session.session_id}>
+          {session.session_id.replace("session_", "").replace(/^codex-/, "").slice(0, 8)}…
+        </td>
+        <td className="l" title={session.work_dir}>{session.project}</td>
+        <td className="l">{session.agent}</td>
+        <td className="l mono" title={(session.models || []).join(", ")}>
+          {(session.models || []).length > 1
+            ? `${session.models.length} models`
+            : ((session.models || [])[0] || "-")}
+        </td>
+        <td
+          className="sess-tokens"
+          title={comps.map(([key, value]) => `${key.replace("_", " ")}: ${fmt(value)}`).join(" · ")}
+        >
+          <b>{fmt(session.total)}</b>
+          <span className="sess-bar">
+            {comps.map(([key, value]) => value > 0 ? (
+              <i key={key} style={{ width: `${((value / base) * 100).toFixed(1)}%`, background: `var(--c-${key})` }} />
+            ) : null)}
+          </span>
+        </td>
+        <td className="mono sess-share">{share.toFixed(1)}%</td>
+        <td>{fmt(session.requests)}</td>
+        <td
+          className="l mono"
+          title={`${fmtTimestamp(session.first, true)} → ${fmtTimestamp(session.last, true)}`}
+        >
+          {fmtSpan(Math.max(0, session.last - session.first))}
+          <span className="sess-ago">
+            {ago <= SESSION_LIVE_THRESHOLD_SEC
+              ? ` · ${t("dash.sessLive")}`
+              : ` · ${t("dash.rateEndedAgo").replace("{d}", fmtSpan(ago))}`}
+          </span>
+        </td>
+        <td className="mono">{rateText(session)}</td>
+      </tr>
+    );
+  };
 
   return (
     <div className="page page-flex">
@@ -761,14 +796,14 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
           <div className="kpi-label rate-label">
             <span className="rate-label-text">
               {lang === "zh"
-                ? `${t("dash.kpiRate")}（${expandedCard === "rate" ? t("dash.rateActive1h") : t("dash.rateLatestHint")}）`
-                : `${t("dash.kpiRate")} (${expandedCard === "rate" ? t("dash.rateActive1h") : t("dash.rateLatestHint")})`}
+                ? `${t("dash.kpiRate")}（${expandedCard === "rate" ? t("dash.rateActive1d") : t("dash.rateLatestHint")}）`
+                : `${t("dash.kpiRate")} (${expandedCard === "rate" ? t("dash.rateActive1d") : t("dash.rateLatestHint")})`}
             </span>
             {expandBtn("rate")}
           </div>
           {expandedCard === "rate" ? (() => {
-            // 全屏：近 1h 活跃明细（项目 → 会话 → 模型），旧版远端后端无此字段时回退空态
-            const active = (kpi.rate || {}).active_1h;
+            // 全屏：近 1 天活跃明细（项目 → 会话 → 模型），旧版远端后端无此字段时回退空态
+            const active = (kpi.rate || {}).active_1d;
             const projects = (active && active.projects) || [];
             if (!projects.length) {
               return <div className="status">{t("state.noData")}</div>;
@@ -1085,13 +1120,10 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                 {header("project", "Project", true)}
                 {header("agent", "Agent", true)}
                 {header("models", "Models", true)}
-                {header("input", "Input")}
-                {header("output", "Output")}
-                {header("cache_read", "CacheRead")}
-                {header("requests", "Requests")}
-                {header("first", "Start", true)}
-                {header("last", "End", true)}
-                {header("total", "Total")}
+                {header("total", "Tokens")}
+                {header("share", "Share")}
+                {header("requests", "Reqs")}
+                {header("last", "Activity", true)}
                 {header("rate", "Speed")}
               </tr>
             </thead>
@@ -1103,10 +1135,11 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
               (groupPlan || []).map((g) => (
                 <tbody key={g.key}>
                   <tr className="group-row">
-                    <td className="l" colSpan={12} title={g.workDir || g.key}>
+                    <td className="l" colSpan={9} title={g.workDir || g.key}>
                       {sessionsGroup === "agent" ? (AGENT_LABELS[g.key] || g.key) : g.key}
                       <span className="group-stats">
                         {t("dash.sessionsCount").replace("{n}", String(g.rows.length))} · {fmt(g.total)} {t("dash.tokens")}
+                        {sessionsGrand > 0 ? ` · ${((g.total / sessionsGrand) * 100).toFixed(1)}%` : ""}
                       </span>
                     </td>
                   </tr>
