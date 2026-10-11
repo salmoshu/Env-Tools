@@ -100,15 +100,12 @@ pub fn normalize_codex(data: &Value) -> Value {
     result
 }
 
-pub fn collect(homes: &[PathBuf], errors: &mut Vec<Value>) -> Option<Value> {
-    let path = codex_credential(homes)?;
-    let credentials = match crate::settings::read_json(&path) {
-        Ok(value) => value,
-        Err(err) => {
-            errors.push(serde_json::json!({ "provider": "OpenAI Codex", "error": err }));
-            return None;
-        }
-    };
+/// 单轮真实采集：凭证发现 → HTTP → 归一化（成功路径附加手动会员）。
+/// 只反映本轮配额接口是否成功，不涉及轮次窗口（见 collect）
+fn fetch_account(homes: &[PathBuf]) -> Result<Value, String> {
+    let path = codex_credential(homes)
+        .ok_or_else(|| "Codex credentials not found; run `codex login`".to_string())?;
+    let credentials = crate::settings::read_json(&path).map_err(|err| err.to_string())?;
     let tokens = credentials
         .get("tokens")
         .cloned()
@@ -118,9 +115,9 @@ pub fn collect(homes: &[PathBuf], errors: &mut Vec<Value>) -> Option<Value> {
         .and_then(|v| v.as_str())
         .unwrap_or("");
     if access_token.is_empty() {
-        errors.push(serde_json::json!({ "provider": "OpenAI Codex",
-            "error": "access_token missing in Codex credentials; run `codex login`" }));
-        return None;
+        return Err(
+            "access_token missing in Codex credentials; run `codex login`".to_string(),
+        );
     }
     let account_id = tokens
         .get("account_id")
@@ -138,41 +135,96 @@ pub fn collect(homes: &[PathBuf], errors: &mut Vec<Value>) -> Option<Value> {
     if !account_id.is_empty() {
         request = request.set("ChatGPT-Account-Id", account_id);
     }
-    let result = match request.call() {
+    let data = match request.call() {
         Ok(response) => response
             .into_json()
-            .map_err(|err| format!("Invalid API response: {err}")),
+            .map_err(|err| format!("Invalid API response: {err}"))?,
         Err(ureq::Error::Status(401, _)) => {
-            Err("Codex login expired; run `codex login` and retry".to_string())
+            return Err("Codex login expired; run `codex login` and retry".to_string());
         }
         Err(ureq::Error::Status(code, response)) => {
             let reason = response
                 .header("http_status_message")
                 .unwrap_or("error")
                 .to_string();
-            Err(format!("HTTP {code}: {reason}"))
+            return Err(format!("HTTP {code}: {reason}"));
         }
-        Err(err) => Err(format!("Network request failed: {err}")),
+        Err(err) => return Err(format!("Network request failed: {err}")),
     };
-    match result {
-        Ok(data) => {
-            let mut account = normalize_codex(&data);
-            attach_manual_membership(&mut account, "openai");
-            Some(account)
+    let mut account = normalize_codex(&data);
+    attach_manual_membership(&mut account, "openai");
+    Ok(account)
+}
+
+/// 轮次窗口决策结果：纯逻辑（不读任何机器配置），可确定性测试
+#[derive(Debug)]
+pub(crate) enum WindowOutcome {
+    /// 本轮取数成功
+    Fresh(Value),
+    /// 本轮失败但窗口内（<3 轮）且曾有成功数据：沿用（已打 stale 标记）
+    Stale(Value),
+    /// 本轮失败且窗口判定应出错误（启动首轮失败，或连续第 3 轮失败）；
+    /// 携带面向用户的错误消息（网络类已转译）
+    Failed(String),
+}
+
+/// 轮次失败窗口：单轮失败先沿用上次成功数据（标记 stale，不出错误卡），
+/// 连续第 CODEX_FAIL_STREAK_LIMIT 轮仍失败才走错误降级；任一轮成功清零。
+/// 进程内状态：重启后无记忆，启动首轮失败即直接降级（无历史可沿用）
+struct RetryWindow {
+    last_good: Option<Value>,
+    consecutive_fails: u32,
+}
+
+const CODEX_FAIL_STREAK_LIMIT: u32 = 3;
+
+static RETRY_WINDOW: std::sync::Mutex<RetryWindow> =
+    std::sync::Mutex::new(RetryWindow { last_good: None, consecutive_fails: 0 });
+
+pub(crate) fn apply_retry_window(outcome: Result<Value, String>) -> WindowOutcome {
+    let mut win = RETRY_WINDOW
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    match outcome {
+        Ok(account) => {
+            win.last_good = Some(account.clone());
+            win.consecutive_fails = 0;
+            WindowOutcome::Fresh(account)
         }
-        Err(err) => {
-            let lowered = err.to_lowercase();
+        Err(raw) => {
+            let lowered = raw.to_lowercase();
             let message = if lowered.contains("timed out")
                 || lowered.contains("connection reset")
                 || lowered.contains("network is unreachable")
             {
                 "Cannot reach chatgpt.com; check proxy/DNS/network (a proxy is required in mainland China)".to_string()
             } else {
-                err
+                raw
             };
-            // 配额接口失败但存在手动会员配置时，返回一个最小账户（会员到期仍在
-            // 前端展示）。一个 provider 只出一张卡：此时不再推送错误条目，
-            // 否则前端会同时渲染账号卡片与错误占位卡片。
+            win.consecutive_fails += 1;
+            if win.consecutive_fails < CODEX_FAIL_STREAK_LIMIT {
+                if let Some(mut last) = win.last_good.clone() {
+                    last["stale"] = Value::Bool(true);
+                    eprintln!(
+                        "[codex] quota fetch failed ({}/{CODEX_FAIL_STREAK_LIMIT}), serving last good data: {message}",
+                        win.consecutive_fails
+                    );
+                    return WindowOutcome::Stale(last);
+                }
+                // 启动首轮即失败：无历史可沿用，直接降级
+            }
+            WindowOutcome::Failed(message)
+        }
+    }
+}
+
+pub fn collect(homes: &[PathBuf], errors: &mut Vec<Value>) -> Option<Value> {
+    match apply_retry_window(fetch_account(homes)) {
+        WindowOutcome::Fresh(account) | WindowOutcome::Stale(account) => Some(account),
+        WindowOutcome::Failed(message) => {
+            // 错误降级：配额接口失败但存在手动会员配置时，返回一个最小账户
+            // （会员到期仍在前端展示）。一个 provider 只出一张卡：此时不再推送
+            // 错误条目，否则前端会同时渲染账号卡片与错误占位卡片。
             let mut account = serde_json::json!({
                 "provider": "OpenAI Codex",
                 "plan": "unknown",

@@ -134,6 +134,9 @@ function QuotaCard({ account, versions, onUpgrade, upgrading }) {
         {upgrading && Array.isArray(upgrading.targets) && upgrading.targets.includes(account.provider) ? (
           <span className="upgrading-badge"><span className="spin-dot" />{t("upgrade.runningBadge")}</span>
         ) : null}
+        {account.stale ? (
+          <span className="stale-tag" title={t("dash.quotaStaleHint")}>{t("dash.quotaStale")}</span>
+        ) : null}
         <span className="qupdated">{updated}</span>
       </div>
       <MembershipLine account={account} />

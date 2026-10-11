@@ -125,6 +125,8 @@ const DICT = {
     "dash.targetWsl": "WSL",
     "dash.targetSsh": "SSH",
     "dash.unavailable": "unavailable",
+    "dash.quotaStale": "retrying",
+    "dash.quotaStaleHint": "Quota fetch failed; showing last good data. The error card appears only after 3 consecutive failed rounds (60s each).",
     // 异常占位卡片
     "err.loginHint": "Login expired or credentials missing. Start web authorization, then refresh.",
     "err.keysHint": "No usable API key. Add one in Settings → API Keys.",
@@ -467,6 +469,8 @@ const DICT = {
     "dash.trendYearlyHint": "正在获取最近 12 个月…",
     "dash.unavailable": "不可用",
     "dash.vsPrevWeek": "对比上周",
+    "dash.quotaStale": "重试中",
+    "dash.quotaStaleHint": "配额获取失败，正在沿用上次数据；连续 3 轮（每轮 60s）失败后才显示错误卡。",
     "dash.yearly": "年度活跃",
   },
 };

@@ -274,3 +274,74 @@ fn glm_reset_cards_empty_response() {
     assert_eq!(result["week"].as_array().unwrap().len(), 0);
     assert_eq!(result["has_unread_history"], true);
 }
+
+/// Codex 配额轮次失败窗口（apply_retry_window）：进程内静态状态，
+/// 本测试按序覆盖完整生命周期（首轮失败→成功→两轮沿用→第三轮失败→
+/// 恢复→再失败回到沿用）。决策核心为纯逻辑，不依赖机器配置
+#[test]
+fn codex_retry_window_serves_last_good_until_third_failure() {
+    use crate::quota::apply_retry_window;
+    use crate::quota::WindowOutcome;
+    use serde_json::json;
+
+    // --- 场景一：启动首轮失败 → 无历史可沿用，直接判定 Failed ---
+    match apply_retry_window(Err("Network request failed: timed out".into())) {
+        WindowOutcome::Failed(message) => assert!(
+            message.contains("Cannot reach chatgpt.com"),
+            "网络类失败转译为代理提示，实际：{message}"
+        ),
+        other => panic!("首轮失败应 Failed，实际 {other:?}"),
+    }
+
+    // --- 场景二：成功一轮 → Fresh，记住数据、清零计数 ---
+    let good = json!({
+        "provider": "OpenAI Codex", "plan": "pro",
+        "windows": [{"label": "5h Window", "used_percent": 42.0}],
+        "fetched_at": "2026-10-11 21:00:00",
+    });
+    match apply_retry_window(Ok(good)) {
+        WindowOutcome::Fresh(account) => assert_eq!(account["plan"], "pro"),
+        other => panic!("成功应 Fresh，实际 {other:?}"),
+    }
+
+    // --- 场景三：第 1、2 轮失败 → Stale 沿用（带标记、时间戳保持），非 Failed ---
+    for round in 1..=2u32 {
+        match apply_retry_window(Err("Network request failed: connection reset".into())) {
+            WindowOutcome::Stale(account) => {
+                assert_eq!(account["stale"], json!(true), "沿用数据带 stale 标记");
+                assert_eq!(account["plan"], "pro");
+                assert_eq!(
+                    account["fetched_at"], "2026-10-11 21:00:00",
+                    "第 {round} 轮：时间戳保持上次成功时刻"
+                );
+            }
+            other => panic!("第 {round} 轮失败应 Stale，实际 {other:?}"),
+        }
+    }
+
+    // --- 场景四：第 3 轮仍失败 → Failed ---
+    match apply_retry_window(Err("HTTP 500: error".into())) {
+        WindowOutcome::Failed(_) => {}
+        other => panic!("连续第 3 轮失败应 Failed，实际 {other:?}"),
+    }
+
+    // --- 场景五：错误后恢复成功 → Fresh，从头计数 ---
+    let recovered = json!({
+        "provider": "OpenAI Codex", "plan": "pro",
+        "windows": [{"label": "5h Window", "used_percent": 10.0}],
+        "fetched_at": "2026-10-11 21:05:00",
+    });
+    match apply_retry_window(Ok(recovered)) {
+        WindowOutcome::Fresh(_) => {}
+        other => panic!("恢复应 Fresh，实际 {other:?}"),
+    }
+
+    // --- 场景六：恢复后再失败一轮 → 回到 Stale 沿用而非立即 Failed ---
+    match apply_retry_window(Err("Network request failed: timed out".into())) {
+        WindowOutcome::Stale(account) => {
+            assert_eq!(account["stale"], json!(true));
+            assert_eq!(account["fetched_at"], "2026-10-11 21:05:00", "沿用恢复后的新数据");
+        }
+        other => panic!("成功重置后单次失败应 Stale，实际 {other:?}"),
+    }
+}

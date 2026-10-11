@@ -200,6 +200,9 @@ export default function Board({ lastPayload }) {
                 {upgrading && Array.isArray(upgrading.targets) && upgrading.targets.includes(account.provider) ? (
                   <span className="upgrading-badge"><span className="spin-dot" />{t("upgrade.runningBadge")}</span>
                 ) : null}
+                {account.stale ? (
+                  <span className="stale-tag" title={t("dash.quotaStaleHint")}>{t("dash.quotaStale")}</span>
+                ) : null}
                 <span className="updated">{updated}</span>
               </div>
               {membership && membership.error ? (
