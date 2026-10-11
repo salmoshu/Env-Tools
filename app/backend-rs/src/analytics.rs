@@ -14,7 +14,7 @@ use chrono::{DateTime, Datelike, Local, TimeZone, Timelike};
 
 pub const RECORD_RETENTION_DAYS: i64 = 400;
 pub const SESSION_CAP: usize = 500;
-pub const AGENTS: [&str; 5] = ["all", "kimi", "codex", "glm", "deepseek"];
+pub const AGENTS: [&str; 6] = ["all", "kimi", "codex", "glm", "deepseek", "omp"];
 /// 速率卡全屏"活跃明细"窗口：近 1 天（15m/60m 速率 KPI 仍按各自短窗计算）
 pub const ACTIVE_WINDOW_SECS: i64 = 86_400;
 
@@ -24,6 +24,9 @@ pub enum Source {
     Codex,
     /// ZCode（~/.zcode/cli/db/db.sqlite 的 model_usage，模型经 BigModel/GLM）
     ZCode,
+    /// OMP Coding Agent（~/.omp/agent/sessions/**.jsonl 的 assistant 消息
+    /// usage 记录；底层模型任意，统一归 omp agent）
+    Omp,
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -349,6 +352,100 @@ pub(crate) fn parse_codex_meta_cwd(line: &str) -> Option<String> {
     Some(cwd.to_string())
 }
 
+// --- OMP Coding Agent（~/.omp/agent/sessions/**.jsonl）-----------------------
+// 每会话一个 JSONL：session 行给 id+cwd；assistant message 行自带完整
+// usage（input/output/cacheRead/cacheWrite）+ duration（毫秒，TPOT 口径
+// 直接可得，比 kimi/codex 的推导配对更精确）。
+
+/// session 行 → 工作目录（文件级会话 ID 作 key，与 codex meta cwd 同法）
+pub(crate) fn parse_omp_session_cwd(line: &str) -> Option<String> {
+    if !line.contains("\"type\"") || !line.contains("\"cwd\"") {
+        return None;
+    }
+    let rec: serde_json::Value = serde_json::from_str(line).ok()?;
+    if rec.get("type")?.as_str()? != "session" {
+        return None;
+    }
+    let cwd = rec.get("cwd")?.as_str()?;
+    if cwd.is_empty() {
+        return None;
+    }
+    Some(cwd.to_string())
+}
+
+/// assistant message 行 → 用量记录。模型名取 provider/model 合成
+/// （如 kimi-code/k3-256k，与 kimi 源的命名口径一致便于图表归组）
+pub(crate) fn parse_omp_line(line: &str, sid: &str) -> Option<TurnRecord> {
+    if !line.contains("\"usage\"") {
+        return None;
+    }
+    let rec: serde_json::Value = serde_json::from_str(line).ok()?;
+    if rec.get("type")?.as_str()? != "message" {
+        return None;
+    }
+    let message = rec.get("message")?;
+    if message.get("role")?.as_str()? != "assistant" {
+        return None;
+    }
+    let usage = message.get("usage")?;
+    if !usage.is_object() {
+        return None;
+    }
+    // 时间戳：优先行级 ISO 8601，回退 message.completedAt 毫秒
+    let ts = rec
+        .get("timestamp")
+        .and_then(|v| v.as_str())
+        .and_then(|iso| chrono::DateTime::parse_from_rfc3339(iso).ok())
+        .map(|dt| dt.timestamp())
+        .or_else(|| {
+            message
+                .get("completedAt")
+                .and_then(|v| v.as_i64())
+                .and_then(normalize_ts)
+        })?;
+    let model = message.get("model").and_then(|v| v.as_str()).unwrap_or("");
+    let provider = message.get("provider").and_then(|v| v.as_str()).unwrap_or("");
+    let model = if !model.is_empty() && !provider.is_empty() {
+        format!("{provider}/{model}")
+    } else if !model.is_empty() {
+        model.to_string()
+    } else {
+        "(unknown)".into()
+    };
+    // duration（毫秒）→ 秒；超上限视为脏数据置 0（回退吞吐口径）
+    let mut gen_seconds = message
+        .get("duration")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0)
+        / 1000.0;
+    if !(0.0..=CODEX_SPAN_MAX_SECS).contains(&gen_seconds) {
+        gen_seconds = 0.0;
+    }
+    Some(TurnRecord {
+        ts,
+        model,
+        input: count_field(usage, "input"),
+        output: count_field(usage, "output"),
+        cache_read: count_field(usage, "cacheRead"),
+        cache_creation: count_field(usage, "cacheWrite"),
+        sid: sid.to_string(),
+        gen_seconds,
+    })
+}
+
+/// omp 会话文件名形如 2026-10-11T12-52-59-489Z_<uuid>.jsonl，
+/// 取末段 uuid 作会话 ID（展示友好，同文件唯一）
+fn omp_session_id(path: &Path) -> String {
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    match stem.rsplit_once('_') {
+        Some((_, uuid)) if !uuid.is_empty() => uuid.to_string(),
+        _ => stem,
+    }
+}
+
 fn kimi_session_id(path: &Path) -> String {
     for part in path.components().rev() {
         let name = part.as_os_str().to_string_lossy();
@@ -617,6 +714,11 @@ fn project_name(work_dir: &str) -> String {
 }
 
 pub fn agent_of(source: Source, model: &str) -> &'static str {
+    // omp 源整体归 omp agent：底层模型可任意（kimi/deepseek/glm...），
+    // 按模型归并会把 omp 用量混进各 CLI 的统计，且配额卡无 omp 专属条目
+    if source == Source::Omp {
+        return "omp";
+    }
     let lowered = model.to_lowercase();
     if lowered.contains("glm") || lowered.contains("zhipu") || lowered.starts_with("zai/") {
         "glm"
@@ -707,6 +809,19 @@ impl AnalyticsState {
         zcode_homes: &[PathBuf],
         now: i64,
     ) -> bool {
+        self.scan_all(kimi_homes, codex_homes, zcode_homes, &[], now)
+    }
+
+    /// scan 的全源版本：v0.7.27 起 omp 家目录一并接收（~/.omp，
+    /// 会话根为 agent/sessions，本机 + WSL UNC 同 kimi 模式）
+    pub fn scan_all(
+        &mut self,
+        kimi_homes: &[PathBuf],
+        codex_homes: &[PathBuf],
+        zcode_homes: &[PathBuf],
+        omp_homes: &[PathBuf],
+        now: i64,
+    ) -> bool {
         let cutoff = now - RECORD_RETENTION_DAYS * 86400;
         let mut dirty = !self.scanned;
         self.scanned = true;
@@ -733,6 +848,14 @@ impl AnalyticsState {
                 codex_default_session_id as fn(&Path) -> String,
                 (|name: &str| name.starts_with("rollout-") && name.ends_with(".jsonl"))
                     as fn(&str) -> bool,
+            ));
+        }
+        for home in omp_homes {
+            sources.push((
+                Source::Omp,
+                home.join("agent").join("sessions"),
+                omp_session_id as fn(&Path) -> String,
+                (|name: &str| name.ends_with(".jsonl")) as fn(&str) -> bool,
             ));
         }
 
@@ -801,6 +924,19 @@ impl AnalyticsState {
                             if record.gen_seconds > 0.0 {
                                 state.pending_llm_ms = 0; // 已配对，防止复用过期起点
                             }
+                            state.records.push(record);
+                            dirty = true;
+                        }
+                        continue;
+                    }
+                    if source == Source::Omp {
+                        // session 行 → cwd（按文件级会话 ID 登记，与 codex 同法）；
+                        // assistant 消息自带模型与 usage，无需 current_model 推进
+                        if let Some(cwd) = parse_omp_session_cwd(line) {
+                            state.cwds.insert(session_id.clone(), cwd);
+                            dirty = true;
+                        }
+                        if let Some(record) = parse_omp_line(line, &session_id) {
                             state.records.push(record);
                             dirty = true;
                         }
@@ -976,7 +1112,10 @@ impl AnalyticsState {
                 if agent != "all" && record_agent != agent {
                     continue;
                 }
-                let work_dir = if matches!(state.source, Source::Codex | Source::ZCode) {
+                let work_dir = if matches!(
+                    state.source,
+                    Source::Codex | Source::ZCode | Source::Omp
+                ) {
                     state
                         .cwds
                         .get(&record.sid)

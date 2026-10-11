@@ -97,6 +97,7 @@ export const AGENT_LABELS = {
   codex: "Codex",
   glm: "GLM",
   deepseek: "DeepSeek",
+  omp: "OMP",
 };
 
 export const AGENT_COLORS = {
@@ -104,6 +105,7 @@ export const AGENT_COLORS = {
   codex: "#4cc38a",
   glm: "#e5a545",
   deepseek: "#9b7ede",
+  omp: "#2dd4bf",
   other: "#94a3b8",
 };
 

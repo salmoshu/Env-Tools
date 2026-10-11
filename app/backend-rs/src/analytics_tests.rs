@@ -604,3 +604,55 @@ fn active_1d_groups_projects_sessions_and_models() {
     let beta_sessions = projects[0]["sessions"].as_array().unwrap();
     assert_eq!(beta_sessions[0]["agent"], "deepseek");
 }
+
+#[test]
+fn omp_sessions_ingest_usage_cwd_and_tpot() {
+    let dir = tempfile_dir();
+    let omp_home = dir.join("home").join(".omp");
+    let sess_dir = omp_home.join("agent").join("sessions").join("-Desktop");
+    // omp 会话 JSONL：session 行给 cwd；model_change 行不参与用量归因
+    //（assistant 消息自带模型与完整 usage）；user 消息无 usage 应被忽略
+    write_file(
+        &sess_dir.join("2026-10-11T12-52-59-489Z_01a12b06-0de1-751a-be6b-8be26338e1a4.jsonl"),
+        &[
+            r#"{"type":"session","version":3,"id":"01a12b06-0de1-751a-be6b-8be26338e1a4","timestamp":"2026-10-11T12:52:59.489Z","cwd":"C:\\Users\\Salmos\\Desktop"}"#
+                .to_string(),
+            r#"{"type":"model_change","id":"4320666b","parentId":null,"timestamp":"2026-10-11T12:52:59.621Z","model":"deepseek/deepseek-v4-pro"}"#
+                .to_string(),
+            r#"{"type":"message","id":"fdb0a127","timestamp":"2026-10-11T12:54:36.504Z","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}"#
+                .to_string(),
+            r#"{"type":"message","id":"784c121e","timestamp":"2026-10-11T12:54:45.215Z","message":{"role":"assistant","model":"k3-256k","provider":"kimi-code","duration":8674.607,"usage":{"input":2356,"output":248,"cacheRead":4864,"cacheWrite":0,"totalTokens":7468}}}"#
+                .to_string(),
+        ],
+    );
+
+    let now = chrono::Local
+        .with_ymd_and_hms(2026, 10, 11, 14, 0, 0)
+        .unwrap();
+    let mut state = AnalyticsState::default();
+    state.scan_all(&[], &[], &[], &[omp_home], now.timestamp());
+    let all = state.aggregate(7, "all", now);
+
+    let sessions = all["sessions"].as_array().unwrap();
+    assert_eq!(sessions.len(), 1, "一条 assistant usage 记录 = 一行会话");
+    let row = &sessions[0];
+    assert_eq!(row["session_id"], "01a12b06-0de1-751a-be6b-8be26338e1a4");
+    assert_eq!(row["agent"], "omp", "omp 源整体归 omp，不按底层模型归并");
+    assert_eq!(row["project"], "Desktop");
+    assert_eq!(row["work_dir"], r"C:\Users\Salmos\Desktop");
+    assert_eq!(row["models"][0], "kimi-code/k3-256k", "provider/model 合成命名");
+    assert_eq!(row["input"], 2356);
+    assert_eq!(row["output"], 248);
+    assert_eq!(row["cache_read"], 4864);
+    assert_eq!(row["total"], 7468);
+    // TPOT：output ÷ duration = 248 / 8.674607s
+    let gen_rate = row["gen_rate"].as_f64().expect("omp 有逐请求时长，gen_rate 必得");
+    assert!((gen_rate - 248.0 / 8.674_607).abs() < 0.05);
+
+    // agent 筛选：omp 命中；底层 provider 是 kimi 也不混入 kimi 统计
+    let omp_only = state.aggregate(7, "omp", now);
+    assert_eq!(omp_only["sessions"].as_array().unwrap().len(), 1);
+    assert_eq!(omp_only["kpi"]["today_total"], 7468);
+    let kimi_only = state.aggregate(7, "kimi", now);
+    assert_eq!(kimi_only["sessions"].as_array().unwrap().len(), 0);
+}

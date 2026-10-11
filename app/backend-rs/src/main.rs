@@ -218,6 +218,31 @@ fn codex_homes(aggregate: bool, wsl_distro: Option<&str>) -> Vec<PathBuf> {
     homes
 }
 
+/// omp 家目录：~/.omp（会话在 agent/sessions，由 scan_all 决定子布局）。
+/// 本机 + 聚合时的全部 WSL 发行版 UNC，与 kimi/codex 同模式
+fn omp_homes(aggregate: bool, wsl_distro: Option<&str>) -> Vec<PathBuf> {
+    if let Some(distro) = wsl_distro {
+        return settings::wsl_distro_homes(distro)
+            .into_iter()
+            .map(|home| home.join(".omp"))
+            .collect();
+    }
+    let mut homes = vec![omp_home()];
+    if aggregate {
+        for home in settings::wsl_homes() {
+            homes.push(home.join(".omp"));
+        }
+    }
+    homes
+}
+
+fn omp_home() -> PathBuf {
+    if let Some(home) = std::env::var_os("OMP_HOME") {
+        return PathBuf::from(home);
+    }
+    default_home(".omp")
+}
+
 fn kimi_home() -> PathBuf {
     if let Some(home) = std::env::var_os("KIMI_CODE_HOME") {
         return PathBuf::from(home);
@@ -265,10 +290,11 @@ fn analytics_worker(
     };
     let scan_started = std::time::Instant::now();
     let (dirty, scan_note) = if now_sec - engine.last_scan_secs >= scan_gap {
-        let dirty = engine.scan(
+        let dirty = engine.scan_all(
             &kimi_homes(aggregate, wsl_distro),
             &codex_homes(aggregate, wsl_distro),
             &zcode_homes(aggregate, wsl_distro),
+            &omp_homes(aggregate, wsl_distro),
             now_sec,
         );
         engine.last_scan_secs = now_sec;
