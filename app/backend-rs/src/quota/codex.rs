@@ -170,18 +170,39 @@ pub(crate) enum WindowOutcome {
 
 /// 轮次失败窗口：单轮失败先沿用上次成功数据（标记 stale，不出错误卡），
 /// 连续第 CODEX_FAIL_STREAK_LIMIT 轮仍失败才走错误降级；任一轮成功清零。
-/// 进程内状态：重启后无记忆，启动首轮失败即直接降级（无历史可沿用）
+/// 进程内状态：重启后无记忆，启动首轮失败即直接降级（无历史可沿用）。
+/// 轮次计数带时间闸门（CODEX_FAIL_COUNT_INTERVAL_MS）：距上一个已计数
+/// 失败不足间隔的失败不推进计数——手动连点刷新不烧额度，"3 轮"始终是
+/// 时间意义上的 3 个周期（自动 60s 轮天然满足），而非任意 3 次失败
 struct RetryWindow {
     last_good: Option<Value>,
     consecutive_fails: u32,
+    /// 上一个"已计数"失败的毫秒时刻；0 = 无（成功后清零）
+    last_fail_ms: i64,
 }
 
 const CODEX_FAIL_STREAK_LIMIT: u32 = 3;
+const CODEX_FAIL_COUNT_INTERVAL_MS: i64 = 30_000;
 
-static RETRY_WINDOW: std::sync::Mutex<RetryWindow> =
-    std::sync::Mutex::new(RetryWindow { last_good: None, consecutive_fails: 0 });
+static RETRY_WINDOW: std::sync::Mutex<RetryWindow> = std::sync::Mutex::new(RetryWindow {
+    last_good: None,
+    consecutive_fails: 0,
+    last_fail_ms: 0,
+});
 
 pub(crate) fn apply_retry_window(outcome: Result<Value, String>) -> WindowOutcome {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    apply_retry_window_at(outcome, now_ms)
+}
+
+/// 窗口决策核心（时钟注入以便测试）
+pub(crate) fn apply_retry_window_at(
+    outcome: Result<Value, String>,
+    now_ms: i64,
+) -> WindowOutcome {
     let mut win = RETRY_WINDOW
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -189,6 +210,7 @@ pub(crate) fn apply_retry_window(outcome: Result<Value, String>) -> WindowOutcom
         Ok(account) => {
             win.last_good = Some(account.clone());
             win.consecutive_fails = 0;
+            win.last_fail_ms = 0;
             WindowOutcome::Fresh(account)
         }
         Err(raw) => {
@@ -201,13 +223,21 @@ pub(crate) fn apply_retry_window(outcome: Result<Value, String>) -> WindowOutcom
             } else {
                 raw
             };
-            win.consecutive_fails += 1;
+            // 时间闸门：间隔不足的失败不推进计数，但窗口判定照常
+            //（窗口内仍沿用旧数据；已到 3 轮则维持错误态）
+            let counted = win.last_fail_ms == 0
+                || now_ms - win.last_fail_ms >= CODEX_FAIL_COUNT_INTERVAL_MS;
+            if counted {
+                win.consecutive_fails += 1;
+                win.last_fail_ms = now_ms;
+            }
             if win.consecutive_fails < CODEX_FAIL_STREAK_LIMIT {
                 if let Some(mut last) = win.last_good.clone() {
                     last["stale"] = Value::Bool(true);
                     eprintln!(
-                        "[codex] quota fetch failed ({}/{CODEX_FAIL_STREAK_LIMIT}), serving last good data: {message}",
-                        win.consecutive_fails
+                        "[codex] quota fetch failed ({}/{CODEX_FAIL_STREAK_LIMIT}{}), serving last good data: {message}",
+                        win.consecutive_fails,
+                        if counted { "" } else { ", rapid retry not counted" }
                     );
                     return WindowOutcome::Stale(last);
                 }

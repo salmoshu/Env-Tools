@@ -28,7 +28,7 @@ pub use http::build_agent;
 pub use codex::consume_reset_credit as consume_codex_reset_credit;
 // 轮次失败窗口测试（进程内静态状态，仅 quota_tests 按序触达）
 #[cfg(test)]
-pub(crate) use codex::{apply_retry_window, WindowOutcome};
+pub(crate) use codex::{apply_retry_window, apply_retry_window_at, WindowOutcome};
 pub use glm_reset::use_reset_card as use_glm_reset_card;
 // 归一化函数供 quota_tests 调用（release 构建中 crate 内未直接引用）
 #[cfg(test)]

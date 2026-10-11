@@ -127,6 +127,7 @@ const DICT = {
     "dash.unavailable": "unavailable",
     "dash.quotaStale": "retrying",
     "dash.quotaStaleHint": "Quota fetch failed; showing last good data. The error card appears only after 3 consecutive failed rounds (60s each).",
+    "dash.quotaStaleToast": "Codex quota refresh failed — showing last good data",
     // 异常占位卡片
     "err.loginHint": "Login expired or credentials missing. Start web authorization, then refresh.",
     "err.keysHint": "No usable API key. Add one in Settings → API Keys.",
@@ -472,6 +473,7 @@ const DICT = {
     "dash.quotaStale": "重试中",
     "dash.quotaStaleHint": "配额获取失败，正在沿用上次数据；连续 3 轮（每轮 60s）失败后才显示错误卡。",
     "dash.yearly": "年度活跃",
+    "dash.quotaStaleToast": "Codex 刷新失败，正在沿用旧数据",
   },
 };
 

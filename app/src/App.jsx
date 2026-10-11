@@ -2,7 +2,7 @@
 // 其余为全量窗口的分析页）。主窗口左侧边栏导航：Analytics / Tools；悬浮看板
 // 入口为 header 图标按钮（设置齿轮左侧），header 右侧其余为窗口按钮。
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Titlebar, {
   AnalyticsIcon, BoardIcon, GearIcon, ExpandIcon, MaximizeIcon, RestoreIcon, PinIcon,
   ToolsIcon, useEnvBadge,
@@ -31,6 +31,10 @@ export default function App() {
   const [pinned, setPinned] = useState(false);
   const [maximized, setMaximized] = useState(false);
   const [theme, setTheme] = useState(readThemePreference());
+  // 手动刷新后 Codex 处于"沿用旧数据"窗口时的一次性提醒（4s 自动消失；
+  // 仅手动刷新触发，60s 自动轮失败不弹——角标已常驻说明状态）
+  const [quotaNote, setQuotaNote] = useState("");
+  const wasRefreshing = useRef(false);
   // 订阅语言切换：t() 的输出随 useLang 状态变化整树重渲染
   useLang();
 
@@ -39,6 +43,21 @@ export default function App() {
   }, [theme]);
 
   useEffect(() => watchExternalTheme(setTheme), []);
+
+  useEffect(() => {
+    if (wasRefreshing.current && !refreshing && lastPayload) {
+      const codexStale = (((lastPayload.data || {}).accounts) || [])
+        .some((a) => a.provider === "OpenAI Codex" && a.stale);
+      if (codexStale) setQuotaNote(t("dash.quotaStaleToast"));
+    }
+    wasRefreshing.current = refreshing;
+  }, [refreshing, lastPayload]);
+
+  useEffect(() => {
+    if (!quotaNote) return;
+    const timer = setTimeout(() => setQuotaNote(""), 4000);
+    return () => clearTimeout(timer);
+  }, [quotaNote]);
 
   useEffect(() => {
     const off = window.api.onUsageUpdate((payload) => {
@@ -76,6 +95,7 @@ export default function App() {
 
   return (
     <div className={isBoard ? "board-frame" : "app-frame"}>
+      {quotaNote ? <div className="quota-toast">{quotaNote}</div> : null}
       <Titlebar title={isBoard ? "AI Usage Monitor" : "Env-Tools"} version={version} envBadge={envBadge}>
         {isBoard ? (
           <button type="button" className="btn" title={t("tip.expand")} onClick={() => window.api.openFullDashboard()}>
