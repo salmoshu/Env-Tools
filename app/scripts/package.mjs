@@ -30,6 +30,23 @@ const exeSuffix = platformArg === "win32" ? ".exe" : "";
 const backendBinary = path.join(root, "backend-rs", "target", "release", `env-tools-api${exeSuffix}`);
 const staging = path.join(root, "release-staging");
 
+// 递归复制：不用 fs.cpSync(recursive)——部分 Windows 机器（如本仓库开发机
+// Node 22.18）在含中文的路径下会按 ANSI 误解码，先在磁盘上建出乱码目录树、
+// 再 0xC0000409 硬崩（Awesome-Notes 的 copy-vditor-libs.mjs 踩过同坑）。
+// readdir + copyFileSync 全程走 UTF-16 路径 API，语义对齐 recursive + filter。
+function copyTree(src, dest, filter) {
+  if (filter && !filter(src)) return;
+  if (fs.statSync(src).isDirectory()) {
+    fs.mkdirSync(dest, { recursive: true });
+    for (const entry of fs.readdirSync(src)) {
+      copyTree(path.join(src, entry), path.join(dest, entry), filter);
+    }
+  } else {
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.copyFileSync(src, dest);
+  }
+}
+
 if (!fs.existsSync(backendBinary)) {
   console.error(`[package] backend binary missing: ${backendBinary}`);
   console.error("[package] build it first: (cd backend-rs && cargo build --release)");
@@ -40,7 +57,7 @@ if (!fs.existsSync(backendBinary)) {
 fs.rmSync(staging, { recursive: true, force: true });
 fs.mkdirSync(staging, { recursive: true });
 for (const entry of ["electron", "dist"]) {
-  fs.cpSync(path.join(root, entry), path.join(staging, entry), { recursive: true });
+  copyTree(path.join(root, entry), path.join(staging, entry));
 }
 fs.mkdirSync(path.join(staging, "backend-rs", "target", "release"), { recursive: true });
 fs.copyFileSync(backendBinary, path.join(staging, "backend-rs", "target", "release", `env-tools-api${exeSuffix}`));
@@ -94,7 +111,7 @@ const payloadFilter = (src) => {
   return true;
 };
 for (const dir of ["linux", "windows"]) {
-  fs.cpSync(path.join(repoRoot, dir), path.join(resourcesDir, dir), { recursive: true, filter: payloadFilter });
+  copyTree(path.join(repoRoot, dir), path.join(resourcesDir, dir), payloadFilter);
 }
 console.log("[package] component install scripts bundled into resources/");
 
