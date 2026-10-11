@@ -548,7 +548,7 @@ fn active_1d_groups_projects_sessions_and_models() {
     // beta：近窗内一条记录
     write_file(
         &kimi_home.join("sessions").join("session_b").join("wire.jsonl"),
-        &[kimi_line(ts + 30, "deepseek/deepseek-v4-flash", 0, 10, 0, 0)],
+        &[kimi_line(ts + 90, "deepseek/deepseek-v4-flash", 0, 10, 0, 0)],
     );
     // alpha 的旧会话：超出 1 天窗，不应出现在活跃视图
     write_file(
@@ -576,14 +576,17 @@ fn active_1d_groups_projects_sessions_and_models() {
 
     let projects = active["projects"].as_array().unwrap();
     assert_eq!(projects.len(), 2, "超窗会话不产生项目条目");
-    // 项目按 token 降序：alpha(60) > beta(10)
-    assert_eq!(projects[0]["name"], "alpha");
-    assert_eq!(projects[0]["tokens"], 60);
-    assert_eq!(projects[0]["path"], "/w/a/projects/alpha");
-    assert_eq!(projects[1]["name"], "beta");
+    // v0.7.26：项目按最近活跃降序——beta(ts+90) 比 alpha(ts+60) 新故排前，
+    // 尽管 token 更少（alpha=60 > beta=10）
+    assert_eq!(projects[0]["name"], "beta");
+    assert_eq!(projects[0]["tokens"], 10);
+    assert_eq!(projects[0]["path"], "/w/a/projects/beta");
+    assert_eq!(projects[1]["name"], "alpha");
+    assert_eq!(projects[1]["tokens"], 60);
+    assert_eq!(projects[1]["path"], "/w/a/projects/alpha");
 
     // 会话级：速率 = output ÷ 活跃时段 = 60 / 60s
-    let sessions = projects[0]["sessions"].as_array().unwrap();
+    let sessions = projects[1]["sessions"].as_array().unwrap();
     assert_eq!(sessions.len(), 1);
     assert_eq!(sessions[0]["session_id"], "session_a");
     assert_eq!(sessions[0]["rate"], 1.0);
@@ -598,6 +601,6 @@ fn active_1d_groups_projects_sessions_and_models() {
     assert_eq!(models[1]["model"], "kimi-code/k3-256k");
 
     // beta 会话按模型名归因 deepseek
-    let beta_sessions = projects[1]["sessions"].as_array().unwrap();
+    let beta_sessions = projects[0]["sessions"].as_array().unwrap();
     assert_eq!(beta_sessions[0]["agent"], "deepseek");
 }

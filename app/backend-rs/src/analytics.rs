@@ -1238,8 +1238,9 @@ impl AnalyticsState {
         };
 
         // 近 1 天活跃视图（速率卡全屏）：项目 → 会话 → 模型三级。
-        // 同名项目跨路径合并（路径取贡献最大会话的目录），项目按 token 降序、
-        // 会话按最近活跃降序、模型按 token 降序
+        // 同名项目跨路径合并（路径取贡献最大会话的目录），项目与组内会话均按
+        // 最近活跃降序（最新用过的会话出现在列表顶部，与折叠态口径一致）、
+        // 模型按 token 降序
         let mut act_projects: HashMap<String, Vec<&ActiveSessionRow>> = HashMap::new();
         for act in active.values() {
             act_projects.entry(act.project.clone()).or_default().push(act);
@@ -1307,9 +1308,21 @@ impl AnalyticsState {
                 })
             })
             .collect();
+        // v0.7.26：组间改按最近活跃降序（原为 token 降序）——组内会话已按
+        // 最近活跃降序，sessions[0].last 即该组最新活跃时刻；并列时 token 多者
+        // 在前、再按名稳定排序
+        let group_last = |v: &serde_json::Value| {
+            v["sessions"]
+                .as_array()
+                .and_then(|rows| rows.first())
+                .and_then(|row| row["last"].as_i64())
+                .unwrap_or(0)
+        };
         active_projects.sort_by(|a, b| {
-            b["tokens"].as_i64().cmp(&a["tokens"].as_i64()).then_with(|| {
-                a["name"].as_str().cmp(&b["name"].as_str())
+            group_last(b).cmp(&group_last(a)).then_with(|| {
+                b["tokens"].as_i64().cmp(&a["tokens"].as_i64()).then_with(|| {
+                    a["name"].as_str().cmp(&b["name"].as_str())
+                })
             })
         });
 
