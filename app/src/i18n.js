@@ -303,7 +303,7 @@ const DICT = {
     "settings.groupAbout": "关于",
     "settings.aboutItem": "版本与更新",
     "settings.themeHint": "立即生效并保存在本机。",
-    "settings.themeSystem": "跟随系统",
+    "settings.themeSystem": "系统",
     "settings.themeDark": "深色",
     "settings.themeLight": "浅色",
     "settings.langHint": "界面语言 / Interface language. 立即生效。",

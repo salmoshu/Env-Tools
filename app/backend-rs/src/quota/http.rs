@@ -97,45 +97,42 @@ fn into_json(result: Result<ureq::Response, ureq::Error>) -> Result<Value, Strin
     }
 }
 
-/// 带 Bearer 的 JSON GET（Python request_json 的 GET 分支：重试 3 次，退避 1s/2s，HTTP 错误不重试）。
+/// 带 Bearer 的 JSON GET。重试 3 次（退避 1s/2s，HTTP 错误不重试），
+/// 但 timeout_secs 是**总预算**：每次尝试前按剩余时间收缩单次超时，
+/// 预算耗尽即停——单接口最坏耗时 = timeout_secs（原实现为 3 倍，
+/// 代理故障期串行累加会突破 /api/usage 的整体时限，前端只能拿到
+/// "配额不可用"而失去逐家降级）。
 pub fn get_json(
     url: &str,
     bearer: &str,
     use_proxy: bool,
     timeout_secs: u64,
 ) -> Result<Value, String> {
-    let agent = build_agent(use_proxy, timeout_secs);
-    let mut last_error = String::new();
-    for attempt in 1..=3 {
-        let result = agent
-            .get(url)
-            .set("Authorization", &format!("Bearer {bearer}"))
-            .set("Accept", "application/json")
-            .call();
-        match result {
-            Err(ureq::Error::Status(..)) => return into_json(result),
-            Err(err) => {
-                last_error = format!("Network request failed: {err}");
-                if attempt < 3 {
-                    std::thread::sleep(Duration::from_secs(attempt as u64));
-                }
-            }
-            Ok(_) => return into_json(result),
-        }
-    }
-    Err(last_error)
+    get_json_headers(
+        url,
+        &[("Authorization", &format!("Bearer {bearer}"))],
+        use_proxy,
+        timeout_secs,
+    )
 }
 
-/// 自定义请求头的 JSON GET（重试语义同 get_json：3 次，退避 1s/2s，HTTP 错误不重试）。
+/// 自定义请求头的 JSON GET（重试语义同 get_json：3 次，退避 1s/2s，
+/// HTTP 错误不重试；timeout_secs 为总预算，见 get_json 注释）
 pub fn get_json_headers(
     url: &str,
     headers: &[(&str, &str)],
     use_proxy: bool,
     timeout_secs: u64,
 ) -> Result<Value, String> {
-    let agent = build_agent(use_proxy, timeout_secs);
+    let started = std::time::Instant::now();
     let mut last_error = String::new();
     for attempt in 1..=3 {
+        let remaining = timeout_secs.saturating_sub(started.elapsed().as_secs());
+        if attempt > 1 && remaining < 2 {
+            // 预算不足以再跑一次尝试（连接期就要 15s），及时放弃
+            break;
+        }
+        let agent = build_agent(use_proxy, remaining.max(1));
         let mut request = agent.get(url).set("Accept", "application/json");
         for (name, value) in headers {
             request = request.set(name, value);

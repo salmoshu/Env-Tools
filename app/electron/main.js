@@ -24,7 +24,9 @@ const BACKEND_PORT_DEFAULT = 8747;
 // 也不会误杀对方）；渲染层经 IPC 动态取端口，对前端透明
 const BACKEND_PORT = app.isPackaged ? BACKEND_PORT_DEFAULT : BACKEND_PORT_DEFAULT + 1;
 const REFRESH_INTERVAL_MS = 60 * 1000;
-const FETCH_TIMEOUT_MS = 45 * 1000;
+// v0.7.30：45→60s——后端四家并发采集后最坏 ~46s（45s 看门狗+组装），
+// 余量不足会在代理故障期整体中断 /api/usage，逐家降级失效
+const FETCH_TIMEOUT_MS = 60 * 1000;
 const SETTINGS_TIMEOUT_MS = 10 * 1000;
 const ANALYTICS_TIMEOUT_MS = 180 * 1000;
 const WINDOW_TITLE = "AI Usage Monitor";

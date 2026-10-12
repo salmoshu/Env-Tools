@@ -150,7 +150,7 @@ fn fetch_kimi_account(homes: &[PathBuf], errors: &mut Vec<Value>) -> Option<Valu
     let now_secs = Utc::now().timestamp() as f64;
     let expires_at = credentials.get("expires_at").and_then(|v| v.as_f64()).unwrap_or(0.0);
     let fresh = if expires_at - now_secs < TOKEN_REFRESH_THRESHOLD as f64 {
-        match refresh_kimi_credentials(&path, &credentials, use_proxy, timeout) {
+        match refresh_kimi_credentials(&path, &credentials, use_proxy, timeout.min(10)) {
             Ok(value) => value,
             Err(err) => {
                 errors.push(serde_json::json!({ "provider": "Kimi Code", "error": err }));

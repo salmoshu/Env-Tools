@@ -7,7 +7,8 @@
 //!
 //! 代理语义与 Python 版相同：GLM/DeepSeek/Codex 默认走系统代理
 //!（HTTP(S)_PROXY / ALL_PROXY，缺失时回退 Windows 注册表设置），可用对应
-//! *_USE_PROXY=0 关闭；Kimi 默认不走。GET 重试 3 次（退避 1s/2s），POST 不重试。
+//! *_USE_PROXY=0 关闭；Kimi 默认不走。GET 重试 3 次（退避 1s/2s，timeout 为总预算——见 http.rs），POST 不重试；
+//! v0.7.30 起四家并发采集（总耗时 = 最慢单家而非串行求和）。
 
 use std::path::{Path, PathBuf};
 
@@ -106,46 +107,115 @@ fn api_key_from_file(path: &Path, provider: &str, fields: &[&str]) -> Result<Str
     ))
 }
 
-/// 单家结果落地：成功进 accounts，失败以 errors 形式返回
-///（与 python _collect_provider 的契约一致），不阻塞其他家。
-fn push_result(
-    accounts: &mut Vec<Value>,
-    errors: &mut Vec<Value>,
-    provider: &str,
-    result: Result<Value, String>,
-) {
-    match result {
-        Ok(account) => accounts.push(account),
-        Err(err) => errors.push(serde_json::json!({ "provider": provider, "error": err })),
-    }
-}
-
 /// 全量配额采集：Kimi/Codex/DeepSeek/GLM 四家全原生，凭证仅本机侧发现
 ///（Kimi 网页凭证例外，见 kimi.rs）。返回 (accounts, errors)；versions 由调用方附加。
+///
+/// v0.7.30 起四家**并发**采集 + 45s 看门狗：原串行实现把各家的超时/重试
+/// 耗时累加（最坏数百秒），代理故障期 /api/usage 会超过 electron 侧整体
+/// 超时被中断——前端只拿到"配额不可用"，逐家降级（含 codex 失败窗口）
+/// 全部失效。并发后总耗时 = 最慢单家（各家预算 ≤40s），看门狗兜底极端
+/// 环境：超时家本轮回错误条目，慢线程的迟到结果仍会更新自身状态
+///（codex 窗口）供下轮使用。
 pub fn collect_all() -> (Vec<Value>, Vec<Value>) {
+    const COLLECT_DEADLINE_SECS: u64 = 45;
     let homes = credential_homes();
+    let (tx, rx) = std::sync::mpsc::channel::<(&'static str, Vec<Value>, Vec<Value>)>();
+
+    let kimi_homes = homes.clone();
+    let kimi_tx = tx.clone();
+    std::thread::spawn(move || {
+        let mut errors = Vec::new();
+        let accounts = kimi::collect(&kimi_homes, &mut errors)
+            .map(|account| vec![account])
+            .unwrap_or_default();
+        let _ = kimi_tx.send(("kimi", accounts, errors));
+    });
+    let codex_homes = homes;
+    let codex_tx = tx.clone();
+    std::thread::spawn(move || {
+        let mut errors = Vec::new();
+        let accounts = codex::collect(&codex_homes, &mut errors)
+            .map(|account| vec![account])
+            .unwrap_or_default();
+        let _ = codex_tx.send(("codex", accounts, errors));
+    });
+    let deepseek_tx = tx.clone();
+    std::thread::spawn(move || {
+        let (accounts, errors) = match deepseek::collect() {
+            Ok(account) => (vec![account], Vec::new()),
+            Err(err) => (
+                Vec::new(),
+                vec![serde_json::json!({ "provider": "DeepSeek", "error": err })],
+            ),
+        };
+        let _ = deepseek_tx.send(("deepseek", accounts, errors));
+    });
+    let glm_tx = tx;
+    std::thread::spawn(move || {
+        let (accounts, errors) = match glm::collect() {
+            Ok(account) => (vec![account], Vec::new()),
+            Err(err) => (
+                Vec::new(),
+                vec![serde_json::json!({ "provider": "GLM", "error": err })],
+            ),
+        };
+        let _ = glm_tx.send(("glm", accounts, errors));
+    });
+
+    let mut slots: std::collections::HashMap<&'static str, (Vec<Value>, Vec<Value>)> =
+        std::collections::HashMap::new();
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_secs(COLLECT_DEADLINE_SECS);
+    while slots.len() < 4 {
+        let wait = deadline.saturating_duration_since(std::time::Instant::now());
+        if wait.is_zero() {
+            break;
+        }
+        match rx.recv_timeout(wait) {
+            Ok((tag, accounts, errors)) => {
+                slots.insert(tag, (accounts, errors));
+            }
+            Err(_) => break, // 超时或全部发送端结束
+        }
+    }
+
     let mut accounts: Vec<Value> = Vec::new();
     let mut errors: Vec<Value> = Vec::new();
+    for (tag, provider) in [
+        ("kimi", "Kimi Code"),
+        ("codex", "OpenAI Codex"),
+        ("deepseek", "DeepSeek"),
+        ("glm", "GLM"),
+    ] {
+        match slots.remove(tag) {
+            Some((provider_accounts, provider_errors)) => {
+                accounts.extend(provider_accounts);
+                errors.extend(provider_errors);
+            }
+            None => {
+                errors.push(serde_json::json!({
+                    "provider": provider,
+                    "error": "query timed out (slow network or proxy); retrying next round",
+                }));
+            }
+        }
+    }
 
-    // 顺序与 Python collect 一致：Kimi、Codex、DeepSeek、GLM
-    match kimi::collect(&homes, &mut errors) {
-        Some(account) => accounts.push(account),
-        None if !errors.iter().any(|e| e["provider"] == "Kimi Code") => {
-            errors.push(serde_json::json!({ "provider": "Kimi Code",
-                "error": "Kimi credentials not found; run kimi and log in again" }));
+    // 缺凭证静默返回的兜底（原语义）：无账号卡也无错误条目时补一条可读错误
+    for (provider, hint) in [
+        ("Kimi Code", "Kimi credentials not found; run kimi and log in again"),
+        ("OpenAI Codex", "Codex credentials not found; run `codex login`"),
+    ] {
+        let has_account = accounts
+            .iter()
+            .any(|a| a.get("provider").and_then(|v| v.as_str()) == Some(provider));
+        let has_error = errors
+            .iter()
+            .any(|e| e.get("provider").and_then(|v| v.as_str()) == Some(provider));
+        if !has_account && !has_error {
+            errors.push(serde_json::json!({ "provider": provider, "error": hint }));
         }
-        None => {}
     }
-    match codex::collect(&homes, &mut errors) {
-        Some(account) => accounts.push(account),
-        None if !errors.iter().any(|e| e["provider"] == "OpenAI Codex") => {
-            errors.push(serde_json::json!({ "provider": "OpenAI Codex",
-                "error": "Codex credentials not found; run `codex login`" }));
-        }
-        None => {}
-    }
-    push_result(&mut accounts, &mut errors, "DeepSeek", deepseek::collect());
-    push_result(&mut accounts, &mut errors, "GLM", glm::collect());
 
     // 一个 provider 只出一张卡的兜底：已有账号卡片时丢弃其错误条目，
     // 防止任何路径同时产出账号与错误导致前端双卡

@@ -270,7 +270,7 @@ export default function Board({ lastPayload }) {
                 return (
                   <div className="limit-resets">
                     {t("dash.resetChances")}: {parts.join(" · ")}
-                    {Number(available) > 0 && nearQuotaLimit(account) ? (
+                    {Number(available) > 0 && !account.stale && nearQuotaLimit(account) ? (
                       <ResetButton provider="codex" what={t("dash.resetWhatCodex")}>{t("dash.resetNow")}</ResetButton>
                     ) : null}
                   </div>

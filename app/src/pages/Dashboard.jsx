@@ -177,7 +177,8 @@ function QuotaCard({ account, versions, onUpgrade, upgrading }) {
         return (
           <div className="limit-resets">
             {t("dash.resetChances")}: {parts.join(" · ")}
-            {Number(available) > 0 && nearQuotaLimit(account) ? (
+            {/* stale 沿用数据不渲染重置按钮：过期的 ≥95% 读数可能触发不必要的重置 */}
+            {Number(available) > 0 && !account.stale && nearQuotaLimit(account) ? (
               <ResetButton provider="codex" what={t("dash.resetWhatCodex")}>{t("dash.resetNow")}</ResetButton>
             ) : null}
           </div>
@@ -332,18 +333,32 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
   }, [expandedCard]);
   const cardCls = (id, base = "card") => `${base}${expandedCard === id ? " card-expanded" : ""}`;
   const expandBtn = (id) => (
-    <button
-      type="button"
-      className="refresh-inline card-expand-btn"
-      title={expandedCard === id ? t("dash.collapseView") : t("dash.expandView")}
-      onClick={() => setExpandedCard(expandedCard === id ? null : id)}
-    >
-      <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-        {expandedCard === id
-          ? (<><path d="M11 7H7v4" /><path d="M11 11 7 7" /><path d="M1 5h4v4" /><path d="M1 1l4 4" /></>)
-          : (<><path d="M7 1h4v4" /><path d="M11 1 7 5" /><path d="M5 11H1V7" /><path d="M1 11l4-4" /></>)}
-      </svg>
-    </button>
+    <span className="card-head-actions">
+      {/* 全屏（铺满）时卡片内部也提供刷新入口：滚远后不必回页头找按钮 */}
+      {expandedCard === id ? (
+        <button
+          type="button"
+          className="refresh-inline"
+          title={t("tip.refresh")}
+          disabled={refreshing}
+          onClick={() => onRefresh && onRefresh()}
+        >
+          <RefreshIcon spinning={refreshing} /> {t("tip.refresh")}
+        </button>
+      ) : null}
+      <button
+        type="button"
+        className="refresh-inline card-expand-btn"
+        title={expandedCard === id ? t("dash.collapseView") : t("dash.expandView")}
+        onClick={() => setExpandedCard(expandedCard === id ? null : id)}
+      >
+        <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+          {expandedCard === id
+            ? (<><path d="M11 7H7v4" /><path d="M11 11 7 7" /><path d="M1 5h4v4" /><path d="M1 1l4 4" /></>)
+            : (<><path d="M7 1h4v4" /><path d="M11 1 7 5" /><path d="M5 11H1V7" /><path d="M1 11l4-4" /></>)}
+        </svg>
+      </button>
+    </span>
   );
 
   useEffect(() => {
@@ -846,7 +861,9 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                           <div className="act-models">
                             {(s.models || []).map((m) => (
                               <div className="act-model-row" key={m.model}>
-                                <span className="mono act-model-name" title={m.model}>{m.model}</span>
+                                <span className="mono act-model-name" title={`${s.agent}/${m.model}`}>
+                                  {s.agent}/{m.model}
+                                </span>
                                 <span className="act-meta">
                                   {fmt(m.tokens)} {t("dash.tokens")} · {fmt(m.output)} out · {m.requests} req
                                 </span>
@@ -884,7 +901,9 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                     >
                       <span className="rate-name">{item.project}</span>
                       {tag ? <span className="rate-tag">{tag}</span> : null}
-                      <span className="rate-model">{item.model || item.agent || "—"}</span>
+                      <span className="rate-model">
+                        {item.model && item.agent ? `${item.agent}/${item.model}` : (item.model || item.agent || "—")}
+                      </span>
                       <span className="rate-val">{rateText(item)}</span>
                     </div>
                   );
@@ -1084,9 +1103,14 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
             <h2>{t("dash.topProjects")}</h2>
             {expandBtn("topProjects")}
           </div>
-          {(analytics && analytics.project_rank || []).slice(0, 15).length
-            ? <ProjectBars items={(analytics.project_rank || []).slice(0, 15)} />
-            : <div className="status">{t("state.noData")}</div>}
+          {(() => {
+            // 常规视图前 10 够聚焦；铺满视图展示全部
+            const ranked = (analytics && analytics.project_rank) || [];
+            const shown = expandedCard === "topProjects" ? ranked : ranked.slice(0, 10);
+            return shown.length
+              ? <ProjectBars items={shown} />
+              : <div className="status">{t("state.noData")}</div>;
+          })()}
         </section>
       </div>
 

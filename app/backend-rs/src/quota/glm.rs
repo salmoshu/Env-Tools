@@ -318,7 +318,7 @@ pub fn collect() -> Result<Value, String> {
     let mut account = normalize_glm(&result);
     let subscription_url = env_value("GLM_SUBSCRIPTION_URL").unwrap_or_else(glm_subscription_url);
     let mut subscription_membership = None;
-    if let Ok(subscription) = get_json(&subscription_url, &key, use_proxy, timeout) {
+    if let Ok(subscription) = get_json(&subscription_url, &key, use_proxy, timeout.min(10)) {
         subscription_membership = normalize_glm_subscription(&subscription, Local::now());
     }
     // 手动会员配置优先（口径同 kimi.rs），订阅结果仅作兜底
