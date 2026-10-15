@@ -51,6 +51,8 @@ const SESSIONS_GROUP_KEY = "ai-usage-monitor.sessions-group";
 const SESSION_SORTABLE = ["total", "requests", "last", "rate"];
 // 会话行"结束于 X 前"阈值：更近的视为仍在进行
 const SESSION_LIVE_THRESHOLD_SEC = 300;
+// 速率卡全屏（近 1 天活跃）视图的项目折叠偏好：项目名集合，跨会话持久
+const RATE_COLLAPSED_KEY = "ai-usage-monitor.rate-collapsed";
 const SESSION_GROUP_OPTIONS = ["none", "project", "agent"];
 const SESSION_ROW_CAP = 200;
 // 设置页"显示"面板的 provider 勾选（与悬浮看板共用同一 localStorage 键）
@@ -315,6 +317,22 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
     } catch { return "none"; }
   });
   const [showHourly, setShowHourly] = useState(false);
+  // 速率卡全屏视图：折叠的项目名集合（会话多的项目收起省空间）
+  const [rateCollapsed, setRateCollapsed] = useState(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem(RATE_COLLAPSED_KEY) || "[]");
+      return new Set(Array.isArray(stored) ? stored.filter((n) => typeof n === "string") : []);
+    } catch { return new Set(); }
+  });
+  const toggleRateProject = (name) => {
+    setRateCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      try { localStorage.setItem(RATE_COLLAPSED_KEY, JSON.stringify([...next])); } catch {}
+      return next;
+    });
+  };
   const [trendGran, setTrendGran] = useState(() => {
     try { return localStorage.getItem(TREND_KEY) || "day"; } catch { return "day"; }
   });
@@ -613,6 +631,14 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
     const v = pickRate(item);
     return v != null ? `${fmtRate(v)} tok/s` : "—";
   };
+  // agent/模型 展示：模型名自带 provider 前缀（kimi-code/k3、deepseek/v4…）时
+  // 只取末段，避免 kimi/kimi-code/k3-256k、omp/kimi-code/k3-256k 这类双重前缀；
+  // 悬浮提示保留完整模型名
+  const rateModelLabel = (agent, model) => {
+    if (!model) return agent || "—";
+    if (!agent) return model;
+    return `${agent}/${model.split("/").pop()}`;
+  };
 
   // 排序作用于全集；分组与 200 行渲染上限在排序之后套用。
   // 列组织（v0.7.25 重组）：Token 三列合一（总量 + 构成迷你条，悬浮看明细）、
@@ -836,15 +862,26 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                     .replace("{t}", abbrev(active.tokens || 0))}
                 </div>
                 <div className="act-list">
-                  {projects.map((proj) => (
+                  {projects.map((proj) => {
+                    const collapsed = rateCollapsed.has(proj.name);
+                    return (
                     <div className="act-proj" key={proj.name}>
-                      <div className="act-proj-head">
+                      <div
+                        className="act-proj-head"
+                        role="button"
+                        tabIndex={0}
+                        aria-expanded={!collapsed}
+                        title={collapsed ? t("dash.rateExpandProject") : t("dash.rateCollapseProject")}
+                        onClick={() => toggleRateProject(proj.name)}
+                        onKeyDown={activateOnKeys(() => toggleRateProject(proj.name))}
+                      >
+                        <span className={`act-proj-chevron${collapsed ? " closed" : ""}`}>▾</span>
                         <span className="act-proj-name" title={proj.path || proj.name}>{proj.name}</span>
                         <span className="act-proj-stats">
                           {fmt(proj.tokens)} {t("dash.tokens")} · {t("dash.sessionsCount").replace("{n}", String((proj.sessions || []).length))}
                         </span>
                       </div>
-                      {(proj.sessions || []).map((s) => (
+                      {collapsed ? null : (proj.sessions || []).map((s) => (
                         <div className="act-session" key={s.session_id}>
                           <div className="act-session-row">
                             <span className="mono act-sid" title={s.session_id}>
@@ -862,7 +899,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                             {(s.models || []).map((m) => (
                               <div className="act-model-row" key={m.model}>
                                 <span className="mono act-model-name" title={`${s.agent}/${m.model}`}>
-                                  {s.agent}/{m.model}
+                                  {rateModelLabel(s.agent, m.model)}
                                 </span>
                                 <span className="act-meta">
                                   {fmt(m.tokens)} {t("dash.tokens")} · {fmt(m.output)} out · {m.requests} req
@@ -874,7 +911,8 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                         </div>
                       ))}
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </>
             );
@@ -901,8 +939,8 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                     >
                       <span className="rate-name">{item.project}</span>
                       {tag ? <span className="rate-tag">{tag}</span> : null}
-                      <span className="rate-model">
-                        {item.model && item.agent ? `${item.agent}/${item.model}` : (item.model || item.agent || "—")}
+                      <span className="rate-model" title={item.model || item.agent || ""}>
+                        {rateModelLabel(item.agent, item.model)}
                       </span>
                       <span className="rate-val">{rateText(item)}</span>
                     </div>

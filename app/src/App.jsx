@@ -44,6 +44,17 @@ export default function App() {
 
   useEffect(() => watchExternalTheme(setTheme), []);
 
+  // 系统明暗切换即时跟随：preference 为 system 时媒体查询变化直接重解析主题。
+  // 走 setTheme("system") 不行——状态值未变 React 不重渲染，applyTheme 不会
+  // 重新执行（v0.7.31 修复：此前表现为切深浅色无反应，需点一下"系统"）
+  useEffect(() => {
+    if (theme !== "system") return;
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const onChange = () => applyTheme("system");
+    media.addEventListener("change", onChange);
+    return () => media.removeEventListener("change", onChange);
+  }, [theme]);
+
   useEffect(() => {
     if (wasRefreshing.current && !refreshing && lastPayload) {
       const codexStale = (((lastPayload.data || {}).accounts) || [])

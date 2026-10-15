@@ -1011,7 +1011,13 @@ tbody tr:nth-child(even) { background: var(--hover-soft); }
   border: 1px solid var(--border); border-radius: 10px;
   padding: 10px 12px; background: var(--inset); min-width: 0;
 }
-.act-proj-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.act-proj-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; cursor: pointer; border-radius: 6px; }
+.act-proj-head:hover .act-proj-name { text-decoration: underline dotted; }
+.act-proj-chevron {
+  flex: none; font-size: 10px; color: var(--faint); align-self: center;
+  transition: transform 0.15s ease; width: 12px; text-align: center;
+}
+.act-proj-chevron.closed { transform: rotate(-90deg); }
 .act-proj-name {
   font-weight: 700; font-size: 12px; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
