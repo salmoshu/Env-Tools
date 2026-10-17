@@ -41,8 +41,8 @@ export const SERIES_DEFS = [
 ];
 
 export const MODEL_PALETTE = [
-  "#5b8def", "#4cc38a", "#9b7ede", "#e5a545",
-  "#e5484d", "#3bc9db", "#f47ab8", "#94a3b8",
+  "#1783FF", "#00A1FF", "#985FFB", "#16C456",
+  "#FFD230", "#FF9500", "#FF4756", "#8D9390",
 ];
 
 function buildStackedBars(container, labels, series, columnTip) {

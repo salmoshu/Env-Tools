@@ -580,7 +580,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
     value: item.total,
     color: MODEL_PALETTE[i % MODEL_PALETTE.length],
   }));
-  if (otherTotal > 0) pieItems.push({ name: "other", value: otherTotal, color: "#6b7385" });
+  if (otherTotal > 0) pieItems.push({ name: "other", value: otherTotal, color: "#8D9390" });
 
   const daily = analytics && analytics.daily;
   const dailyProjectsMap = (analytics && analytics.daily_projects) || {};
