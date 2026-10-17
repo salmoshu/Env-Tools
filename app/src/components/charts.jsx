@@ -65,7 +65,7 @@ function buildStackedBars(container, labels, series, columnTip) {
     if (tick > 0) {
       const text = svgEl("text", {
         x: margin.left - 8, y: y + 3, "text-anchor": "end",
-        "font-size": 9, fill: "var(--faint)",
+        "font-size": 10.5, fill: "var(--faint)",
       }, svg);
       text.textContent = abbrev((maxVal * tick) / 4);
     }
@@ -96,7 +96,7 @@ function buildStackedBars(container, labels, series, columnTip) {
     if (i % labelStep === 0) {
       const text = svgEl("text", {
         x: margin.left + slot * i + slot / 2, y: height - 6,
-        "text-anchor": "middle", "font-size": 9, fill: "var(--faint)",
+        "text-anchor": "middle", "font-size": 10.5, fill: "var(--faint)",
       }, svg);
       text.textContent = label;
     }
@@ -159,7 +159,7 @@ function buildDonut(container, items) {
     }, svg);
     centerValue.textContent = abbrev(total);
     const centerLabel = svgEl("text", {
-      x: cx, y: cy + 14, "text-anchor": "middle", "font-size": 9, fill: "var(--faint)",
+      x: cx, y: cy + 14, "text-anchor": "middle", "font-size": 10.5, fill: "var(--faint)",
     }, svg);
     centerLabel.textContent = "tokens";
     container.appendChild(svg);
@@ -202,7 +202,7 @@ function buildLineChart(container, labels, values) {
       }, svg);
       const text = svgEl("text", {
         x: margin.left - 6, y: y + 3, "text-anchor": "end",
-        "font-size": 9, fill: "var(--faint)",
+        "font-size": 10.5, fill: "var(--faint)",
       }, svg);
       text.textContent = `${fraction * 100}%`;
     }
@@ -234,7 +234,7 @@ function buildLineChart(container, labels, values) {
       if (i % labelStep === 0) {
         const text = svgEl("text", {
           x: margin.left + step * (i + 0.5), y: height - 6,
-          "text-anchor": "middle", "font-size": 9, fill: "var(--faint)",
+          "text-anchor": "middle", "font-size": 10.5, fill: "var(--faint)",
         }, svg);
         text.textContent = label;
       }
@@ -269,7 +269,7 @@ function buildValueLineChart(container, labels, values, valueLabel, toolTips) {
       }, svg);
       const text = svgEl("text", {
         x: margin.left - 6, y: y + 3, "text-anchor": "end",
-        "font-size": 9, fill: "var(--faint)",
+        "font-size": 10.5, fill: "var(--faint)",
       }, svg);
       text.textContent = abbrev((maxVal * tick) / 4);
     }
@@ -305,7 +305,7 @@ function buildValueLineChart(container, labels, values, valueLabel, toolTips) {
       if (i % labelStep === 0) {
         const text = svgEl("text", {
           x: margin.left + step * (i + 0.5), y: height - 6,
-          "text-anchor": "middle", "font-size": 9, fill: "var(--faint)",
+          "text-anchor": "middle", "font-size": 10.5, fill: "var(--faint)",
         }, svg);
         text.textContent = label;
       }
