@@ -41,8 +41,8 @@ export const SERIES_DEFS = [
 ];
 
 export const MODEL_PALETTE = [
-  "#1783FF", "#00A1FF", "#985FFB", "#16C456",
-  "#FFD230", "#FF9500", "#FF4756", "#8D9390",
+  "var(--pie-1)", "var(--pie-2)", "var(--pie-3)", "var(--pie-4)",
+  "var(--pie-5)", "var(--pie-6)", "var(--pie-7)", "var(--pie-8)",
 ];
 
 function buildStackedBars(container, labels, series, columnTip) {
@@ -84,7 +84,7 @@ function buildStackedBars(container, labels, series, columnTip) {
       const top = margin.top + innerH - ((acc + value) / maxVal) * innerH;
       svgEl("rect", {
         x, y: top, width: barWidth, height: Math.max(1, bottom - top),
-        fill: item.color, rx: Math.min(2, barWidth / 4),
+        fill: item.color, rx: Math.min(3, barWidth / 4),
       }, svg);
       acc += value;
     }
@@ -137,7 +137,7 @@ function buildDonut(container, items) {
     const cx = size / 2;
     const cy = size / 2;
     const rOuter = 82;
-    const rInner = 50;
+    const rInner = 60;
     const svg = svgEl("svg", { width: size, height: size });
     let angle = -Math.PI / 2;
     for (const item of items) {
@@ -154,8 +154,8 @@ function buildDonut(container, items) {
       angle += sweep;
     }
     const centerValue = svgEl("text", {
-      x: cx, y: cy - 1, "text-anchor": "middle",
-      "font-size": 15, "font-weight": 600, fill: "var(--text)",
+      x: cx, y: cy - 2, "text-anchor": "middle",
+      "font-size": 17, "font-weight": 600, fill: "var(--text)",
     }, svg);
     centerValue.textContent = abbrev(total);
     const centerLabel = svgEl("text", {
@@ -212,15 +212,17 @@ function buildLineChart(container, labels, values) {
       margin.left + step * (i + 0.5),
       margin.top + innerH * (1 - Math.min(1, Math.max(0, value))),
     ]);
+    // 无数据时不生成空 d 的 path（SVG 会报 Expected moveto path command）
+    if (!points.length) { container.appendChild(svg); return; }
     const linePath = points.map(([x, y], i) => `${i ? "L" : "M"} ${x.toFixed(1)} ${y.toFixed(1)}`).join(" ");
     const first = points[0] || [margin.left, margin.top + innerH];
     const last = points[points.length - 1] || first;
     svgEl("path", {
       d: `${linePath} L ${last[0].toFixed(1)} ${margin.top + innerH} L ${first[0].toFixed(1)} ${margin.top + innerH} Z`,
-      fill: "var(--c-output)", "fill-opacity": 0.12, stroke: "none",
+      fill: "var(--accent)", "fill-opacity": 0.10, stroke: "none",
     }, svg);
     svgEl("path", {
-      d: linePath, fill: "none", stroke: "var(--c-output)",
+      d: linePath, fill: "none", stroke: "var(--accent)",
       "stroke-width": 2, "stroke-linejoin": "round",
     }, svg);
 
@@ -279,6 +281,7 @@ function buildValueLineChart(container, labels, values, valueLabel, toolTips) {
       margin.left + step * (i + 0.5),
       margin.top + innerH * (1 - Math.min(1, (value || 0) / maxVal)),
     ]);
+    if (!points.length) { container.appendChild(svg); return; }
     const linePath = points.map(([x, y], i) => `${i ? "L" : "M"} ${x.toFixed(1)} ${y.toFixed(1)}`).join(" ");
     const first = points[0] || [margin.left, margin.top + innerH];
     const last = points[points.length - 1] || first;

@@ -1,92 +1,125 @@
 // 标题栏：可拖动，双窗口共用。右侧按钮组由各页面按需传入。
+// v0.7.33 品牌重塑：全部图标改为 1.5px 细线、圆角端点、currentColor 着色；
+// 应用标记换成「三根用量柱 + 品牌蓝点」的几何符号（logo 蓝点在 UI 的复现）。
 
-import { useId, useState } from "react";
+export function BrandMark({ size = 18 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <rect x="2.5" y="13" width="3.6" height="8" rx="1.8" fill="currentColor" opacity="0.5" />
+      <rect x="8.5" y="9" width="3.6" height="12" rx="1.8" fill="currentColor" opacity="0.78" />
+      <rect x="14.5" y="5" width="3.6" height="16" rx="1.8" fill="currentColor" />
+      <circle cx="20.6" cy="4.2" r="2" fill="var(--accent)" />
+    </svg>
+  );
+}
+
+function LineIcon({ size = 15, children }) {
+  return (
+    <svg
+      width={size} height={size} viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {children}
+    </svg>
+  );
+}
 
 export function GearIcon() {
   return (
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
-      <path d="M19.43 12.98c.04-.32.07-.64.07-.98s-.03-.66-.07-.98l2.11-1.65c.19-.15.24-.42.12-.64l-2-3.46c-.12-.22-.39-.3-.61-.22l-2.49 1c-.52-.4-1.08-.73-1.69-.98l-.38-2.65C14.46 2.18 14.25 2 14 2h-4c-.25 0-.46.18-.49.42l-.38 2.65c-.61.25-1.17.59-1.69.98l-2.49-1c-.23-.09-.49 0-.61.22l-2 3.46c-.13.22-.07.49.12.64l2.11 1.65c-.04.32-.07.65-.07.98s.03.66.07.98l-2.11 1.65c-.19.15-.24.42-.12.64l2 3.46c.12.22.39.3.61.22l2.49-1c.52.4 1.08.73 1.69.98l.38 2.65c.03.24.24.42.49.42h4c.25 0 .46-.18.49-.42l.38-2.65c.61-.25 1.17-.59 1.69-.98l2.49 1c.23.09.49 0 .61-.22l2-3.46c.12-.22.07-.49-.12-.64l-2.11-1.65zM12 15.5c-1.93 0-3.5-1.57-3.5-3.5s1.57-3.5 3.5-3.5 3.5 1.57 3.5 3.5-1.57 3.5-3.5 3.5z"/>
-    </svg>
+    <LineIcon>
+      <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z" />
+      <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1.11-1.56 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.56-1.11 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34H9a1.7 1.7 0 0 0 1.03-1.56V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87V9c.26.64.88 1.04 1.56 1.03H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.51 1z" />
+    </LineIcon>
   );
 }
 
 export function RefreshIcon({ spinning }) {
   return (
     <svg
-      width="12" height="12" viewBox="0 0 24 24" fill="currentColor"
+      width="15" height="15" viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"
       className={spinning ? "spin" : undefined}
+      aria-hidden="true"
     >
-      <path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
+      <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+      <path d="M21 3v6h-6" />
     </svg>
   );
 }
 
 export function PinIcon() {
   return (
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
-      <path d="M16,9V4h1c0.55,0,1-0.45,1-1s-0.45-1-1-1H7C6.45,2,6,2.45,6,3s0.45,1,1,1h1v5c0,1.66-1.34,3-3,3S4,12.45,4,13s0.45,1,1,1h6v6c0,0.55,0.45,1,1,1s1-0.45,1-1v-6h6c0.55,0,1-0.45,1-1s-0.45-1-1-1C17.34,12,16,10.66,16,9z"/>
-    </svg>
+    <LineIcon>
+      <path d="M12 17v5" />
+      <path d="M9 10.76V7a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v3.76a2 2 0 0 0 1.11 1.79l1.78.9A2 2 0 0 1 19 15.24V16H5v-.76a2 2 0 0 1 1.11-1.79l1.78-.9A2 2 0 0 0 9 10.76z" />
+    </LineIcon>
   );
 }
 
 export function ExpandIcon() {
   return (
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
-      <path d="M21 11V3h-8l3.29 3.29-10 10L3 13v8h8l-3.29-3.29 10-10L21 11z"/>
-    </svg>
+    <LineIcon>
+      <path d="M15 3h6v6" />
+      <path d="M10 14 21 3" />
+      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+    </LineIcon>
   );
 }
 
 export function MaximizeIcon() {
   return (
-    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4">
-      <rect x="4" y="4" width="16" height="16" rx="1.5" />
-    </svg>
+    <LineIcon size={14}>
+      <rect x="4" y="4" width="16" height="16" rx="2" />
+    </LineIcon>
   );
 }
 
 // 还原（已最大化）：前窗 + 后窗的错层双框，与最大化单框区分
 export function RestoreIcon() {
   return (
-    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4">
-      <rect x="7" y="9" width="13" height="13" rx="1.5" />
+    <LineIcon size={14}>
+      <rect x="7" y="9" width="13" height="13" rx="2" />
       <path d="M4 15V5.5A1.5 1.5 0 0 1 5.5 4H15" />
-    </svg>
+    </LineIcon>
   );
 }
 
 export function AnalyticsIcon() {
   return (
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
-      <path d="M5 9.2h3V19H5V9.2zM10.6 5h2.8v14h-2.8V5zm5.6 8H19v6h-2.8v-6z"/>
-    </svg>
+    <LineIcon>
+      <path d="M3 3v18h18" />
+      <path d="M8 17v-5" />
+      <path d="M13 17V8" />
+      <path d="M18 17V5" />
+    </LineIcon>
   );
 }
 
 // 悬浮看板：大窗口右下角嵌一个实心小浮窗（画中画），与最大化的空框拉开差距
 export function BoardIcon() {
   return (
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+    <LineIcon>
       <rect x="3" y="4" width="18" height="16" rx="2" />
       <rect x="12.5" y="12.5" width="6.5" height="4.5" rx="1" fill="currentColor" stroke="none" />
-    </svg>
+    </LineIcon>
   );
 }
 
 export function ToolsIcon() {
   return (
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
-      <path d="M22.7 19l-9.1-9.1c.9-2.3.4-5-1.5-6.9-2-2-5-2.4-7.4-1.3L9 6 6 9 1.6 4.7C.4 7.1.9 10.1 2.9 12.1c1.9 1.9 4.6 2.4 6.9 1.5l9.1 9.1c.4.4 1 .4 1.4 0l2.3-2.3c.5-.4.5-1.1.1-1.4z"/>
-    </svg>
+    <LineIcon>
+      <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
+    </LineIcon>
   );
 }
 
 export default function Titlebar({ title, version, envBadge, children }) {
   return (
     <div className="titlebar">
-      <img className="logo" src="assets/logo.svg" alt="" />
+      <span className="logo"><BrandMark size={18} /></span>
       <span className="title">{title}</span>
-      <span className="title-version">{version ? `v${version}` : ""}</span>
+      {version ? <span className="title-version">v{version}</span> : null}
       {envBadge ? <span className="env-badge">{envBadge}</span> : null}
       {children}
     </div>
