@@ -129,6 +129,7 @@ const DICT = {
     "dash.quotaStaleHint": "Quota fetch failed; showing last good data. The error card appears only after 3 consecutive failed rounds (60s each).",
     "dash.quotaStaleToast": "Codex quota refresh failed — showing last good data",
     "dash.rateExpandProject": "Expand project sessions",
+    "dash.reorderHint": "Drag to reorder sections (order saved locally)",
     "dash.rateCollapseProject": "Collapse project sessions",
     // 异常占位卡片
     "err.loginHint": "Login expired or credentials missing. Start web authorization, then refresh.",
@@ -478,6 +479,7 @@ const DICT = {
     "dash.rateExpandProject": "展开项目会话",
     "dash.rateCollapseProject": "折叠项目会话（会话多时省空间）",
     "dash.quotaStaleToast": "Codex 刷新失败，正在沿用旧数据",
+    "dash.reorderHint": "拖动调整区块位置（顺序保存在本机）",
   },
 };
 

@@ -53,6 +53,9 @@ const SESSION_SORTABLE = ["total", "requests", "last", "rate"];
 const SESSION_LIVE_THRESHOLD_SEC = 300;
 // 速率卡全屏（近 1 天活跃）视图的项目折叠偏好：项目名集合，跨会话持久
 const RATE_COLLAPSED_KEY = "ai-usage-monitor.rate-collapsed";
+// 分析区块的默认顺序与拖拽重排持久化键（v0.7.32）
+const CARD_ORDER_KEY = "ai-usage-monitor.card-order";
+const CARD_DEFAULT_ORDER = ["daily", "trend", "yearly", "share", "dailyModel", "cacheRate", "topProjects", "sessions"];
 const SESSION_GROUP_OPTIONS = ["none", "project", "agent"];
 const SESSION_ROW_CAP = 200;
 // 设置页"显示"面板的 provider 勾选（与悬浮看板共用同一 localStorage 键）
@@ -333,6 +336,63 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
       return next;
     });
   };
+  // 分析区块拖拽重排（v0.7.32）：8 个卡片在 flex-wrap 容器里按 CSS order
+  // 排布，拖拽手柄按下时才开启 draggable；顺序持久化 localStorage
+  const [cardOrder, setCardOrder] = useState(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem(CARD_ORDER_KEY) || "null");
+      if (Array.isArray(stored)) {
+        const next = stored.filter((id) => CARD_DEFAULT_ORDER.includes(id));
+        for (const id of CARD_DEFAULT_ORDER) if (!next.includes(id)) next.push(id);
+        return next;
+      }
+    } catch {}
+    return CARD_DEFAULT_ORDER;
+  });
+  const [dragCard, setDragCard] = useState(null);
+  const [dropTarget, setDropTarget] = useState(null);
+  useEffect(() => {
+    // 原生拖拽期间不派发 mouseup；手柄按下未拖动即松开时在此复位
+    const clear = () => setDragCard(null);
+    window.addEventListener("mouseup", clear);
+    return () => window.removeEventListener("mouseup", clear);
+  }, []);
+  const dragStart = (event, id) => {
+    event.dataTransfer.setData("text/plain", id);
+    event.dataTransfer.effectAllowed = "move";
+  };
+  const dragEnd = () => { setDragCard(null); setDropTarget(null); };
+  const dropCard = (targetId) => {
+    const source = dragCard;
+    setDropTarget(null);
+    setDragCard(null);
+    if (!source || source === targetId) return;
+    setCardOrder((prev) => {
+      const next = prev.filter((id) => id !== source);
+      const at = next.indexOf(targetId);
+      next.splice(at >= 0 ? at : next.length, 0, source);
+      try { localStorage.setItem(CARD_ORDER_KEY, JSON.stringify(next)); } catch {}
+      return next;
+    });
+  };
+  const dragHandle = (id) => (
+    <span
+      className="card-drag"
+      title={t("dash.reorderHint")}
+      onMouseDown={() => setDragCard(id)}
+    >⠿</span>
+  );
+  const cardMods = (id) => ({
+    style: { order: cardOrder.indexOf(id) },
+    draggable: dragCard === id,
+    onDragStart: (event) => dragStart(event, id),
+    onDragEnd: dragEnd,
+    onDragOver: (event) => {
+      event.preventDefault();
+      setDropTarget((prev) => (prev === id ? prev : id));
+    },
+    onDrop: () => dropCard(id),
+  });
   const [trendGran, setTrendGran] = useState(() => {
     try { return localStorage.getItem(TREND_KEY) || "day"; } catch { return "day"; }
   });
@@ -866,16 +926,20 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                     const collapsed = rateCollapsed.has(proj.name);
                     return (
                     <div className="act-proj" key={proj.name}>
-                      <div
-                        className="act-proj-head"
-                        role="button"
-                        tabIndex={0}
-                        aria-expanded={!collapsed}
-                        title={collapsed ? t("dash.rateExpandProject") : t("dash.rateCollapseProject")}
-                        onClick={() => toggleRateProject(proj.name)}
-                        onKeyDown={activateOnKeys(() => toggleRateProject(proj.name))}
-                      >
-                        <span className={`act-proj-chevron${collapsed ? " closed" : ""}`}>▾</span>
+                      <div className="act-proj-head">
+                        {/* v0.7.32：头部恢复 0.7.30 原样式（名称左、统计右、无整头点击态），
+                            折叠收放改为独立按钮并加大尺寸 */}
+                        <button
+                          type="button"
+                          className={`act-proj-toggle${collapsed ? " closed" : ""}`}
+                          aria-expanded={!collapsed}
+                          title={collapsed ? t("dash.rateExpandProject") : t("dash.rateCollapseProject")}
+                          onClick={() => toggleRateProject(proj.name)}
+                        >
+                          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M2.5 4.5 6 8l3.5-3.5" />
+                          </svg>
+                        </button>
                         <span className="act-proj-name" title={proj.path || proj.name}>{proj.name}</span>
                         <span className="act-proj-stats">
                           {fmt(proj.tokens)} {t("dash.tokens")} · {t("dash.sessionsCount").replace("{n}", String((proj.sessions || []).length))}
@@ -991,8 +1055,13 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
         </div>
       </section>
 
-      <section className={cardCls("daily")}>
+      <div className="dashboard-cards">
+      <section
+        {...cardMods("daily")}
+        className={`${cardCls("daily")} card-w-full${dragCard === "daily" ? " dragging" : ""}${dropTarget === "daily" && dragCard && dragCard !== "daily" ? " drop-target" : ""}`}
+      >
         <div className="card-head-row">
+          {dragHandle("daily")}
           <h2>{t("dash.dailyTokens")}</h2>
           <div className="card-head-actions">
             <select
@@ -1053,8 +1122,12 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
         )}
       </section>
 
-      <section className={cardCls("trend")}>
+      <section
+        {...cardMods("trend")}
+        className={`${cardCls("trend")} card-w-full${dragCard === "trend" ? " dragging" : ""}${dropTarget === "trend" && dragCard && dragCard !== "trend" ? " drop-target" : ""}`}
+      >
         <div className="card-head-row">
+          {dragHandle("trend")}
           <h2>{t("dash.trend")}</h2>
           <div className="card-head-actions">
             <select
@@ -1079,25 +1152,35 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
             : <div className="status">{t("state.noData")}</div>}
       </section>
 
-      <div className="row-yearly">
-        <section className={cardCls("yearly")}>
+      <section
+        {...cardMods("yearly")}
+        className={`${cardCls("yearly")} card-w-flex${dragCard === "yearly" ? " dragging" : ""}${dropTarget === "yearly" && dragCard && dragCard !== "yearly" ? " drop-target" : ""}`}
+      >
           <div className="card-head-row">
+            {dragHandle("yearly")}
             <h2>{t("dash.yearly")}</h2>
             {expandBtn("yearly")}
           </div>
           <CalendarHeatmap calendar={analytics && analytics.calendar} />
         </section>
-        <section className={cardCls("share", "card card-model-share")}>
+        <section
+          {...cardMods("share")}
+          className={`${cardCls("share", "card card-model-share")} card-w-side${dragCard === "share" ? " dragging" : ""}${dropTarget === "share" && dragCard && dragCard !== "share" ? " drop-target" : ""}`}
+        >
           <div className="card-head-row">
+            {dragHandle("share")}
             <h2>{t("dash.modelShare")}</h2>
             {expandBtn("share")}
           </div>
           <DonutChart items={pieItems} />
         </section>
-      </div>
 
-      <section className={cardCls("dailyModel")}>
+      <section
+        {...cardMods("dailyModel")}
+        className={`${cardCls("dailyModel")} card-w-full${dragCard === "dailyModel" ? " dragging" : ""}${dropTarget === "dailyModel" && dragCard && dragCard !== "dailyModel" ? " drop-target" : ""}`}
+      >
         <div className="card-head-row">
+          {dragHandle("dailyModel")}
           <h2>{t("dash.dailyModel")}</h2>
           {expandBtn("dailyModel")}
         </div>
@@ -1128,16 +1211,23 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
         />
       </section>
 
-      <div className="grid">
-        <section className={cardCls("cacheRate")}>
+      <section
+        {...cardMods("cacheRate")}
+        className={`${cardCls("cacheRate")} card-w-half${dragCard === "cacheRate" ? " dragging" : ""}${dropTarget === "cacheRate" && dragCard && dragCard !== "cacheRate" ? " drop-target" : ""}`}
+      >
           <div className="card-head-row">
+            {dragHandle("cacheRate")}
             <h2>{t("dash.cacheRate")}</h2>
             {expandBtn("cacheRate")}
           </div>
           <LineChart labels={shortDays} values={(daily || []).map((entry) => entry.cache_hit_rate)} />
         </section>
-        <section className={cardCls("topProjects")}>
+        <section
+          {...cardMods("topProjects")}
+          className={`${cardCls("topProjects")} card-w-half${dragCard === "topProjects" ? " dragging" : ""}${dropTarget === "topProjects" && dragCard && dragCard !== "topProjects" ? " drop-target" : ""}`}
+        >
           <div className="card-head-row">
+            {dragHandle("topProjects")}
             <h2>{t("dash.topProjects")}</h2>
             {expandBtn("topProjects")}
           </div>
@@ -1150,10 +1240,13 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
               : <div className="status">{t("state.noData")}</div>;
           })()}
         </section>
-      </div>
 
-      <section className={cardCls("sessions")}>
+      <section
+        {...cardMods("sessions")}
+        className={`${cardCls("sessions")} card-w-full${dragCard === "sessions" ? " dragging" : ""}${dropTarget === "sessions" && dragCard && dragCard !== "sessions" ? " drop-target" : ""}`}
+      >
         <div className="card-head-row">
+          {dragHandle("sessions")}
           <h2>{t("dash.sessions")}</h2>
           <div className="card-head-actions">
             <label className="days-field">{t("dash.groupBy")}
@@ -1215,6 +1308,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
           </table>
         </div>
       </section>
+      </div>
       {upgradeProvider && (
         <UpgradeOverlay
           provider={upgradeProvider}

@@ -252,9 +252,20 @@ select.control:focus, .wsl-distro-select:focus { border-color: var(--ring); }
 .card h2, .block > h2 { font-size: 13px; font-weight: 600; color: var(--dim); margin-bottom: 10px; }
 .block { margin-bottom: 14px; }
 .block > h2 { margin-left: 2px; }
-.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 14px; }
-.grid .card { margin-bottom: 0; }
-@media (max-width: 980px) { .grid { grid-template-columns: 1fr; } }
+/* v0.7.32：分析区块拖拽重排容器——8 卡片 flex-wrap 排布，CSS order 决定位置 */
+.dashboard-cards { display: flex; flex-wrap: wrap; gap: 14px; align-items: stretch; }
+.dashboard-cards > section { margin-bottom: 0; min-width: 0; }
+.card-w-full { flex: 1 1 100%; }
+.card-w-half { flex: 1 1 calc(50% - 7px); min-width: 380px; }
+.card-w-flex { flex: 3 1 520px; }
+.card-w-side { flex: 1 1 340px; min-width: 300px; max-width: 500px; }
+.card-drag {
+  flex: none; cursor: grab; color: var(--faint); user-select: none;
+  padding: 2px 5px; margin-left: -7px; border-radius: 4px; font-size: 12px; line-height: 1;
+}
+.card-drag:hover { color: var(--dim); background: var(--hover-soft); }
+section.dragging { opacity: 0.45; }
+section.drop-target { outline: 1.5px dashed var(--accent); outline-offset: 3px; }
 
 .chart { position: relative; height: 300px; }
 .chart.tall { height: 360px; }
@@ -776,14 +787,6 @@ td b { font-weight: 600; }
   padding: 1px 7px; border-radius: 999px;
 }
 .qcard-head .qver.upgrade:hover { background: rgba(251, 191, 36, 0.12); }
-.row-yearly {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(300px, 430px);
-  gap: 12px;
-  margin-bottom: 12px;
-  align-items: stretch;
-}
-.row-yearly .card { margin-bottom: 0; }
 
 /* --- 顶层错误边界（main.jsx 渲染异常兜底） --- */
 .error-boundary {
@@ -1011,13 +1014,17 @@ tbody tr:nth-child(even) { background: var(--hover-soft); }
   border: 1px solid var(--border); border-radius: 10px;
   padding: 10px 12px; background: var(--inset); min-width: 0;
 }
-.act-proj-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; cursor: pointer; border-radius: 6px; }
-.act-proj-head:hover .act-proj-name { text-decoration: underline dotted; }
-.act-proj-chevron {
-  flex: none; font-size: 10px; color: var(--faint); align-self: center;
-  transition: transform 0.15s ease; width: 12px; text-align: center;
+.act-proj-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+/* 折叠收放按钮：独立按钮（不占整头点击态），20px 命中区 */
+.act-proj-toggle {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; margin-left: -4px; padding: 0;
+  color: var(--dim); background: transparent; border: none; border-radius: 5px;
+  cursor: pointer;
 }
-.act-proj-chevron.closed { transform: rotate(-90deg); }
+.act-proj-toggle:hover { background: var(--hover); color: var(--text); }
+.act-proj-toggle svg { transition: transform 0.15s ease; }
+.act-proj-toggle.closed svg { transform: rotate(-90deg); }
 .act-proj-name {
   font-weight: 700; font-size: 12px; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
