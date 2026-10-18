@@ -133,11 +133,16 @@ function donutArcPath(cx, cy, rInner, rOuter, start, end) {
 function buildDonut(container, items) {
   container.textContent = "";
     const total = items.reduce((sum, item) => sum + item.value, 0);
-    const size = 190;
+    // 常规卡片固定 190；铺满视图（.card-expanded 给 pie-wrap 加了 min-height）
+    // 按容器高度放大，避免最大化后甜甜圈缩在角落
+    const availH = container.clientHeight || 0;
+    const size = availH >= 280 ? Math.min(availH - 24, 520) : 190;
+    const k = size / 190;
+    const fontK = Math.min(k, 2);
     const cx = size / 2;
     const cy = size / 2;
-    const rOuter = 82;
-    const rInner = 60;
+    const rOuter = 82 * k;
+    const rInner = 60 * k;
     const svg = svgEl("svg", { width: size, height: size });
     let angle = -Math.PI / 2;
     for (const item of items) {
@@ -154,12 +159,13 @@ function buildDonut(container, items) {
       angle += sweep;
     }
     const centerValue = svgEl("text", {
-      x: cx, y: cy - 2, "text-anchor": "middle",
-      "font-size": 17, "font-weight": 600, fill: "var(--text)",
+      x: cx, y: cy - 2 * fontK, "text-anchor": "middle",
+      "font-size": (17 * fontK).toFixed(1), "font-weight": 600, fill: "var(--text)",
     }, svg);
     centerValue.textContent = abbrev(total);
     const centerLabel = svgEl("text", {
-      x: cx, y: cy + 14, "text-anchor": "middle", "font-size": 10.5, fill: "var(--faint)",
+      x: cx, y: cy + 14 * fontK, "text-anchor": "middle",
+      "font-size": (10.5 * fontK).toFixed(1), fill: "var(--faint)",
     }, svg);
     centerLabel.textContent = "tokens";
     container.appendChild(svg);

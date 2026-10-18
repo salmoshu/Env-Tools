@@ -6,7 +6,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AGENT_COLORS, AGENT_LABELS, abbrev, activateOnKeys, fmt, fmtPct, fmtReset, fmtSpan, fmtTimestamp,
-  isNewerVersion, levelClass, nearQuotaLimit, QUOTA_RESET_THRESHOLD, timeFractionOf, windowUsagePct,
+  isNewerVersion, levelClass, nearQuotaLimit, QUOTA_RESET_THRESHOLD, sortByDisplayOrder,
+  timeFractionOf, windowUsagePct,
 } from "../utils.js";
 import {
   CalendarHeatmap, DonutChart, LineChart, MODEL_PALETTE,
@@ -54,8 +55,10 @@ const SESSION_LIVE_THRESHOLD_SEC = 300;
 // 速率卡全屏（近 1 天活跃）视图的项目折叠偏好：项目名集合，跨会话持久
 const RATE_COLLAPSED_KEY = "ai-usage-monitor.rate-collapsed";
 // 分析区块的默认顺序与拖拽重排持久化键（v0.7.32）
+// v0.7.34：trend 并入 daily 卡（粒度选择器切换 日=堆叠柱 / 周/年=折线），
+// 存储顺序里的旧 "trend" id 因不在默认列表而被自动剔除
 const CARD_ORDER_KEY = "ai-usage-monitor.card-order";
-const CARD_DEFAULT_ORDER = ["daily", "trend", "yearly", "share", "dailyModel", "cacheRate", "topProjects", "sessions"];
+const CARD_DEFAULT_ORDER = ["daily", "yearly", "share", "dailyModel", "cacheRate", "topProjects", "sessions"];
 const SESSION_GROUP_OPTIONS = ["none", "project", "agent"];
 const SESSION_ROW_CAP = 200;
 // 设置页"显示"面板的 provider 勾选（与悬浮看板共用同一 localStorage 键）
@@ -451,6 +454,8 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
   const install = useInstallState();
   const upgrading = install.running;
   const analyticsBusy = useRef(false);
+  // 手动刷新广播 analytics-invalidated 时若在途请求未完结，置位排队补拉
+  const analyticsQueued = useRef(false);
   // 当前展示的 目标|agent|范围 组合：切换时先画该组合的磁盘缓存载荷
   const analyticsCombo = useRef("");
   const [lang] = useLang();
@@ -500,6 +505,11 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
     } finally {
       analyticsBusy.current = false;
       setBusy(false);
+      // 手动刷新（analytics-invalidated）撞在途请求时排队，完成后补拉新鲜数据
+      if (analyticsQueued.current) {
+        analyticsQueued.current = false;
+        requestAnalytics(nextDays, nextAgent, nextTarget);
+      }
     }
   }, []);
 
@@ -523,6 +533,17 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
     const timer = setInterval(() => requestAnalytics(days, agent, target), ANALYTICS_REFRESH_MS);
     return () => clearInterval(timer);
   }, [days, agent, target, requestAnalytics]);
+
+  // 手动刷新（页头/全屏卡/配额错误卡的重试按钮）会清空后端分析缓存并广播
+  // analytics-invalidated：在此重拉，让图表与配额卡一起变新——此前没人订阅
+  // 该广播，手动刷新只更新配额区，图表区看起来"没反应"
+  useEffect(() => window.api.onAnalyticsInvalidated(() => {
+    if (analyticsBusy.current) {
+      analyticsQueued.current = true;
+      return;
+    }
+    requestAnalytics(days, agent, target);
+  }), [days, agent, target, requestAnalytics]);
 
   // 升级结果提示条自动消失：成功 4s、失败 10s（也可手动 ×）
   useEffect(() => {
@@ -566,6 +587,9 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
       shownErrors = agentErrors;
     }
   }
+  // 设置页"显示"面板的拖拽顺序作用于配额区卡片（v0.7.34）
+  accounts = sortByDisplayOrder(accounts, (a) => a.provider);
+  shownErrors = sortByDisplayOrder(shownErrors, (e) => e.provider || "");
 
   // --- 分析数据派生 ---
   const dayList = (analytics && analytics.day_list) || [];
@@ -945,7 +969,14 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                           {fmt(proj.tokens)} {t("dash.tokens")} · {t("dash.sessionsCount").replace("{n}", String((proj.sessions || []).length))}
                         </span>
                       </div>
-                      {collapsed ? null : (proj.sessions || []).map((s) => (
+                      {collapsed ? null : (proj.sessions || []).map((s) => {
+                        // 最新用过的模型置顶；会话头速率取该模型自己的速率，
+                        // 与顶部模型行保持一致（不再显示整段会话的加权平均）
+                        const models = (s.models || []).slice().sort(
+                          (a, b) => (b.last || 0) - (a.last || 0) || (b.tokens || 0) - (a.tokens || 0),
+                        );
+                        const latestModel = models[0];
+                        return (
                         <div className="act-session" key={s.session_id}>
                           <div className="act-session-row">
                             <span className="mono act-sid" title={s.session_id}>
@@ -956,11 +987,11 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                               {fmt(s.output)} out · {s.requests} req · {t("dash.rateEndedAgo").replace("{d}", fmtSpan(s.ended_ago_seconds || 0))}
                             </span>
                             <span className="act-rate" title={t(speedMode === "gen" ? "dash.speedHint" : "dash.speedHintThroughput")}>
-                              {rateText(s)}
+                              {rateText(latestModel || s)}
                             </span>
                           </div>
                           <div className="act-models">
-                            {(s.models || []).map((m) => (
+                            {models.map((m) => (
                               <div className="act-model-row" key={m.model}>
                                 <span className="mono act-model-name" title={`${s.agent}/${m.model}`}>
                                   {rateModelLabel(s.agent, m.model)}
@@ -973,7 +1004,8 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                             ))}
                           </div>
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
                     );
                   })}
@@ -1062,74 +1094,10 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
       >
         <div className="card-head-row">
           {dragHandle("daily")}
-          <h2>{t("dash.dailyTokens")}</h2>
+          <h2>{t("dash.dailyTrend")}</h2>
           <div className="card-head-actions">
-            <select
-              className="control"
-              value={days}
-              title={t("dash.range")}
-              onChange={(event) => {
-                setDays(event.target.value);
-                try { localStorage.setItem(DAYS_KEY, event.target.value); } catch {}
-              }}
-            >
-              {RANGE_OPTIONS.map((n) => (
-                <option key={n} value={n}>{t(`dash.range${n}`)}</option>
-              ))}
-            </select>
-            <button
-              type="button"
-              className="refresh-inline"
-              onClick={() => setShowHourly((v) => !v)}
-            >
-              {t("dash.hourly")} {showHourly ? "▾" : "▸"}
-            </button>
-            {expandBtn("daily")}
-          </div>
-        </div>
-        <div className="legend">
-          {SERIES_DEFS.map(([key, name, color]) => (
-            <span className="item" key={key}>
-              <span className="swatch" style={{ background: color }} />{name}
-            </span>
-          ))}
-        </div>
-        {dailyChart}
-        {showHourly && (
-          <>
-            <h2 style={{ marginTop: 14 }}>{t("dash.hourly")}</h2>
-            <div className="legend">
-              {SERIES_DEFS.slice(0, 3).map(([key, name, color]) => (
-                <span className="item" key={key}>
-                  <span className="swatch" style={{ background: color }} />{name}
-                </span>
-              ))}
-            </div>
-            <StackedBars
-              labels={hourly.map((entry) => String(entry.hour).padStart(2, "0"))}
-              series={SERIES_DEFS.map(([key, , color]) => ({ color, data: hourly.map((entry) => entry[key]) }))}
-              columnTip={(i, total) => {
-                const entry = hourly[i] || {};
-                return `<b>${String(i).padStart(2, "0")}:00 – ${String(i).padStart(2, "0")}:59</b>` +
-                  SERIES_DEFS.map(([key, name, color]) =>
-                    `<div class="tt-row"><span class="swatch" style="background:${color}"></span>${name}` +
-                    `<span class="tt-val">${fmt(entry[key])}</span></div>`).join("") +
-                  `<div class="tt-row">${t("dash.ttTotal")}<span class="tt-val">${fmt(total)}</span></div>` +
-                  `<div class="tt-row">${t("dash.ttRequests")}<span class="tt-val">${fmt(entry.requests)}</span></div>`;
-              }}
-            />
-          </>
-        )}
-      </section>
-
-      <section
-        {...cardMods("trend")}
-        className={`${cardCls("trend")} card-w-full${dragCard === "trend" ? " dragging" : ""}${dropTarget === "trend" && dragCard && dragCard !== "trend" ? " drop-target" : ""}`}
-      >
-        <div className="card-head-row">
-          {dragHandle("trend")}
-          <h2>{t("dash.trend")}</h2>
-          <div className="card-head-actions">
+            {/* v0.7.34：token 趋势并入每日 Token 卡——粒度选择器切换
+                按天=构成堆叠柱 / 按周、按年=总量折线 */}
             <select
               className="control"
               value={trendGran}
@@ -1142,14 +1110,76 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
               <option value="week">{t("dash.trendWeekly")}</option>
               <option value="year">{t("dash.trendYearly")}</option>
             </select>
-            {expandBtn("trend")}
+            {trendGran !== "year" ? (
+              <select
+                className="control"
+                value={days}
+                title={t("dash.range")}
+                onChange={(event) => {
+                  setDays(event.target.value);
+                  try { localStorage.setItem(DAYS_KEY, event.target.value); } catch {}
+                }}
+              >
+                {RANGE_OPTIONS.map((n) => (
+                  <option key={n} value={n}>{t(`dash.range${n}`)}</option>
+                ))}
+              </select>
+            ) : null}
+            {trendGran === "day" ? (
+              <button
+                type="button"
+                className="refresh-inline"
+                onClick={() => setShowHourly((v) => !v)}
+              >
+                {t("dash.hourly")} {showHourly ? "▾" : "▸"}
+              </button>
+            ) : null}
+            {expandBtn("daily")}
           </div>
         </div>
-        {trendGran === "year" && !trendAnalytics
-          ? <div className="status">{t("dash.trendYearlyHint")}</div>
-          : trend.labels.length
-            ? <ValueLineChart labels={trend.labels} values={trend.values} valueLabel={t("dash.tokens")} toolTips={trend.tips} />
-            : <div className="status">{t("state.noData")}</div>}
+        {trendGran === "day" ? (
+          <>
+            <div className="legend">
+              {SERIES_DEFS.map(([key, name, color]) => (
+                <span className="item" key={key}>
+                  <span className="swatch" style={{ background: color }} />{name}
+                </span>
+              ))}
+            </div>
+            {dailyChart}
+            {showHourly && (
+              <>
+                <h2 style={{ marginTop: 14 }}>{t("dash.hourly")}</h2>
+                <div className="legend">
+                  {SERIES_DEFS.slice(0, 3).map(([key, name, color]) => (
+                    <span className="item" key={key}>
+                      <span className="swatch" style={{ background: color }} />{name}
+                    </span>
+                  ))}
+                </div>
+                <StackedBars
+                  labels={hourly.map((entry) => String(entry.hour).padStart(2, "0"))}
+                  series={SERIES_DEFS.map(([key, , color]) => ({ color, data: hourly.map((entry) => entry[key]) }))}
+                  columnTip={(i, total) => {
+                    const entry = hourly[i] || {};
+                    return `<b>${String(i).padStart(2, "0")}:00 – ${String(i).padStart(2, "0")}:59</b>` +
+                      SERIES_DEFS.map(([key, name, color]) =>
+                        `<div class="tt-row"><span class="swatch" style="background:${color}"></span>${name}` +
+                        `<span class="tt-val">${fmt(entry[key])}</span></div>`).join("") +
+                      `<div class="tt-row">${t("dash.ttTotal")}<span class="tt-val">${fmt(total)}</span></div>` +
+                      `<div class="tt-row">${t("dash.ttRequests")}<span class="tt-val">${fmt(entry.requests)}</span></div>`;
+                  }}
+                />
+              </>
+            )}
+          </>
+        ) : (
+          trendGran === "year" && !trendAnalytics
+            ? <div className="status">{t("dash.trendYearlyHint")}</div>
+            : trend.labels.length
+              ? <ValueLineChart labels={trend.labels} values={trend.values} valueLabel={t("dash.tokens")} toolTips={trend.tips} />
+              : <div className="status">{t("state.noData")}</div>
+        )}
       </section>
 
       <section

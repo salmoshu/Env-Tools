@@ -35,6 +35,10 @@ export default function App() {
   // 仅手动刷新触发，60s 自动轮失败不弹——角标已常驻说明状态）
   const [quotaNote, setQuotaNote] = useState("");
   const wasRefreshing = useRef(false);
+  // 刷新看门狗：usage-update 广播未到达（后端超时/链路异常）时按钮会被
+  // disabled 卡死——65s 强制复位（后端取数超时 60s，广播应在此之前到达），
+  // 避免"点了没反应、只能等它自己恢复"的观感
+  const refreshWatchdog = useRef(0);
   // 订阅语言切换：t() 的输出随 useLang 状态变化整树重渲染
   useLang();
 
@@ -72,6 +76,7 @@ export default function App() {
 
   useEffect(() => {
     const off = window.api.onUsageUpdate((payload) => {
+      clearTimeout(refreshWatchdog.current);
       setLastPayload(payload);
       setRefreshing(false);
     });
@@ -89,6 +94,7 @@ export default function App() {
       off();
       offNavigate();
       offMaximized();
+      clearTimeout(refreshWatchdog.current);
       window.removeEventListener("hashchange", onHash);
     };
   }, []);
@@ -101,7 +107,14 @@ export default function App() {
   const navigate = (next) => { window.location.hash = `#/${next}`; };
   const triggerRefresh = () => {
     setRefreshing(true);
-    window.api.refresh();
+    clearTimeout(refreshWatchdog.current);
+    refreshWatchdog.current = setTimeout(() => setRefreshing(false), 65000);
+    try {
+      window.api.refresh();
+    } catch {
+      clearTimeout(refreshWatchdog.current);
+      setRefreshing(false);
+    }
   };
 
   return (
@@ -173,7 +186,7 @@ export default function App() {
               onKeyDown={activateOnKeys(() => navigate("dashboard"))}
               title={t("tip.analytics")}
             >
-              <AnalyticsIcon /> {t("nav.analytics")}
+              <span className="nav-icon"><AnalyticsIcon /></span> {t("nav.analytics")}
             </div>
             <div
               className={`side-item nav${route === "tools" ? " active" : ""}`}
@@ -183,7 +196,7 @@ export default function App() {
               onKeyDown={activateOnKeys(() => navigate("tools"))}
               title={t("tip.tools")}
             >
-              <ToolsIcon /> {t("nav.tools")}
+              <span className="nav-icon"><ToolsIcon /></span> {t("nav.tools")}
             </div>
           </nav>
           {route === "tools" && (

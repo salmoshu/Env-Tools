@@ -77,19 +77,19 @@
   --dur: 0.15s;
   --ease: cubic-bezier(0, 0, 0.2, 1);
 
-  /* 图表系列色：单一蓝色谱系 + 中性灰 */
+  /* 图表系列色：蓝色 + 青色 + 紫色 + 中性灰（多彩但克制） */
   --c-input: #1A88FF;
-  --c-output: #4D9EFF;
-  --c-cache-read: #7FBFFF;
+  --c-output: #00A1FF;
+  --c-cache-read: #A16BFF;
   --c-cache-creation: #8D9390;
   --pie-1: #1A88FF;
-  --pie-2: #4D9EFF;
-  --pie-3: #7FBFFF;
-  --pie-4: #A8D1FF;
-  --pie-5: #8D9390;
-  --pie-6: #C3C3C3;
-  --pie-7: #707070;
-  --pie-8: #E1E3E6;
+  --pie-2: #00A1FF;
+  --pie-3: #A16BFF;
+  --pie-4: #16C456;
+  --pie-5: #FFD230;
+  --pie-6: #FF9F0A;
+  --pie-7: #FF4756;
+  --pie-8: #8D9390;
 
   /* 热力图：暗色侧蓝色四级坡 */
   --cal-0: #1F1F1F;
@@ -142,17 +142,17 @@
   --accent-hover: rgba(23, 131, 255, 0.18);
 
   --c-input: #1783FF;
-  --c-output: #4D9EFF;
-  --c-cache-read: #A0DAF7;
-  --c-cache-creation: #C3C3C3;
+  --c-output: #00A1FF;
+  --c-cache-read: #985FFB;
+  --c-cache-creation: #8D9390;
   --pie-1: #1783FF;
-  --pie-2: #4D9EFF;
-  --pie-3: #8EC6FF;
-  --pie-4: #A0DAF7;
-  --pie-5: #8D9390;
-  --pie-6: #C3C3C3;
-  --pie-7: #707070;
-  --pie-8: #E1E3E6;
+  --pie-2: #00A1FF;
+  --pie-3: #985FFB;
+  --pie-4: #16C456;
+  --pie-5: #FFD230;
+  --pie-6: #FF9500;
+  --pie-7: #FF4756;
+  --pie-8: #8D9390;
 
   --cal-0: #EEF1F4;
   --cal-1: #C9E4FF;
@@ -234,15 +234,6 @@ button:focus-visible, [role="button"]:focus-visible, th.sortable:focus-visible {
 .titlebar .title {
   font-size: 13px; font-weight: 600; letter-spacing: 0.01em;
   color: var(--text);
-}
-.titlebar .title::after {
-  content: "";
-  display: inline-block;
-  width: 5px; height: 5px;
-  background: var(--accent);
-  border-radius: 50%;
-  margin-left: 7px;
-  vertical-align: 3px;
 }
 .titlebar .btn {
   -webkit-app-region: no-drag;
@@ -431,16 +422,16 @@ td b { font-weight: 600; }
 .qmembership em { margin-left: auto; color: var(--warn); font-style: normal; white-space: nowrap; }
 .qmembership em.ended { color: var(--red); }
 .qmembership.error { color: var(--red); }
-/* 重置机会行统一绿色（GLM 重置卡与 Codex 速率重置同色，不再按可用状态灰绿切换） */
-.limit-resets { margin: 1px 0 2px; color: var(--green); font-size: 11px; font-variant-numeric: tabular-nums; }
+/* 重置机会行：品牌规范下的中性灰，不使用状态绿 */
+.limit-resets { margin: 1px 0 2px; color: var(--dim); font-size: 11px; font-variant-numeric: tabular-nums; }
 /* 配额重置按钮：≥95% 用量才出现，点击弹确认对话框，结果内联展示 */
 .reset-action-btn {
   margin-left: 8px; padding: 0 9px; font-size: 11px; line-height: 18px;
-  color: var(--green); background: transparent;
-  border: 1px solid currentColor; border-radius: var(--r-pill); cursor: pointer;
+  color: var(--dim); background: transparent;
+  border: 1px solid var(--border); border-radius: var(--r-pill); cursor: pointer;
   opacity: 0.9;
 }
-.reset-action-btn:hover { opacity: 1; background: rgba(22, 196, 86, 0.10); }
+.reset-action-btn:hover { opacity: 1; color: var(--text); background: var(--hover); border-color: var(--hairline); }
 .reset-action-btn:disabled { opacity: 0.45; cursor: default; }
 .reset-action-result { margin-left: 8px; cursor: pointer; user-select: none; }
 .reset-action-result.ok { color: var(--green); font-weight: 600; }
@@ -602,6 +593,16 @@ td b { font-weight: 600; }
   content: ""; position: absolute; left: 2px; right: 2px; top: 50%; height: 2px;
   margin-top: -1px; background: var(--accent); border-radius: 1px;
 }
+/* 显示面板拖拽重排（v0.7.34）：手柄 + 拖走/落点反馈；勾选状态由行点击切换 */
+.display-drag {
+  flex: none; cursor: grab; color: var(--faint); user-select: none;
+  padding: 2px 4px; margin-left: -4px; border-radius: var(--r-xs);
+  font-size: 11px; line-height: 1;
+}
+.display-drag:hover { color: var(--dim); background: var(--hover); }
+.display-drag-spacer { width: 15px; flex-shrink: 0; }
+.display-list-item.dragging { opacity: 0.45; }
+.display-list-item.drop-target { outline: 1.5px dashed var(--accent); outline-offset: -2px; }
 .env-option {
   display: flex; align-items: center; gap: 9px; padding: 8px 11px; border-radius: var(--r-sm);
   font-size: 12.5px; color: var(--dim); cursor: pointer; border: 1px solid transparent; margin-bottom: 5px;
@@ -824,12 +825,14 @@ td b { font-weight: 600; }
 .app-sidebar .side-item.nav.active {
   background: var(--accent-softer); color: var(--accent-text);
 }
-.app-sidebar .side-item.nav svg { flex-shrink: 0; }
-/* 品牌蓝点：logo 蓝点在导航激活项上的复用（右侧小圆点） */
-.app-sidebar .side-item.nav.active::after {
+.app-sidebar .side-item.nav svg { flex-shrink: 0; display: block; }
+/* 品牌蓝点放在图标上（而非标题旁）：激活项的图标右上角落点小圆点 */
+.app-sidebar .side-item.nav .nav-icon { position: relative; display: inline-flex; flex: none; }
+.app-sidebar .side-item.nav.active .nav-icon::after {
   content: "";
+  position: absolute; top: -2px; right: -3px;
   width: 5px; height: 5px; border-radius: 50%;
-  background: var(--accent); margin-left: auto; flex: none;
+  background: var(--accent);
 }
 
 .titlebar { align-items: center; }
@@ -841,7 +844,7 @@ td b { font-weight: 600; }
 
 /* 卡片标题行（标题 + 右侧控件） */
 .card-head-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
-.card-head-row h2 { margin: 0; }
+.card-head-row h2 { margin: 0 auto 0 0; text-align: left; }
 .card-head-actions { display: flex; align-items: center; gap: 8px; }
 
 /* 卡片铺满视图：铺满标题栏（44px）以下、侧边栏（148px）以右的主体区域 */
@@ -850,6 +853,9 @@ td b { font-weight: 600; }
   top: 44px; left: 148px; right: 0; bottom: 0;
   z-index: 40;
   margin: 0;
+  /* v0.7.34：清掉常规布局的 max-width（如 .card-w-side 的 500px），
+     否则 fixed 定位下左右锚定的宽度仍被 max-width 截断，铺满只占一角 */
+  max-width: none;
   border: none;
   border-radius: 0;
   box-shadow: none;
@@ -858,6 +864,12 @@ td b { font-weight: 600; }
 }
 .card-expanded .chart { height: min(70vh, 640px); }
 .card-expanded .table-wrap { max-height: none; }
+/* 模型占比铺满：donut 随容器放大（charts.jsx 按 clientHeight 自适应尺寸） */
+.card-expanded .pie-wrap {
+  min-height: min(70vh, 640px);
+  align-items: center; justify-content: center; gap: 32px;
+}
+.card-expanded .pie-legend { flex: 0 1 320px; }
 
 /* --- 滚动结构调整：页头固定，滚动条只出现在页头之下 --- */
 .page.page-flex { height: 100%; display: flex; flex-direction: column; padding: 0; }
@@ -1115,16 +1127,6 @@ tr.group-row .group-stats { margin-left: 10px; color: var(--faint); font-weight:
 .sess-ago { color: var(--faint); }
 
 /* --- v0.7.33：品牌细节补全 --- */
-/* 页头标题与品牌蓝点：标题右侧的小圆点呼应 logo */
-.page-head h1::after {
-  content: "";
-  display: inline-block;
-  width: 5px; height: 5px;
-  margin-left: 8px;
-  border-radius: 50%;
-  background: var(--accent);
-  vertical-align: 7px;
-}
 /* 图表容器：浅色底省略重网格的观感由 --track 的极低对比实现 */
 .chart svg line { shape-rendering: crispEdges; }
 /* 滚动区顶部留白，避免 sticky 表头与卡片圆角粘连 */
@@ -1132,4 +1134,3 @@ tr.group-row .group-stats { margin-left: 10px; color: var(--faint); font-weight:
 .table-wrap table td:first-child { padding-left: 14px; }
 /* 小窗口看板：标题栏更紧凑 */
 .board-frame .titlebar { height: 42px; }
-.board-frame .titlebar .title::after { display: none; }

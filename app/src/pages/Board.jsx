@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   activateOnKeys, fmtSpan, isNewerVersion, levelClass, nearQuotaLimit, QUOTA_RESET_THRESHOLD,
-  timeFractionOf, fmtReset, windowUsagePct,
+  sortByDisplayOrder, timeFractionOf, fmtReset, windowUsagePct,
 } from "../utils.js";
 import { t, useLang } from "../i18n.js";
 import { useInstallState, setInstallRunning, setInstallResult, dismissInstallResult } from "../installState.js";
@@ -132,10 +132,16 @@ export default function Board({ lastPayload }) {
   }, [install.result, install.running]);
 
   const data = lastPayload && lastPayload.data;
-  const accounts = ((data && data.accounts) || [])
-    .filter((a) => selectedProviders.has(a.provider));
-  const visibleErrors = ((data && data.errors) || [])
-    .filter((e) => selectedProviders.has(e.provider) && !dismissedErrors[`${e.provider}:${e.error}`]);
+  // 与用量分析配额区同序：设置页"显示"面板的拖拽顺序（v0.7.34）
+  const accounts = sortByDisplayOrder(
+    ((data && data.accounts) || []).filter((a) => selectedProviders.has(a.provider)),
+    (a) => a.provider,
+  );
+  const visibleErrors = sortByDisplayOrder(
+    ((data && data.errors) || [])
+      .filter((e) => selectedProviders.has(e.provider) && !dismissedErrors[`${e.provider}:${e.error}`]),
+    (e) => e.provider || "",
+  );
   const versions = (data && data.versions) || {};
 
   // 错误卡片自动淡出

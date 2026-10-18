@@ -151,6 +151,40 @@ export function watchExternalTheme(onChange) {
   };
 }
 
+// --- 设置页"显示"面板的 provider 顺序（拖拽重排，Dashboard/看板共用） ---------
+
+const DISPLAY_ORDER_KEY = "ai-usage-monitor.display-provider-order";
+
+export function readDisplayOrder() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(DISPLAY_ORDER_KEY) || "null");
+    if (Array.isArray(stored)) return stored.filter((p) => typeof p === "string");
+  } catch {}
+  return null;
+}
+
+export function writeDisplayOrder(order) {
+  try { localStorage.setItem(DISPLAY_ORDER_KEY, JSON.stringify(order)); } catch {}
+}
+
+// 存储顺序与当前已知 provider 合并：失效项剔除，新 provider 附后
+export function mergeDisplayOrder(known) {
+  const stored = readDisplayOrder() || [];
+  const valid = stored.filter((p) => known.includes(p));
+  return [...valid, ...known.filter((p) => !valid.includes(p))];
+}
+
+// 数组按显示面板顺序重排；未列入的项保持原相对顺序附后（sort 稳定）
+export function sortByDisplayOrder(items, getProvider) {
+  const order = readDisplayOrder();
+  if (!order || !order.length) return items;
+  const rank = new Map(order.map((name, i) => [name, i]));
+  const fallback = order.length;
+  return items.slice().sort((a, b) =>
+    (rank.has(getProvider(a)) ? rank.get(getProvider(a)) : fallback)
+    - (rank.has(getProvider(b)) ? rank.get(getProvider(b)) : fallback));
+}
+
 // div/span 伪按钮的键盘激活（Enter/Space），行为对齐原生 button；
 // 仅配合 role="button" + tabIndex 使用，避免屏幕阅读器语义缺失
 export function activateOnKeys(handler) {

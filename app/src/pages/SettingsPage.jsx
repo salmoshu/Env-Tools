@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   activateOnKeys, fmtSpan,
+  mergeDisplayOrder, writeDisplayOrder,
   readThemePreference, writeThemePreference, applyTheme,
 } from "../utils.js";
 import { t, useLang, setLang, getLang } from "../i18n.js";
@@ -58,6 +59,10 @@ function membershipEndStatus(endsAt, autoRenew = false) {
 function DisplayPanel({ lastPayload }) {
   const [knownProviders, setKnownProviders] = useState([]);
   const [selectedProviders, setSelectedProviders] = useState(new Set());
+  // 展示顺序（v0.7.34）：拖拽手柄重排并持久化；用量分析配额区与看板同序
+  const [order, setOrder] = useState([]);
+  const [dragName, setDragName] = useState(null);
+  const [dropName, setDropName] = useState(null);
 
   useEffect(() => {
     if (!lastPayload || !lastPayload.data) return;
@@ -84,15 +89,47 @@ function DisplayPanel({ lastPayload }) {
     if (knownProviders.length > 0) setSelectedProviders(new Set(knownProviders));
   }, [knownProviders.join("|")]);
 
+  // 存储顺序过滤失效 provider、新 provider 附后；payload 刷新不打断未完成的拖拽
+  useEffect(() => {
+    if (!dragName) setOrder(mergeDisplayOrder(knownProviders));
+  }, [knownProviders.join("|")]);
+
+  // 原生拖拽期间不派发 mouseup；手柄按下未拖动即松开时在此复位
+  useEffect(() => {
+    const clear = () => setDragName(null);
+    window.addEventListener("mouseup", clear);
+    return () => window.removeEventListener("mouseup", clear);
+  }, []);
+
+  const dropRow = (target) => {
+    const source = dragName;
+    setDropName(null);
+    setDragName(null);
+    if (!source || source === target) return;
+    setOrder((prev) => {
+      const next = prev.filter((n) => n !== source);
+      const at = next.indexOf(target);
+      next.splice(at >= 0 ? at : next.length, 0, source);
+      writeDisplayOrder(next);
+      return next;
+    });
+  };
+
   const persist = (next) => {
     try { localStorage.setItem(DISPLAY_SELECTION_KEY, JSON.stringify([...next])); } catch {}
   };
+  const toggle = (name) => setSelectedProviders((prev) => {
+    const next = new Set(prev);
+    if (next.has(name)) next.delete(name); else next.add(name);
+    persist(next);
+    return next;
+  });
   const allSelected = knownProviders.length > 0 && selectedProviders.size === knownProviders.length;
 
   return (
     <div className="panel" id="panel-display">
       <div className="panel-title">{t("settings.displayTitle")}</div>
-      <div className="panel-hint">{t("settings.displayHint")}</div>
+      <div className="panel-hint">{t("settings.displayHint")} {t("settings.displayOrderHint")}</div>
       <div className="settings-card">
         <div
           className="display-list-item"
@@ -101,28 +138,36 @@ function DisplayPanel({ lastPayload }) {
           onClick={() => setSelectedProviders(allSelected ? new Set() : new Set(knownProviders))}
           onKeyDown={activateOnKeys(() => setSelectedProviders(allSelected ? new Set() : new Set(knownProviders)))}
         >
+          <span className="display-drag-spacer" />
           <span className={`cb${allSelected ? " on" : selectedProviders.size > 0 ? " partial" : ""}`} />
           {t("settings.all")}
         </div>
-        {knownProviders.map((name) => (
+        {order.map((name) => (
           <div
             key={name}
-            className="display-list-item"
+            className={`display-list-item${dragName === name ? " dragging" : ""}${dropName === name && dragName && dragName !== name ? " drop-target" : ""}`}
             role="button"
             tabIndex={0}
-            onClick={() => setSelectedProviders((prev) => {
-              const next = new Set(prev);
-              if (next.has(name)) next.delete(name); else next.add(name);
-              persist(next);
-              return next;
-            })}
-            onKeyDown={activateOnKeys(() => setSelectedProviders((prev) => {
-              const next = new Set(prev);
-              if (next.has(name)) next.delete(name); else next.add(name);
-              persist(next);
-              return next;
-            }))}
+            draggable={dragName === name}
+            onDragStart={(event) => {
+              event.dataTransfer.setData("text/plain", name);
+              event.dataTransfer.effectAllowed = "move";
+            }}
+            onDragEnd={() => { setDragName(null); setDropName(null); }}
+            onDragOver={(event) => {
+              event.preventDefault();
+              setDropName((prev) => (prev === name ? prev : name));
+            }}
+            onDrop={() => dropRow(name)}
+            onClick={() => toggle(name)}
+            onKeyDown={activateOnKeys(() => toggle(name))}
           >
+            <span
+              className="card-drag display-drag"
+              title={t("settings.displayOrderHint")}
+              onMouseDown={() => setDragName(name)}
+              onClick={(event) => event.stopPropagation()}
+            >⠿</span>
             <span className={`cb${selectedProviders.has(name) ? " on" : ""}`} />
             {name}
           </div>
