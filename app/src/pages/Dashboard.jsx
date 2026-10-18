@@ -11,7 +11,7 @@ import {
 } from "../utils.js";
 import {
   CalendarHeatmap, DonutChart, LineChart, MODEL_PALETTE,
-  SERIES_DEFS, StackedBars, ProjectBars, ValueLineChart,
+  SERIES_DEFS, StackedBars, ProjectBars,
 } from "../components/charts.jsx";
 import { RefreshIcon } from "../components/Titlebar.jsx";
 import ResetButton from "../components/ResetButton.jsx";
@@ -290,7 +290,8 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
   const [analytics, setAnalytics] = useState(null);
   const [analyticsError, setAnalyticsError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [days, setDays] = useState(() => {
+  // 页面分析口径固定 30 天（v0.7.34 移除了范围下拉框）；每日卡的按月视图单独拉 365 天
+  const [days] = useState(() => {
     try {
       const saved = localStorage.getItem(DAYS_KEY);
       return RANGE_OPTIONS.includes(saved) ? saved : "30";
@@ -397,7 +398,11 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
     onDrop: () => dropCard(id),
   });
   const [trendGran, setTrendGran] = useState(() => {
-    try { return localStorage.getItem(TREND_KEY) || "day"; } catch { return "day"; }
+    try {
+      const saved = localStorage.getItem(TREND_KEY);
+      // 旧值 year 已并入 month（同为月度分桶口径）
+      return ["day", "week", "month"].includes(saved) ? saved : "month";
+    } catch { return "month"; }
   });
   const [trendAnalytics, setTrendAnalytics] = useState(null);
   // 周起点与速度口径（设置页）：趋势分桶边界与 Speed 列/速率卡的计算方式
@@ -553,9 +558,9 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
     return () => clearTimeout(timer);
   }, [install.result, install.running]);
 
-  // 年度趋势需要 12 个月数据：单独拉取，避免影响主视图的 days 选择
+  // 按月视图需要最近 12 个月数据：单独拉取，避免影响主视图的 days 口径
   useEffect(() => {
-    if (trendGran !== "year") return;
+    if (trendGran !== "month") return;
     let cancelled = false;
     window.api.getAnalytics(365, agent, target).then((result) => {
       if (!cancelled && result && result.ok && result.analytics) setTrendAnalytics(result.analytics);
@@ -609,8 +614,8 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
   const daily = analytics && analytics.daily;
   const dailyProjectsMap = (analytics && analytics.daily_projects) || {};
 
-  // --- token 趋势（日/周/年） ---
-  const trendSource = trendGran === "year" ? (trendAnalytics || analytics) : analytics;
+  // --- 每日 Token（按天/按周/按月分桶，柱=构成、线=总量趋势） ---
+  const trendSource = trendGran === "month" ? (trendAnalytics || analytics) : analytics;
   const trend = useMemo(() => {
     const list = (trendSource && trendSource.day_list) || [];
     const rows = (trendSource && trendSource.daily) || [];
@@ -621,6 +626,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
     if (trendGran === "day") {
       return {
         labels: list.map(shortDateLabel),
+        series: SERIES_DEFS.map(([key, , color]) => ({ color, data: rows.map((e) => e[key]) })),
         values: rows.map((e) => e.total || 0),
         tips: list.map((day, i) =>
           tip(shortDateLabel(day), (dailyProjectsMap[day] || []).slice(0, 3).map((p) => [p.name, p.total]), rows[i]?.total)),
@@ -629,7 +635,9 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
     const labels = [];
     const values = [];
     const tips = [];
+    const seriesAgg = SERIES_DEFS.map(() => []);
     let acc = 0;
+    let accKeys = SERIES_DEFS.map(() => 0);
     let bucketStartIdx = 0;
     const flush = (startIdx, endIdx) => {
       const agg = {};
@@ -639,14 +647,18 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
       const projects = Object.entries(agg).sort((a, b) => b[1] - a[1]).slice(0, 3);
       const label = trendGran === "week"
         ? list[startIdx].slice(5)
-        : `${MONTH_SHORT[Number(list[startIdx].slice(5, 7)) - 1]}`;
+        : `${MONTH_SHORT[Number(list[startIdx].slice(5, 7)) - 1]} '${list[startIdx].slice(2, 4)}`;
       labels.push(label);
       values.push(acc);
+      SERIES_DEFS.forEach((_, k) => seriesAgg[k].push(accKeys[k]));
       tips.push(tip(label, projects, acc));
+      acc = 0;
+      accKeys = SERIES_DEFS.map(() => 0);
     };
     for (let i = 0; i < list.length; i++) {
       const day = new Date(`${list[i]}T00:00:00`);
       acc += rows[i]?.total || 0;
+      SERIES_DEFS.forEach(([key], k) => { accKeys[k] += rows[i]?.[key] || 0; });
       const boundary = trendGran === "week"
         ? day.getDay() === (weekStart === "sunday" ? 0 : 1)
         : day.getDate() === 1;
@@ -656,16 +668,24 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
       }
       if (i === list.length - 1) flush(bucketStartIdx, i);
     }
-    return { labels, values, tips };
+    return {
+      labels,
+      values,
+      tips,
+      series: SERIES_DEFS.map(([, , color], k) => ({ color, data: seriesAgg[k] })),
+    };
   }, [trendSource, trendGran, weekStart]);
 
-  const dailyChart = daily && (
+  const dailyChart = trend.labels.length > 0 && (
     <StackedBars
       className="tall"
-      labels={shortDays}
-      series={SERIES_DEFS.map(([key, , color]) => ({ color, data: daily.map((e) => e[key]) }))}
+      labels={trend.labels}
+      series={trend.series}
+      line={trend.values}
       columnTip={(i, total) => {
-        const entry = daily[i] || {};
+        // 按天粒度保留构成/请求/缓存命中率明细；按周/按月用聚合提示
+        if (trendGran !== "day") return trend.tips[i];
+        const entry = (daily || [])[i] || {};
         return `<b>${entry.date || ""}</b>` +
           SERIES_DEFS.map(([key, name, color]) =>
             `<div class="tt-row"><span class="swatch" style="background:${color}"></span>${name}` +
@@ -1094,10 +1114,9 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
       >
         <div className="card-head-row">
           {dragHandle("daily")}
-          <h2>{t("dash.dailyTrend")}</h2>
+          <h2>{t("dash.daily")}</h2>
           <div className="card-head-actions">
-            {/* v0.7.34：token 趋势并入每日 Token 卡——粒度选择器切换
-                按天=构成堆叠柱 / 按周、按年=总量折线 */}
+            {/* 粒度切换：柱=各粒度构成、线=总量趋势；按月单独拉取 365 天数据 */}
             <select
               className="control"
               value={trendGran}
@@ -1108,23 +1127,8 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
             >
               <option value="day">{t("dash.trendDaily")}</option>
               <option value="week">{t("dash.trendWeekly")}</option>
-              <option value="year">{t("dash.trendYearly")}</option>
+              <option value="month">{t("dash.trendMonthly")}</option>
             </select>
-            {trendGran !== "year" ? (
-              <select
-                className="control"
-                value={days}
-                title={t("dash.range")}
-                onChange={(event) => {
-                  setDays(event.target.value);
-                  try { localStorage.setItem(DAYS_KEY, event.target.value); } catch {}
-                }}
-              >
-                {RANGE_OPTIONS.map((n) => (
-                  <option key={n} value={n}>{t(`dash.range${n}`)}</option>
-                ))}
-              </select>
-            ) : null}
             {trendGran === "day" ? (
               <button
                 type="button"
@@ -1137,48 +1141,42 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
             {expandBtn("daily")}
           </div>
         </div>
-        {trendGran === "day" ? (
+        <div className="legend">
+          {SERIES_DEFS.map(([key, name, color]) => (
+            <span className="item" key={key}>
+              <span className="swatch" style={{ background: color }} />{name}
+            </span>
+          ))}
+        </div>
+        {trendGran === "month" && !trendAnalytics
+          ? <div className="status">{t("state.loading")}</div>
+          : trend.labels.length
+            ? dailyChart
+            : <div className="status">{t("state.noData")}</div>}
+        {trendGran === "day" && showHourly && (
           <>
+            <h2 style={{ marginTop: 14 }}>{t("dash.hourly")}</h2>
             <div className="legend">
-              {SERIES_DEFS.map(([key, name, color]) => (
+              {SERIES_DEFS.slice(0, 3).map(([key, name, color]) => (
                 <span className="item" key={key}>
                   <span className="swatch" style={{ background: color }} />{name}
                 </span>
               ))}
             </div>
-            {dailyChart}
-            {showHourly && (
-              <>
-                <h2 style={{ marginTop: 14 }}>{t("dash.hourly")}</h2>
-                <div className="legend">
-                  {SERIES_DEFS.slice(0, 3).map(([key, name, color]) => (
-                    <span className="item" key={key}>
-                      <span className="swatch" style={{ background: color }} />{name}
-                    </span>
-                  ))}
-                </div>
-                <StackedBars
-                  labels={hourly.map((entry) => String(entry.hour).padStart(2, "0"))}
-                  series={SERIES_DEFS.map(([key, , color]) => ({ color, data: hourly.map((entry) => entry[key]) }))}
-                  columnTip={(i, total) => {
-                    const entry = hourly[i] || {};
-                    return `<b>${String(i).padStart(2, "0")}:00 – ${String(i).padStart(2, "0")}:59</b>` +
-                      SERIES_DEFS.map(([key, name, color]) =>
-                        `<div class="tt-row"><span class="swatch" style="background:${color}"></span>${name}` +
-                        `<span class="tt-val">${fmt(entry[key])}</span></div>`).join("") +
-                      `<div class="tt-row">${t("dash.ttTotal")}<span class="tt-val">${fmt(total)}</span></div>` +
-                      `<div class="tt-row">${t("dash.ttRequests")}<span class="tt-val">${fmt(entry.requests)}</span></div>`;
-                  }}
-                />
-              </>
-            )}
+            <StackedBars
+              labels={hourly.map((entry) => String(entry.hour).padStart(2, "0"))}
+              series={SERIES_DEFS.map(([key, , color]) => ({ color, data: hourly.map((entry) => entry[key]) }))}
+              columnTip={(i, total) => {
+                const entry = hourly[i] || {};
+                return `<b>${String(i).padStart(2, "0")}:00 – ${String(i).padStart(2, "0")}:59</b>` +
+                  SERIES_DEFS.map(([key, name, color]) =>
+                    `<div class="tt-row"><span class="swatch" style="background:${color}"></span>${name}` +
+                    `<span class="tt-val">${fmt(entry[key])}</span></div>`).join("") +
+                  `<div class="tt-row">${t("dash.ttTotal")}<span class="tt-val">${fmt(total)}</span></div>` +
+                  `<div class="tt-row">${t("dash.ttRequests")}<span class="tt-val">${fmt(entry.requests)}</span></div>`;
+              }}
+            />
           </>
-        ) : (
-          trendGran === "year" && !trendAnalytics
-            ? <div className="status">{t("dash.trendYearlyHint")}</div>
-            : trend.labels.length
-              ? <ValueLineChart labels={trend.labels} values={trend.values} valueLabel={t("dash.tokens")} toolTips={trend.tips} />
-              : <div className="status">{t("state.noData")}</div>
         )}
       </section>
 
