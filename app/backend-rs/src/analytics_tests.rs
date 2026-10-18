@@ -331,7 +331,8 @@ fn rate_card_shows_latest_requested_model() {
             // 旧模型贡献绝大部分 token，最新一条记录才换用新模型：
             // 速率卡模型应跟随最近一次请求，而非 token 占比最高者
             kimi_line(ts, "kimi-code/k3-256k", 100_000, 0, 0, 0),
-            kimi_line(ts + 60, "kimi-code/k3", 10, 0, 0, 0),
+            kimi_line(ts + 60, "kimi-code/k3", 0, 10, 0, 0),
+            kimi_line(ts + 120, "kimi-code/k3", 0, 10, 0, 0),
         ],
     );
     std::fs::create_dir_all(&home).unwrap();
@@ -351,6 +352,10 @@ fn rate_card_shows_latest_requested_model() {
         all["kpi"]["rate"]["latest_sessions"][0]["model"],
         "kimi-code/k3"
     );
+    // 速率取最新模型自己的活跃时段（20 output / 60s），不是整段会话
+    //（20 output / 120s）；kimi 源无逐请求计时，gen_rate 为空
+    assert_eq!(all["kpi"]["rate"]["latest_sessions"][0]["rate"], 0.33);
+    assert!(all["kpi"]["rate"]["latest_sessions"][0]["gen_rate"].is_null());
     // token 占比口径仍保留在 model_rank（k3-256k 居首）
     assert_eq!(all["model_rank"][0]["model"], "kimi-code/k3-256k");
 }
@@ -592,13 +597,13 @@ fn active_1d_groups_projects_sessions_and_models() {
     assert_eq!(sessions[0]["rate"], 1.0);
     assert!(sessions[0]["gen_rate"].is_null(), "kimi 源无逐请求计时");
 
-    // 模型级：按 token 降序（同量按名升序），单记录模型速率为空
+    // 模型级：按最近使用降序（最新模型置顶），单记录模型速率为空
     let models = sessions[0]["models"].as_array().unwrap();
     assert_eq!(models.len(), 2);
-    assert_eq!(models[0]["model"], "kimi-code/k3");
+    assert_eq!(models[0]["model"], "kimi-code/k3-256k");
     assert_eq!(models[0]["output"], 30);
     assert!(models[0]["rate"].is_null());
-    assert_eq!(models[1]["model"], "kimi-code/k3-256k");
+    assert_eq!(models[1]["model"], "kimi-code/k3");
 
     // beta 会话按模型名归因 deepseek
     let beta_sessions = projects[0]["sessions"].as_array().unwrap();

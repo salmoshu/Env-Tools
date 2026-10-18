@@ -752,6 +752,9 @@ struct SessionRow {
     agent_totals: HashMap<&'static str, i64>,
     /// 会话内各模型的 token 总量：keys 即模型列表，最大值即主力模型
     model_totals: HashMap<String, i64>,
+    /// 会话内各模型的速率明细：速率卡"最新会话"行展示最新模型的独立速率，
+    /// 而不是整段会话的加权平均
+    model_stats: HashMap<String, ActiveModelRow>,
     /// 时间戳最新的 usage 记录所用模型（速率卡展示的"当前在用模型"）
     last_model: String,
     /// 仅主代理（agents/main/wire.jsonl）口径的最新模型与其时间戳：
@@ -1238,6 +1241,7 @@ impl AnalyticsState {
                         work_dir: work_dir.clone(),
                         agent_totals: HashMap::new(),
                         model_totals: HashMap::new(),
+                        model_stats: HashMap::new(),
                         last_model: String::new(),
                         last_model_main: String::new(),
                         last_main_ts: 0,
@@ -1255,6 +1259,20 @@ impl AnalyticsState {
                     .model_totals
                     .entry(record.model.clone())
                     .or_default() += total;
+                let model_stat = session
+                    .model_stats
+                    .entry(record.model.clone())
+                    .or_insert_with(|| ActiveModelRow {
+                        first: record.ts,
+                        last: record.ts,
+                        ..Default::default()
+                    });
+                model_stat.output += record.output;
+                model_stat.total += total;
+                model_stat.requests += 1;
+                model_stat.first = model_stat.first.min(record.ts);
+                model_stat.last = model_stat.last.max(record.ts);
+                model_stat.gen_seconds += record.gen_seconds;
                 *session.agent_totals.entry(record_agent).or_default() += total;
                 session.input += record.input;
                 session.output += record.output;
@@ -1303,11 +1321,28 @@ impl AnalyticsState {
                 .collect()
         };
 
+        // 速率口径：吞吐 = output ÷ 活跃时段（单记录会话为空）；
+        // TPOT = output ÷ 纯生成时长（逐请求计时不可得时为空）
+        let span_rate = |output: i64, first: i64, last: i64| -> serde_json::Value {
+            if last > first {
+                serde_json::json!((output as f64 / (last - first) as f64 * 100.0).round() / 100.0)
+            } else {
+                serde_json::Value::Null
+            }
+        };
+        let tpot_rate = |output: i64, gen_seconds: f64| -> serde_json::Value {
+            if gen_seconds > 0.0 {
+                serde_json::json!((output as f64 / gen_seconds * 100.0).round() / 100.0)
+            } else {
+                serde_json::Value::Null
+            }
+        };
+
         // 顶部速率卡数据：最近活跃的三个会话（不按项目去重），各行含
-        // 项目 / 会话 id / 最近请求的模型 / 速率。速率口径与 Sessions 表 Rate 列一致
-        //（会话 output token / 会话时长）；模型取主代理最近一次请求所用模型
-        //（子代理可能带旧模型继续跑，不算数；会话无子代理时即全会话最新记录）。
-        // 业界面板惯例：会话级 TPS 用于体验视图，滑窗 TPM 用于配额视图。
+        // 项目 / 会话 id / 最近请求的模型 / 该模型的独立速率。
+        // 模型取主代理最近一次请求所用模型（子代理可能带旧模型继续跑，不算数；
+        // 会话无子代理时即全会话最新记录），速率取该模型自己的活跃时段/生成时长，
+        // 不再用整段会话的加权平均——否则会出现"模型是最新的、速率却是全会话平均"。
         let mut latest_rows: Vec<&SessionRow> = sessions.values().collect();
         latest_rows.sort_by(|a, b| b.last.cmp(&a.last).then(b.total.cmp(&a.total)));
         latest_rows.truncate(3);
@@ -1331,26 +1366,21 @@ impl AnalyticsState {
                         .map(|(name, _)| name.clone())
                         .unwrap_or_default()
                 };
+                let model_stat = s.model_stats.get(&model);
+                let rate = model_stat
+                    .map(|m| span_rate(m.output, m.first, m.last))
+                    .unwrap_or(serde_json::Value::Null);
+                let gen_rate = model_stat
+                    .map(|m| tpot_rate(m.output, m.gen_seconds))
+                    .unwrap_or(serde_json::Value::Null);
                 serde_json::json!({
                     "project": s.project,
                     "session_id": s.sid,
                     "model": model,
                     "agent": dominant,
                     // 输出速率为基础（业界吞吐标准：以输出 token 计量）
-                    "rate": if s.last > s.first {
-                        serde_json::json!(
-                            (s.output as f64 / (s.last - s.first) as f64 * 100.0).round() / 100.0
-                        )
-                    } else {
-                        serde_json::Value::Null
-                    },
-                    "gen_rate": if s.gen_seconds > 0.0 {
-                        serde_json::json!(
-                            (s.output as f64 / s.gen_seconds * 100.0).round() / 100.0
-                        )
-                    } else {
-                        serde_json::Value::Null
-                    },
+                    "rate": rate,
+                    "gen_rate": gen_rate,
                     "total": s.total,
                     "output": s.output,
                     "last": s.last,
@@ -1359,27 +1389,10 @@ impl AnalyticsState {
             })
             .collect();
 
-        // 速率口径与 Sessions 表一致：吞吐 = output ÷ 活跃时段（单记录会话为空）；
-        // TPOT = output ÷ 纯生成时长（逐请求计时不可得时为空）
-        let span_rate = |output: i64, first: i64, last: i64| -> serde_json::Value {
-            if last > first {
-                serde_json::json!((output as f64 / (last - first) as f64 * 100.0).round() / 100.0)
-            } else {
-                serde_json::Value::Null
-            }
-        };
-        let tpot_rate = |output: i64, gen_seconds: f64| -> serde_json::Value {
-            if gen_seconds > 0.0 {
-                serde_json::json!((output as f64 / gen_seconds * 100.0).round() / 100.0)
-            } else {
-                serde_json::Value::Null
-            }
-        };
-
         // 近 1 天活跃视图（速率卡全屏）：项目 → 会话 → 模型三级。
         // 同名项目跨路径合并（路径取贡献最大会话的目录），项目与组内会话均按
         // 最近活跃降序（最新用过的会话出现在列表顶部，与折叠态口径一致）、
-        // 模型按 token 降序
+        // 模型按最近使用降序（最新用过的模型置顶，同刻按 token 总量）
         let mut act_projects: HashMap<String, Vec<&ActiveSessionRow>> = HashMap::new();
         for act in active.values() {
             act_projects.entry(act.project.clone()).or_default().push(act);
@@ -1407,7 +1420,14 @@ impl AnalyticsState {
                             .unwrap_or("kimi");
                         let mut model_rows: Vec<(&String, &ActiveModelRow)> =
                             s.models.iter().collect();
-                        model_rows.sort_by(|a, b| b.1.total.cmp(&a.1.total).then(a.0.cmp(b.0)));
+                        // 最新用过的模型置顶：用户把"顶部模型"理解为当前在用模型；
+                        // 同刻按 token 总量降序，最后按名称保证稳定
+                        model_rows.sort_by(|a, b| {
+                            b.1.last
+                                .cmp(&a.1.last)
+                                .then(b.1.total.cmp(&a.1.total))
+                                .then(a.0.cmp(b.0))
+                        });
                         let models: Vec<serde_json::Value> = model_rows
                             .iter()
                             .map(|(model, m)| {
