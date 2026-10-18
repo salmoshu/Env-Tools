@@ -45,7 +45,7 @@ export const MODEL_PALETTE = [
   "var(--pie-5)", "var(--pie-6)", "var(--pie-7)", "var(--pie-8)",
 ];
 
-function buildStackedBars(container, labels, series, columnTip, lineValues = null) {
+function buildStackedBars(container, labels, series, columnTip) {
   container.textContent = "";
   const width = Math.max(container.clientWidth || 0, 240);
   const height = Math.max(container.clientHeight || 0, 160);
@@ -53,7 +53,7 @@ function buildStackedBars(container, labels, series, columnTip, lineValues = nul
   const innerW = width - margin.left - margin.right;
   const innerH = height - margin.top - margin.bottom;
   const totals = labels.map((_, i) => series.reduce((sum, s) => sum + (s.data[i] || 0), 0));
-  const maxVal = niceMax(Math.max(1, ...totals, ...(lineValues || [0])));
+  const maxVal = niceMax(Math.max(1, ...totals));
   const svg = svgEl("svg", { width, height });
 
   for (let tick = 0; tick <= 4; tick++) {
@@ -95,26 +95,6 @@ function buildStackedBars(container, labels, series, columnTip, lineValues = nul
       }, svg);
       text.textContent = label;
     }
-  });
-  // 趋势线叠加层：与柱共用同一数值刻度，画在柱之上、hover 命中层之下
-  if (lineValues && lineValues.length === labels.length) {
-    const points = lineValues.map((value, i) => [
-      margin.left + slot * i + slot / 2,
-      margin.top + innerH - (Math.min(Math.max(value, 0), maxVal) / maxVal) * innerH,
-    ]);
-    svgEl("polyline", {
-      points: points.map((p) => p.join(",")).join(" "), fill: "none",
-      stroke: "var(--accent)", "stroke-width": 2,
-      "stroke-linejoin": "round", "stroke-linecap": "round",
-    }, svg);
-    for (const [cx, cy] of points) {
-      svgEl("circle", {
-        cx, cy, r: 2.5, fill: "var(--accent)",
-        stroke: "var(--card)", "stroke-width": 1.5,
-      }, svg);
-    }
-  }
-  labels.forEach((_, i) => {
     const hit = svgEl("rect", {
       x: margin.left + slot * i, y: margin.top, width: slot, height: innerH,
       fill: "transparent",
@@ -124,14 +104,14 @@ function buildStackedBars(container, labels, series, columnTip, lineValues = nul
   container.appendChild(svg);
 }
 
-export function StackedBars({ labels, series, columnTip, className = "", line = null }) {
+export function StackedBars({ labels, series, columnTip, className = "" }) {
   const ref = useRef(null);
   // labels/series/columnTip 均为父组件渲染期新建引用，不能直接做依赖（等于每次重建）；
   // 以数据序列化做 key：父组件无关重渲染（如刷新按钮动画）不再重建整棵 SVG
-  const dataKey = JSON.stringify([labels, series.map((s) => [s.color, s.data]), line]);
+  const dataKey = JSON.stringify([labels, series.map((s) => [s.color, s.data])]);
   useChartBuild(ref, (container) => {
     if (!labels) return;
-    buildStackedBars(container, labels, series, columnTip, line);
+    buildStackedBars(container, labels, series, columnTip);
   }, [dataKey]);
   useEffect(() => bindChartTooltip(ref), []);
   return <div ref={ref} className={`chart ${className}`} />;
