@@ -237,14 +237,19 @@ function QuotaErrorCard({ err, onFix }) {
   const provider = String((err && err.provider) || "");
   const lower = message.toLowerCase();
   const isApiProvider = provider === "DeepSeek" || provider === "GLM";
-  const kind = isApiProvider
-    ? "keys"
-    : /login|expired|unauthorized|401|credential|oauth|token/i.test(message)
-      ? "login"
-      : /api.?key|not set|configure|balance/i.test(lower)
-        ? "keys"
-        : "retry";
-  const hints = { login: t("err.loginHint"), keys: t("err.keysHint"), retry: t("err.retryHint") };
+  // 网络类错误优先归类：断网/代理不可达时不能误导用户去登录或加 key
+  const isNetwork =
+    /network request failed|failed to fetch|networkerror|cannot reach|timed?\s*out|dns|econn|enotfound|erefused|unreachable|socket hangup|offline|connection (refused|reset|failed)|proxy/i.test(message);
+  const kind = isNetwork
+    ? "network"
+    : isApiProvider
+      ? "keys"
+      : /login|expired|unauthorized|401|credential|oauth|token/i.test(message)
+        ? "login"
+        : /api.?key|not set|configure|balance/i.test(lower)
+          ? "keys"
+          : "retry";
+  const hints = { login: t("err.loginHint"), keys: t("err.keysHint"), retry: t("err.retryHint"), network: t("err.networkHint") };
   return (
     <div className="qcard qcard-error">
       <div className="qcard-head">
@@ -638,8 +643,9 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
     const rows = (trendSource && trendSource.daily) || [];
     const dailyProjectsMap = (trendSource && trendSource.daily_projects) || {};
     const tip = (label, projects, value) =>
-      `<b>${label}</b><div class="tt-row"><span class="tt-val">${t("dash.tokens")}: ${fmt(value || 0)}</span></div>` +
-      projects.map((p, i) => `<div class="tt-row"><span class="tt-val">${i + 1}. ${p[0]} · ${fmt(p[1])}</span></div>`).join("");
+      `<b>${label}</b><div class="tt-row">${t("dash.tokens")}<span class="tt-val">${fmt(value || 0)}</span></div>` +
+      (projects.length ? `<div class="tt-sect">${t("dash.ttTopProjects")}</div>` : "") +
+      projects.map((p, i) => `<div class="tt-row"><span>${i + 1}. ${p[0]}</span><span class="tt-val">${fmt(p[1])}</span></div>`).join("");
     if (trendGran === "day") {
       return {
         labels: list.map(shortDateLabel),
@@ -710,8 +716,10 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
           `<div class="tt-row">${t("dash.ttTotal")}<span class="tt-val">${fmt(total)}</span></div>` +
           `<div class="tt-row">${t("dash.ttRequests")}<span class="tt-val">${fmt(entry.requests)}</span></div>` +
           `<div class="tt-row">${t("dash.ttCacheHit")}<span class="tt-val">${fmtPct(entry.cache_hit_rate)}</span></div>` +
+          ((dailyProjectsMap[entry.date] || []).length
+            ? `<div class="tt-sect">${t("dash.ttTopProjects")}</div>` : "") +
           (dailyProjectsMap[entry.date] || []).slice(0, 3).map((p, j) =>
-            `<div class="tt-row"><span class="tt-val">${j + 1}. ${p.name} · ${fmt(p.total)}</span></div>`).join("");
+            `<div class="tt-row"><span>${j + 1}. ${p.name}</span><span class="tt-val">${fmt(p.total)}</span></div>`).join("");
       }}
     />
   );

@@ -325,10 +325,18 @@ fn kimi_web_access_token(
         use_proxy,
         timeout,
     );
-    let Ok(result) = result else {
-        errors.push(serde_json::json!({ "provider": "Kimi Monthly Total",
-            "error": "Failed to refresh Kimi web credentials; copy refresh_token again from the browser (see docs/usage-monitor.md)" }));
-        return None;
+    let result = match result {
+        Ok(result) => result,
+        Err(err) => {
+            // 网络层失败（断网/代理不可达）原样透传，避免前端把断网误判成"登录过期"
+            let msg = if err.starts_with("Network request failed") {
+                err
+            } else {
+                "Failed to refresh Kimi web credentials; copy refresh_token again from the browser (see docs/usage-monitor.md)".to_string()
+            };
+            errors.push(serde_json::json!({ "provider": "Kimi Monthly Total", "error": msg }));
+            return None;
+        }
     };
     let access_token = result
         .get("access_token")
