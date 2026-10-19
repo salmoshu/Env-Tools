@@ -46,8 +46,9 @@ function writeAnalyticsCache(combo, payload) {
 const AGENT_KEY = "ai-usage-monitor.analytics-agent";
 const TARGET_KEY = "ai-usage-monitor.target";
 const TREND_KEY = "ai-usage-monitor.trend-granularity";
-// 长窗口粒度的拉取天数：按月=近 12 个月、按年=近 5 年
-const TREND_EXT_DAYS = { month: 365, year: 1825 };
+// 长窗口粒度的拉取天数：按周=90 天（约 13 周）、按月=365 天（约 12 个月）；
+// 按小时/按天用主视图 30 天口径（按天恰为一个月，按小时为今日 24 小时）
+const TREND_EXT_DAYS = { week: 90, month: 365 };
 // 会话明细：分组 / 排序偏好持久化；可排序的数值列（表头点击切换升降序）
 const SESSIONS_SORT_KEY = "ai-usage-monitor.sessions-sort";
 const SESSIONS_GROUP_KEY = "ai-usage-monitor.sessions-group";
@@ -401,7 +402,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
   const [trendGran, setTrendGran] = useState(() => {
     try {
       const saved = localStorage.getItem(TREND_KEY);
-      return ["hourly", "day", "week", "month", "year"].includes(saved) ? saved : "month";
+      return ["hourly", "day", "week", "month"].includes(saved) ? saved : "month";
     } catch { return "month"; }
   });
   // 按月/按年需要更长数据窗口：单独拉取，避免影响主视图的 30 天口径
@@ -669,9 +670,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
       const projects = Object.entries(agg).sort((a, b) => b[1] - a[1]).slice(0, 3);
       const label = trendGran === "week"
         ? list[startIdx].slice(5)
-        : trendGran === "month"
-          ? `${MONTH_SHORT[Number(list[startIdx].slice(5, 7)) - 1]} '${list[startIdx].slice(2, 4)}`
-          : list[startIdx].slice(0, 4);
+        : `${MONTH_SHORT[Number(list[startIdx].slice(5, 7)) - 1]} '${list[startIdx].slice(2, 4)}`;
       labels.push(label);
       values.push(acc);
       SERIES_DEFS.forEach((_, k) => seriesAgg[k].push(accKeys[k]));
@@ -685,9 +684,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
       SERIES_DEFS.forEach(([key], k) => { accKeys[k] += rows[i]?.[key] || 0; });
       const boundary = trendGran === "week"
         ? day.getDay() === (weekStart === "sunday" ? 0 : 1)
-        : trendGran === "month"
-          ? day.getDate() === 1
-          : day.getMonth() === 0 && day.getDate() === 1;
+        : day.getDate() === 1;
       if (boundary && i > 0 && i > bucketStartIdx) {
         flush(bucketStartIdx, i - 1);
         bucketStartIdx = i;
@@ -705,6 +702,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
   const dailyChart = trend.labels.length > 0 && (
     <StackedBars
       className="tall"
+      zoomable
       labels={trend.labels}
       series={trend.series}
       columnTip={(i, total) => {
@@ -1140,8 +1138,8 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
           {dragHandle("daily")}
           <h2>{t("dash.dailyTokens")}</h2>
           <div className="card-head-actions">
-            {/* 粒度切换：按小时=今日逐时、按天=逐日、按周/按月/按年=分桶合计；
-                按月/按年单独拉取长窗口数据 */}
+            {/* 粒度：按小时=今日 24 时 / 按天=近 30 天 / 按周=90 天 / 按月=365 天；
+                图表支持悬停滚轮缩放 x 轴 */}
             <select
               className="control"
               value={trendGran}
@@ -1154,7 +1152,6 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
               <option value="day">{t("dash.trendDaily")}</option>
               <option value="week">{t("dash.trendWeekly")}</option>
               <option value="month">{t("dash.trendMonthly")}</option>
-              <option value="year">{t("dash.trendYearly")}</option>
             </select>
             {expandBtn("daily")}
           </div>
@@ -1214,6 +1211,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
           ))}
         </div>
         <StackedBars
+          zoomable
           labels={shortDays}
           series={models.map((model, i) => ({
             color: MODEL_PALETTE[i % MODEL_PALETTE.length],
@@ -1241,7 +1239,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
             <h2>{t("dash.cacheRate")}</h2>
             {expandBtn("cacheRate")}
           </div>
-          <LineChart labels={shortDays} values={(daily || []).map((entry) => entry.cache_hit_rate)} />
+          <LineChart zoomable labels={shortDays} values={(daily || []).map((entry) => entry.cache_hit_rate)} />
         </section>
         <section
           {...cardMods("topProjects")}

@@ -335,6 +335,8 @@ section.drop-target { outline: 1.5px dashed var(--accent); outline-offset: 4px; 
 .chart.tall { height: 360px; }
 .chart svg { display: block; }
 .chart svg text { font-family: var(--font-num); letter-spacing: -0.02em; }
+/* 支持滚轮 x 轴缩放的图表：给横向缩放手势一个光标提示 */
+.chart-zoomable { cursor: ew-resize; }
 .legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12px; color: var(--dim); margin-bottom: 8px; }
 .legend .item { display: inline-flex; align-items: center; gap: 7px; }
 .legend .swatch { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }

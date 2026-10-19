@@ -1,7 +1,7 @@
 // 图表组件：原生 SVG 手绘（零依赖），从 v0.2.0 的 dashboard.js 移植。
 // 数据变化时在 effect 里重建 SVG；hover 提示统一走 utils 的全局 tooltip。
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   abbrev, bindChartTooltip, esc, fmt, fmtPct, niceMax, tipRow, tipTitle,
 } from "../utils.js";
@@ -31,6 +31,32 @@ function useChartBuild(ref, build, deps) {
     observer.observe(container);
     return () => { observer.disconnect(); cancelAnimationFrame(raf); };
   }, deps);
+}
+
+// 滚轮 x 轴缩放：指针悬停在支持缩放的图表上时，滚轮拉伸/收缩可见数据窗口
+// （右对齐最新数据，上滚放大、下滚缩小回全量）；图表外或未开缩放的图表
+// 不拦截，页面保持原有滚动。返回可见桶数，null = 全部。
+function useWheelZoom(ref, enabled, total, minCount = 4) {
+  const [count, setCount] = useState(null);
+  // 粒度/数据切换后复位到全量
+  useEffect(() => { setCount(null); }, [total, enabled]);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !enabled || !total || total <= minCount) return undefined;
+    const onWheel = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setCount((prev) => {
+        const cur = Math.min(prev || total, total);
+        if (event.deltaY < 0) return Math.max(minCount, Math.floor(cur * 0.8));
+        const next = Math.max(cur + 1, Math.ceil(cur * 1.25));
+        return next >= total ? null : next;
+      });
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [enabled, total, minCount]);
+  return count;
 }
 
 export const SERIES_DEFS = [
@@ -104,17 +130,23 @@ function buildStackedBars(container, labels, series, columnTip) {
   container.appendChild(svg);
 }
 
-export function StackedBars({ labels, series, columnTip, className = "" }) {
+export function StackedBars({ labels, series, columnTip, className = "", zoomable = false }) {
   const ref = useRef(null);
   // labels/series/columnTip 均为父组件渲染期新建引用，不能直接做依赖（等于每次重建）；
   // 以数据序列化做 key：父组件无关重渲染（如刷新按钮动画）不再重建整棵 SVG
-  const dataKey = JSON.stringify([labels, series.map((s) => [s.color, s.data])]);
+  const total = labels ? labels.length : 0;
+  const zoomCount = useWheelZoom(ref, zoomable, total);
+  const from = zoomCount ? Math.max(0, total - zoomCount) : 0;
+  const vLabels = labels ? labels.slice(from) : labels;
+  const vSeries = series.map((item) => ({ ...item, data: item.data.slice(from) }));
+  const vTip = (i, t2) => columnTip(i + from, t2);
+  const dataKey = JSON.stringify([vLabels, vSeries.map((s) => [s.color, s.data])]);
   useChartBuild(ref, (container) => {
-    if (!labels) return;
-    buildStackedBars(container, labels, series, columnTip);
+    if (!vLabels) return;
+    buildStackedBars(container, vLabels, vSeries, vTip);
   }, [dataKey]);
   useEffect(() => bindChartTooltip(ref), []);
-  return <div ref={ref} className={`chart ${className}`} />;
+  return <div ref={ref} className={`chart${zoomable ? " chart-zoomable" : ""} ${className}`} />;
 }
 
 function donutArcPath(cx, cy, rInner, rOuter, start, end) {
@@ -250,11 +282,17 @@ function buildLineChart(container, labels, values) {
     container.appendChild(svg);
 }
 
-export function LineChart({ labels, values }) {
+export function LineChart({ labels, values, zoomable = false }) {
   const ref = useRef(null);
-  useChartBuild(ref, (container) => buildLineChart(container, labels, values), [labels, values]);
+  const total = labels ? labels.length : 0;
+  const zoomCount = useWheelZoom(ref, zoomable, total, 7);
+  const from = zoomCount ? Math.max(0, total - zoomCount) : 0;
+  const vLabels = labels ? labels.slice(from) : labels;
+  const vValues = values ? values.slice(from) : values;
+  const dataKey = JSON.stringify([vLabels, vValues]);
+  useChartBuild(ref, (container) => buildLineChart(container, vLabels, vValues), [dataKey]);
   useEffect(() => bindChartTooltip(ref), []);
-  return <div ref={ref} className="chart" />;
+  return <div ref={ref} className={`chart${zoomable ? " chart-zoomable" : ""}`} />;
 }
 
 /** 数值折线图（token 趋势）：y 轴按数据自适应刻度，可传入每点的自定义悬浮 HTML */
