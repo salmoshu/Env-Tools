@@ -3,7 +3,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
-  abbrev, bindChartTooltip, esc, fmt, fmtPct, niceMax, tipRow, tipTitle,
+  abbrev, bindChartClickTooltip, bindChartTooltip, esc, fmt, fmtPct, niceMax, tipRow, tipTitle,
 } from "../utils.js";
 import { t } from "../i18n.js";
 
@@ -145,7 +145,7 @@ export function StackedBars({ labels, series, columnTip, className = "", zoomabl
     if (!vLabels) return;
     buildStackedBars(container, vLabels, vSeries, vTip);
   }, [dataKey]);
-  useEffect(() => bindChartTooltip(ref), []);
+  useEffect(() => bindChartClickTooltip(ref), []);
   return <div ref={ref} className={`chart${zoomable ? " chart-zoomable" : ""} ${className}`} />;
 }
 
@@ -369,7 +369,7 @@ export function ValueLineChart({ labels, values, valueLabel = "tokens", toolTips
 
 export function ProjectBars({ items }) {
   const ref = useRef(null);
-  useEffect(() => bindChartTooltip(ref), []);
+  useEffect(() => bindChartClickTooltip(ref), []);
   if (!items || !items.length) {
     return <div className="status">{t("state.noData")}</div>;
   }

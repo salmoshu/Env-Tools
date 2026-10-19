@@ -251,3 +251,35 @@ export function bindChartTooltip(ref) {
     container.removeEventListener("mouseleave", hideTooltip);
   };
 }
+
+// 柱状图统一 click 处理：左键点中 data-tip 元素弹出提醒；点空白处、
+// 滚轮（缩放/滚动视图）或指针划出图表都会关闭提醒
+export function bindChartClickTooltip(ref) {
+  const container = ref.current;
+  if (!container) return () => {};
+  const onClick = (event) => {
+    if (event.button !== 0) return;
+    const target = event.target instanceof Element ? event.target.closest("[data-tip]") : null;
+    if (target && container.contains(target)) {
+      showTooltip(event.clientX, event.clientY, target.dataset.tip);
+      // 阻止 document 级关闭监听把刚弹出的提醒立刻关掉
+      event.stopPropagation();
+    } else {
+      hideTooltip();
+    }
+  };
+  const onDocClick = () => hideTooltip();
+  const onWheel = () => hideTooltip();
+  container.addEventListener("click", onClick);
+  container.addEventListener("wheel", onWheel, { passive: true });
+  container.addEventListener("mouseleave", hideTooltip);
+  document.addEventListener("click", onDocClick);
+  document.addEventListener("wheel", onWheel, { passive: true });
+  return () => {
+    container.removeEventListener("click", onClick);
+    container.removeEventListener("wheel", onWheel);
+    container.removeEventListener("mouseleave", hideTooltip);
+    document.removeEventListener("click", onDocClick);
+    document.removeEventListener("wheel", onWheel);
+  };
+}
