@@ -20,9 +20,9 @@ import { t, useLang } from "../i18n.js";
 import { useInstallState, setInstallRunning, setInstallResult, dismissInstallResult } from "../installState.js";
 
 const ANALYTICS_REFRESH_MS = 5 * 60 * 1000;
-const DAYS_KEY = "ai-usage-monitor.analytics-days";
-// 可选范围档；持久化值若不在档内（如历史版本遗留的 "14"）回退默认 30
-const RANGE_OPTIONS = ["7", "30", "90"];
+// 页面分析口径固定 30 天（v0.7.34 移除范围下拉框后，历史 localStorage 里的
+// "7"/"90" 不再生效——否则按天视图只剩 7 桶、命中率图因点数不足无法缩放）
+const ANALYTICS_DAYS = "30";
 // 首屏秒开：按 目标|agent|范围 缓存最近一次分析载荷，启动先画旧数据，
 // 新鲜数据到达后无缝替换（meta 行的"更新于"时间戳自然暴露陈旧度）
 const ANALYTICS_CACHE_KEY = "ai-usage-monitor.analytics-cache-v1";
@@ -293,13 +293,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
   const [analytics, setAnalytics] = useState(null);
   const [analyticsError, setAnalyticsError] = useState("");
   const [busy, setBusy] = useState(false);
-  // 页面分析口径固定 30 天（v0.7.34 移除了范围下拉框）；每日卡的按月视图单独拉 365 天
-  const [days] = useState(() => {
-    try {
-      const saved = localStorage.getItem(DAYS_KEY);
-      return RANGE_OPTIONS.includes(saved) ? saved : "30";
-    } catch { return "30"; }
-  });
+  const [days] = useState(ANALYTICS_DAYS);
   const [agent, setAgent] = useState(() => {
     try { return localStorage.getItem(AGENT_KEY) || "all"; } catch { return "all"; }
   });
@@ -402,8 +396,8 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
   const [trendGran, setTrendGran] = useState(() => {
     try {
       const saved = localStorage.getItem(TREND_KEY);
-      return ["hourly", "day", "week", "month"].includes(saved) ? saved : "month";
-    } catch { return "month"; }
+      return ["hourly", "day", "week", "month"].includes(saved) ? saved : "day";
+    } catch { return "day"; }
   });
   // 按月/按年需要更长数据窗口：单独拉取，避免影响主视图的 30 天口径
   const [trendExt, setTrendExt] = useState(null);
