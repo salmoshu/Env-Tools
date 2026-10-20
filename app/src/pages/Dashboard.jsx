@@ -15,6 +15,7 @@ import {
 } from "../components/charts.jsx";
 import { RefreshIcon } from "../components/Titlebar.jsx";
 import ResetButton from "../components/ResetButton.jsx";
+import BrandIcon from "../components/BrandIcon.jsx";
 import UpgradeOverlay from "../components/UpgradeOverlay.jsx";
 import { t, useLang } from "../i18n.js";
 import { useInstallState, setInstallRunning, setInstallResult, dismissInstallResult } from "../installState.js";
@@ -80,6 +81,8 @@ const AGENT_PROVIDERS = {
   codex: ["OpenAI Codex"],
   glm: ["GLM"],
   deepseek: ["DeepSeek"],
+  // ZCode 走智谱 GLM Coding Plan，筛选 zcode 时配额区显示 GLM 卡
+  zcode: ["GLM"],
 };
 
 const MONTH_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -124,6 +127,7 @@ function QuotaCard({ account, versions, onUpgrade, upgrading }) {
   return (
     <div className="qcard">
       <div className="qcard-head">
+        <BrandIcon of={account.provider} size={16} />
         <span className="qname">{account.provider}</span>
         {newer && onUpgrade ? (
           <span
@@ -253,6 +257,7 @@ function QuotaErrorCard({ err, onFix }) {
   return (
     <div className="qcard qcard-error">
       <div className="qcard-head">
+        <BrandIcon of={provider} size={16} />
         <span className="qname">{provider}</span>
         <span className="plan">{t("dash.unavailable")}</span>
       </div>
@@ -617,7 +622,6 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
   if (otherTotal > 0) pieItems.push({ name: "other", value: otherTotal, color: "#8D9390" });
 
   const daily = analytics && analytics.daily;
-  const dailyProjectsMap = (analytics && analytics.daily_projects) || {};
 
   // --- 每日 Token（按小时/按天/按周/按月/按年分桶的构成堆叠柱） ---
   const trendNeed = TREND_EXT_DAYS[trendGran] || 0;
@@ -641,18 +645,14 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
     }
     const list = (trendSource && trendSource.day_list) || [];
     const rows = (trendSource && trendSource.daily) || [];
-    const dailyProjectsMap = (trendSource && trendSource.daily_projects) || {};
-    const tip = (label, projects, value) =>
-      `<b>${label}</b><div class="tt-row">${t("dash.tokens")}<span class="tt-val">${fmt(value || 0)}</span></div>` +
-      (projects.length ? `<div class="tt-sect">${t("dash.ttTopProjects")}</div>` : "") +
-      projects.map((p, i) => `<div class="tt-row"><span>${i + 1}. ${p[0]}</span><span class="tt-val">${fmt(p[1])}</span></div>`).join("");
+    const tip = (label, value) =>
+      `<b>${label}</b><div class="tt-row">${t("dash.tokens")}<span class="tt-val">${fmt(value || 0)}</span></div>`;
     if (trendGran === "day") {
       return {
         labels: list.map(shortDateLabel),
         series: SERIES_DEFS.map(([key, , color]) => ({ color, data: rows.map((e) => e[key]) })),
         values: rows.map((e) => e.total || 0),
-        tips: list.map((day, i) =>
-          tip(shortDateLabel(day), (dailyProjectsMap[day] || []).slice(0, 3).map((p) => [p.name, p.total]), rows[i]?.total)),
+        tips: list.map((day, i) => tip(shortDateLabel(day), rows[i]?.total)),
       };
     }
     const labels = [];
@@ -663,18 +663,13 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
     let accKeys = SERIES_DEFS.map(() => 0);
     let bucketStartIdx = 0;
     const flush = (startIdx, endIdx) => {
-      const agg = {};
-      for (let i = startIdx; i <= endIdx; i++) {
-        for (const p of (dailyProjectsMap[list[i]] || [])) agg[p.name] = (agg[p.name] || 0) + p.total;
-      }
-      const projects = Object.entries(agg).sort((a, b) => b[1] - a[1]).slice(0, 3);
       const label = trendGran === "week"
         ? list[startIdx].slice(5)
         : `${MONTH_SHORT[Number(list[startIdx].slice(5, 7)) - 1]} '${list[startIdx].slice(2, 4)}`;
       labels.push(label);
       values.push(acc);
       SERIES_DEFS.forEach((_, k) => seriesAgg[k].push(accKeys[k]));
-      tips.push(tip(label, projects, acc));
+      tips.push(tip(label, acc));
       acc = 0;
       accKeys = SERIES_DEFS.map(() => 0);
     };
@@ -715,11 +710,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
             `<span class="tt-val">${fmt(entry[key])}</span></div>`).join("") +
           `<div class="tt-row">${t("dash.ttTotal")}<span class="tt-val">${fmt(total)}</span></div>` +
           `<div class="tt-row">${t("dash.ttRequests")}<span class="tt-val">${fmt(entry.requests)}</span></div>` +
-          `<div class="tt-row">${t("dash.ttCacheHit")}<span class="tt-val">${fmtPct(entry.cache_hit_rate)}</span></div>` +
-          ((dailyProjectsMap[entry.date] || []).length
-            ? `<div class="tt-sect">${t("dash.ttTopProjects")}</div>` : "") +
-          (dailyProjectsMap[entry.date] || []).slice(0, 3).map((p, j) =>
-            `<div class="tt-row"><span>${j + 1}. ${p.name}</span><span class="tt-val">${fmt(p.total)}</span></div>`).join("");
+          `<div class="tt-row">${t("dash.ttCacheHit")}<span class="tt-val">${fmtPct(entry.cache_hit_rate)}</span></div>`;
       }}
     />
   );
@@ -839,7 +830,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
           {session.session_id.replace("session_", "").replace(/^codex-/, "").slice(0, 8)}…
         </td>
         <td className="l" title={session.work_dir}>{session.project}</td>
-        <td className="l">{session.agent}</td>
+        <td className="l"><span className="sess-agent"><BrandIcon of={session.agent} size={12} />{session.agent}</span></td>
         <td className="l mono" title={(session.models || []).join(", ")}>
           {(session.models || []).length > 1
             ? `${session.models.length} models`
@@ -1026,7 +1017,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                             <span className="mono act-sid" title={s.session_id}>
                               {String(s.session_id).replace("session_", "").replace(/^codex-/, "").slice(0, 8)}…
                             </span>
-                            <span className="act-agent">{s.agent}</span>
+                            <span className="act-agent"><BrandIcon of={s.agent} size={11} />{s.agent}</span>
                             <span className="act-meta">
                               {fmt(s.output)} out · {s.requests} req · {t("dash.rateEndedAgo").replace("{d}", fmtSpan(s.ended_ago_seconds || 0))}
                             </span>
@@ -1080,6 +1071,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                       <span className="rate-name">{item.project}</span>
                       {tag ? <span className="rate-tag">{tag}</span> : null}
                       <span className="rate-model" title={item.model || item.agent || ""}>
+                        <BrandIcon of={item.agent} size={12} />
                         {rateModelLabel(item.agent, item.model)}
                       </span>
                       <span className="rate-val">{rateText(item)}</span>
@@ -1315,6 +1307,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                 <tbody key={g.key}>
                   <tr className="group-row">
                     <td className="l" colSpan={9} title={g.workDir || g.key}>
+                      {sessionsGroup === "agent" ? <BrandIcon of={g.key} size={13} /> : null}
                       {sessionsGroup === "agent" ? (AGENT_LABELS[g.key] || g.key) : g.key}
                       <span className="group-stats">
                         {t("dash.sessionsCount").replace("{n}", String(g.rows.length))} · {fmt(g.total)} {t("dash.tokens")}

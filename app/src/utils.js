@@ -98,6 +98,7 @@ export const AGENT_LABELS = {
   glm: "GLM",
   deepseek: "DeepSeek",
   omp: "OMP",
+  zcode: "ZCode",
 };
 
 export const AGENT_COLORS = {
@@ -106,6 +107,7 @@ export const AGENT_COLORS = {
   glm: "#e5a545",
   deepseek: "#9b7ede",
   omp: "#2dd4bf",
+  zcode: "#2563eb",
   other: "#94a3b8",
 };
 

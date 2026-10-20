@@ -10,6 +10,7 @@ import {
 import { t, useLang } from "../i18n.js";
 import { useInstallState, setInstallRunning, setInstallResult, dismissInstallResult } from "../installState.js";
 import ResetButton from "../components/ResetButton.jsx";
+import BrandIcon from "../components/BrandIcon.jsx";
 import UpgradeOverlay from "../components/UpgradeOverlay.jsx";
 
 const DISPLAY_SELECTION_KEY = "ai-usage-monitor.display-providers";
@@ -187,6 +188,7 @@ export default function Board({ lastPayload }) {
           return (
             <div className="provider" key={account.provider}>
               <div className="provider-head">
+                <BrandIcon of={account.provider} size={16} />
                 <span className="provider-name">{account.provider}</span>
                 {info.current && info.latest && isNewerVersion(info.latest, info.current) ? (
                   <span

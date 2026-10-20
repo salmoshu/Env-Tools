@@ -42,6 +42,10 @@ fn agent_attribution_matches_python_rules() {
         agent_of(Source::Kimi, "deepseek/deepseek-v4-flash"),
         "deepseek"
     );
+    // ZCode 是智谱独立 CLI：不论底层模型名是什么，会话都归 zcode，不并入 glm
+    assert_eq!(agent_of(Source::ZCode, "GLM-5.3"), "zcode");
+    assert_eq!(agent_of(Source::ZCode, "gpt-6.1-sol"), "zcode");
+    assert_eq!(agent_of(Source::Omp, "glm-5.3"), "omp");
 }
 
 #[test]

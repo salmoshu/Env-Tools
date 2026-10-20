@@ -14,7 +14,7 @@ use chrono::{DateTime, Datelike, Local, TimeZone, Timelike};
 
 pub const RECORD_RETENTION_DAYS: i64 = 400;
 pub const SESSION_CAP: usize = 500;
-pub const AGENTS: [&str; 6] = ["all", "kimi", "codex", "glm", "deepseek", "omp"];
+pub const AGENTS: [&str; 7] = ["all", "kimi", "codex", "glm", "deepseek", "omp", "zcode"];
 /// 速率卡全屏"活跃明细"窗口：近 1 天（15m/60m 速率 KPI 仍按各自短窗计算）
 pub const ACTIVE_WINDOW_SECS: i64 = 86_400;
 
@@ -714,10 +714,13 @@ fn project_name(work_dir: &str) -> String {
 }
 
 pub fn agent_of(source: Source, model: &str) -> &'static str {
-    // omp 源整体归 omp agent：底层模型可任意（kimi/deepseek/glm...），
-    // 按模型归并会把 omp 用量混进各 CLI 的统计，且配额卡无 omp 专属条目
+    // omp/zcode 源整体归各自 agent：底层模型可任意（kimi/deepseek/glm...），
+    // 按模型归并会把这些 CLI 的用量混进别家统计，且筛选/图标都以 CLI 身份为准
     if source == Source::Omp {
         return "omp";
+    }
+    if source == Source::ZCode {
+        return "zcode";
     }
     let lowered = model.to_lowercase();
     if lowered.contains("glm") || lowered.contains("zhipu") || lowered.starts_with("zai/") {
@@ -726,9 +729,6 @@ pub fn agent_of(source: Source, model: &str) -> &'static str {
         "deepseek"
     } else if source == Source::Codex {
         "codex"
-    } else if source == Source::ZCode {
-        // ZCode 走 BigModel/GLM Coding Plan，非 GLM 命名的模型也归 glm
-        "glm"
     } else {
         "kimi"
     }

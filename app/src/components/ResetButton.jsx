@@ -88,7 +88,9 @@ export default function ResetButton({ provider, resetType = null, what, disabled
             </div>
             <div className="dialog-btns">
               <button type="button" disabled={phase === "pending"} onClick={run}>
-                {phase === "pending" ? "…" : t("dash.resetDlgOk")}
+                {phase === "pending"
+                  ? <span className="reset-pending"><span className="spin-dot" />{t("dash.resetting")}</span>
+                  : t("dash.resetDlgOk")}
               </button>
               <button
                 type="button"
