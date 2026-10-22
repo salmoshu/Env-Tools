@@ -1,7 +1,7 @@
 // 设置页（主窗口内，侧边栏 + 主体布局；侧边栏顶部带返回按钮）。
-// 侧边栏按 外观 / 账户 / 环境 / 关于 四组归类（组标题 + 条目缩进）；
-// 主体滚动区内是一层居中列（.settings-column），面板标题/提示在外，
-// 控件组统一包进 .settings-card 卡片。
+// v0.7.37：参考 Kimi 桌面端设置重排——侧边栏条目带图标；主体每个分组
+// 以大标题开场，内容组织为「小组标签 + 卡片」，卡片内是 标题+描述在左、
+// 控件（分段开关/下拉/按钮/输入）在右 的行（.set-row），行间细分隔线。
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -10,6 +10,7 @@ import {
   readThemePreference, writeThemePreference, applyTheme,
 } from "../utils.js";
 import { t, useLang, setLang, getLang } from "../i18n.js";
+import BrandIcon from "../components/BrandIcon.jsx";
 
 // 用量账户 provider 显示名 → 设置 membership 小节键
 const MEMBERSHIP_PROVIDERS = [
@@ -54,7 +55,168 @@ function membershipEndStatus(endsAt, autoRenew = false) {
     : { text: `ended ${fmtSpan(-seconds)} ago`, ended: true };
 }
 
-// --- 各设置面板 -----------------------------------------------------------------
+// --- 行式布局基元（Kimi 设置风格） ------------------------------------------------
+
+// 小组标签：卡片上方的小号弱化文字（如截图里的"自动操控"）
+function GroupLabel({ children }) {
+  return <div className="set-group-label">{children}</div>;
+}
+
+// 卡片行：可选图标 + 标题/描述（左） + 控件（右）
+function SetRow({ icon, title, desc, children }) {
+  return (
+    <div className="set-row">
+      {icon ? <span className="set-row-icon">{icon}</span> : null}
+      <div className="set-row-text">
+        <div className="set-row-title">{title}</div>
+        {desc ? <div className="set-row-desc">{desc}</div> : null}
+      </div>
+      {children ? <div className="set-row-control">{children}</div> : null}
+    </div>
+  );
+}
+
+// 分段开关（brand 允许 pill 的唯一控件形态之一）
+function Seg({ value, options, onChange, disabled = false }) {
+  return (
+    <div className={`seg${disabled ? " disabled" : ""}`} role="radiogroup">
+      {options.map(([key, label]) => (
+        <button
+          key={key}
+          type="button"
+          role="radio"
+          aria-checked={value === key}
+          className={value === key ? "active" : ""}
+          disabled={disabled}
+          onClick={() => value !== key && onChange(key)}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// 设置行内反馈文字（保存中/已保存/失败）
+function RowNote({ note }) {
+  if (!note.text) return null;
+  return <div className={note.cls}>{note.text}</div>;
+}
+
+// --- 通用（外观/语言/每周起始/速率口径 四行一卡） ----------------------------------
+
+function ThemeRow() {
+  const [preference, setPreference] = useState(readThemePreference());
+  const choose = (value) => {
+    setPreference(value);
+    writeThemePreference(value);
+    applyTheme(value);
+  };
+  return (
+    <SetRow title={t("settings.theme")} desc={t("settings.themeHint")}>
+      <Seg
+        value={preference}
+        onChange={choose}
+        options={[
+          ["system", t("settings.themeSystem")],
+          ["dark", t("settings.themeDark")],
+          ["light", t("settings.themeLight")],
+        ]}
+      />
+    </SetRow>
+  );
+}
+
+function LanguageRow() {
+  const [lang, setLangState] = useState(getLang());
+  const choose = (value) => {
+    setLang(value);
+    setLangState(value);
+  };
+  return (
+    <SetRow title={t("settings.language")} desc={t("settings.langHint")}>
+      <Seg value={lang} onChange={choose} options={[["en", "English"], ["zh", "中文"]]} />
+    </SetRow>
+  );
+}
+
+function WeekStartRow({ settings }) {
+  const [value, setValue] = useState("monday");
+  const [note, setNote] = useState({ cls: "settings-note", text: "" });
+  useEffect(() => {
+    setValue((settings && settings.week_start) || "monday");
+  }, [settings]);
+  const save = async (next) => {
+    setValue(next);
+    setNote({ cls: "settings-note", text: t("state.saving") });
+    try {
+      const result = await window.api.setSettings({ week_start: next });
+      if (!result || !result.ok) throw new Error((result && result.error) || t("state.unknownError"));
+      setNote({ cls: "settings-note ok", text: t("state.saved") });
+    } catch (err) {
+      setNote({ cls: "settings-note error", text: `${t("state.saveFailed")}: ${err.message || err}` });
+    }
+  };
+  return (
+    <>
+      <SetRow title={t("settings.week")} desc={t("settings.weekHint")}>
+        <Seg
+          value={value}
+          onChange={save}
+          options={[["monday", t("settings.weekMonday")], ["sunday", t("settings.weekSunday")]]}
+        />
+      </SetRow>
+      <RowNote note={note} />
+    </>
+  );
+}
+
+function SpeedModeRow({ settings }) {
+  const [value, setValue] = useState("gen");
+  const [note, setNote] = useState({ cls: "settings-note", text: "" });
+  useEffect(() => {
+    setValue((settings && settings.speed_mode) || "gen");
+  }, [settings]);
+  const save = async (next) => {
+    setValue(next);
+    setNote({ cls: "settings-note", text: t("state.saving") });
+    try {
+      const result = await window.api.setSettings({ speed_mode: next });
+      if (!result || !result.ok) throw new Error((result && result.error) || t("state.unknownError"));
+      setNote({ cls: "settings-note ok", text: t("state.saved") });
+    } catch (err) {
+      setNote({ cls: "settings-note error", text: `${t("state.saveFailed")}: ${err.message || err}` });
+    }
+  };
+  return (
+    <>
+      <SetRow title={t("settings.speed")} desc={t("settings.speedHint")}>
+        <Seg
+          value={value}
+          onChange={save}
+          options={[["gen", t("settings.speedGen")], ["throughput", t("settings.speedThroughput")]]}
+        />
+      </SetRow>
+      <RowNote note={note} />
+    </>
+  );
+}
+
+function GeneralCard({ settings }) {
+  return (
+    <>
+      <GroupLabel>{t("settings.secGeneral")}</GroupLabel>
+      <div className="set-card">
+        <ThemeRow />
+        <LanguageRow />
+        <WeekStartRow settings={settings} />
+        <SpeedModeRow settings={settings} />
+      </div>
+    </>
+  );
+}
+
+// --- 配额显示（勾选 + 拖拽排序） ----------------------------------------------------
 
 function DisplayPanel({ lastPayload }) {
   const [knownProviders, setKnownProviders] = useState([]);
@@ -128,9 +290,13 @@ function DisplayPanel({ lastPayload }) {
 
   return (
     <div className="panel" id="panel-display">
-      <div className="panel-title">{t("settings.displayTitle")}</div>
-      <div className="panel-hint">{t("settings.displayHint")} {t("settings.displayOrderHint")}</div>
-      <div className="settings-card">
+      <GroupLabel>{t("settings.displayTitle")}</GroupLabel>
+      <div className="set-card">
+        <div className="set-row set-row-desc-only">
+          <div className="set-row-text">
+            <div className="set-row-desc">{t("settings.displayHint")} {t("settings.displayOrderHint")}</div>
+          </div>
+        </div>
         <div
           className="display-list-item"
           role="button"
@@ -169,6 +335,7 @@ function DisplayPanel({ lastPayload }) {
               onClick={(event) => event.stopPropagation()}
             >⠿</span>
             <span className={`cb${selectedProviders.has(name) ? " on" : ""}`} />
+            <BrandIcon of={name} size={14} />
             {name}
           </div>
         ))}
@@ -177,69 +344,7 @@ function DisplayPanel({ lastPayload }) {
   );
 }
 
-function ThemePanel() {
-  const [preference, setPreference] = useState(readThemePreference());
-  const options = [["system", t("settings.themeSystem")], ["dark", t("settings.themeDark")], ["light", t("settings.themeLight")]];
-  return (
-    <div className="panel" id="panel-theme">
-      <div className="panel-title">{t("settings.theme")}</div>
-      <div className="panel-hint">{t("settings.themeHint")}</div>
-      <div className="settings-card">
-        {options.map(([value, label]) => (
-          <div
-            key={value}
-            className={`env-option${preference === value ? " selected" : ""}`}
-            role="button"
-            tabIndex={0}
-            onClick={() => {
-              setPreference(value);
-              writeThemePreference(value);
-              applyTheme(value);
-            }}
-            onKeyDown={activateOnKeys(() => {
-              setPreference(value);
-              writeThemePreference(value);
-              applyTheme(value);
-            })}
-          >
-            <span className="radio" />{label}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function LanguagePanel() {
-  const [lang, setLangState] = useState(getLang());
-  const options = [["en", "English"], ["zh", "中文"]];
-  return (
-    <div className="panel" id="panel-language">
-      <div className="panel-title">{t("settings.language")}</div>
-      <div className="panel-hint">{t("settings.langHint")}</div>
-      <div className="settings-card">
-        {options.map(([value, label]) => (
-          <div
-            key={value}
-            className={`env-option${lang === value ? " selected" : ""}`}
-            role="button"
-            tabIndex={0}
-            onClick={() => {
-              setLang(value);
-              setLangState(value);
-            }}
-            onKeyDown={activateOnKeys(() => {
-              setLang(value);
-              setLangState(value);
-            })}
-          >
-            <span className="radio" />{label}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
+// --- 账户：会员 / 登录 / API Keys ---------------------------------------------------
 
 // 会员面板：每行三态 —— 手动配置（可编辑，回填 purchased_at/duration_months）/
 // 自动获取（provider 订阅接口给出 ends_at，禁用输入并标注，不随保存提交）/
@@ -305,9 +410,13 @@ function MembershipPanel({ settings, lastPayload, onSaved }) {
   };
   return (
     <div className="panel" id="panel-membership">
-      <div className="panel-title">{t("settings.membership")}</div>
-      <div className="panel-hint">{t("settings.membershipHint")}</div>
-      <div className="settings-card">
+      <GroupLabel>{t("settings.membership")}</GroupLabel>
+      <div className="set-card">
+        <div className="set-row set-row-desc-only">
+          <div className="set-row-text">
+            <div className="set-row-desc">{t("settings.membershipHint")}</div>
+          </div>
+        </div>
         {rowsWithAuto.map((row) => {
           const entry = membership[row.key];
           let stateText = "";
@@ -326,15 +435,16 @@ function MembershipPanel({ settings, lastPayload, onSaved }) {
             stateText = row.autoError; stateCls = " error";
           }
           return (
-            <div className="membership-row" key={row.key}>
-              <div className="membership-name">
-                <span>
+            <div className="set-row membership-set-row" key={row.key}>
+              <span className="set-row-icon"><BrandIcon of={row.label} size={16} /></span>
+              <div className="set-row-text">
+                <div className="set-row-title">
                   {row.label}
                   {row.auto && <span className="membership-auto">{t("settings.membershipAuto")}</span>}
-                </span>
-                <span className={`membership-state${stateCls}`}>{stateText}</span>
+                </div>
+                {stateText ? <div className={`set-row-desc membership-state${stateCls}`}>{stateText}</div> : null}
               </div>
-              <div className="membership-inputs">
+              <div className="set-row-control membership-inputs">
                 <input
                   type="datetime-local" className="membership-date" value={row.date}
                   disabled={row.auto}
@@ -353,9 +463,11 @@ function MembershipPanel({ settings, lastPayload, onSaved }) {
             </div>
           );
         })}
-        <div className={note.cls}>{note.text}</div>
-        <div className="settings-actions">
-          <button type="button" className="settings-save" disabled={saving} onClick={save}>{t("state.save")}</button>
+        <div className="set-row set-row-foot">
+          <RowNote note={note} />
+          <div className="set-row-control">
+            <button type="button" className="settings-save" disabled={saving} onClick={save}>{t("state.save")}</button>
+          </div>
         </div>
       </div>
     </div>
@@ -380,20 +492,27 @@ function LoginPanel({ currentSettings, lastPayload }) {
       setBusy(false);
     }
   };
+  const agents = [
+    ["kimi", "Kimi Code"],
+    ["codex", "OpenAI Codex"],
+  ];
   return (
     <div className="panel" id="panel-login">
-      <div className="panel-title">{t("settings.loginTitle")}</div>
-      <div className="panel-hint">{t("settings.loginHint")}</div>
-      <div className="settings-card">
-        <div className="login-row">
-          <div className="login-info"><div className="login-name">Kimi Code</div><div className="login-method">{t("settings.loginMethod")}</div></div>
-          <button type="button" className="login-btn" disabled={busy} onClick={() => login("kimi")}>{t("settings.loginBtn")}</button>
-        </div>
-        <div className="login-row">
-          <div className="login-info"><div className="login-name">OpenAI Codex</div><div className="login-method">{t("settings.loginMethod")}</div></div>
-          <button type="button" className="login-btn" disabled={busy} onClick={() => login("codex")}>{t("settings.loginBtn")}</button>
-        </div>
-        <div className={note.cls}>{note.text}</div>
+      <GroupLabel>{t("settings.loginTitle")}</GroupLabel>
+      <div className="set-card">
+        {agents.map(([agent, name]) => (
+          <div className="set-row" key={agent}>
+            <span className="set-row-icon"><BrandIcon of={name} size={16} /></span>
+            <div className="set-row-text">
+              <div className="set-row-title">{name}</div>
+              <div className="set-row-desc">{t("settings.loginMethod")}</div>
+            </div>
+            <div className="set-row-control">
+              <button type="button" className="login-btn" disabled={busy} onClick={() => login(agent)}>{t("settings.loginBtn")}</button>
+            </div>
+          </div>
+        ))}
+        <div className="set-row set-row-foot"><RowNote note={note} /></div>
       </div>
     </div>
   );
@@ -465,27 +584,46 @@ function ApiKeysPanel({ reloadKey }) {
     }
   };
 
+  const providers = [
+    ["deepseek", "DeepSeek"],
+    ["glm", "GLM / BigModel"],
+  ];
   return (
     <div className="panel" id="panel-apikeys">
-      <div className="panel-title">{t("settings.apikeys")}</div>
-      <div className="panel-hint">{t("settings.apiKeysHint")}</div>
-      <div className="settings-card">
-        <div className="key-field">
-          <div className="key-label"><span>DeepSeek</span><span className={`key-state${states.deepseek.cls}`}>{states.deepseek.text}</span></div>
-          <input ref={inputs.deepseek} className="key-input" type="password" autoComplete="off" spellCheck={false} placeholder={t("settings.enterKeyPh")} />
+      <GroupLabel>{t("settings.apikeys")}</GroupLabel>
+      <div className="set-card">
+        <div className="set-row set-row-desc-only">
+          <div className="set-row-text">
+            <div className="set-row-desc">{t("settings.apiKeysHint")}</div>
+          </div>
         </div>
-        <div className="key-field">
-          <div className="key-label"><span>GLM / BigModel</span><span className={`key-state${states.glm.cls}`}>{states.glm.text}</span></div>
-          <input ref={inputs.glm} className="key-input" type="password" autoComplete="off" spellCheck={false} placeholder={t("settings.enterKeyPh")} />
-        </div>
-        <div className={note.cls}>{note.text}</div>
-        <div className="settings-actions">
-          <button type="button" className="settings-save" disabled={saving} onClick={save}>{t("state.save")}</button>
+        {providers.map(([provider, name]) => (
+          <div className="set-row" key={provider}>
+            <span className="set-row-icon"><BrandIcon of={provider} size={16} /></span>
+            <div className="set-row-text">
+              <div className="set-row-title">{name}</div>
+              <div className={`set-row-desc key-state${states[provider].cls}`}>{states[provider].text}</div>
+            </div>
+            <div className="set-row-control">
+              <input
+                ref={inputs[provider]} className="key-input key-input-inline" type="password"
+                autoComplete="off" spellCheck={false} placeholder={t("settings.enterKeyPh")}
+              />
+            </div>
+          </div>
+        ))}
+        <div className="set-row set-row-foot">
+          <RowNote note={note} />
+          <div className="set-row-control">
+            <button type="button" className="settings-save" disabled={saving} onClick={save}>{t("state.save")}</button>
+          </div>
         </div>
       </div>
     </div>
   );
 }
+
+// --- 环境 ---------------------------------------------------------------------------
 
 function EnvironmentPanel({ settings, onSaved }) {
   const [note, setNote] = useState({ cls: "settings-note", text: "" });
@@ -514,48 +652,45 @@ function EnvironmentPanel({ settings, onSaved }) {
   };
   return (
     <div className="panel" id="panel-environment">
-      <div className="panel-title">{t("settings.envTitle")}</div>
-      <div className="panel-hint">{t("settings.envHint")}</div>
-      <div className="settings-card">
-        {available.map((env) => (
-          <div
-            key={env}
-            className={`env-option${env === current ? " selected" : ""}`}
-            role="button"
-            tabIndex={0}
-            onClick={() => {
-              if (env === current) return;
-              const values = { environment: env };
-              if (env === "wsl" && distro) values.wsl_distro = distro;
-              save(values);
-            }}
-            onKeyDown={activateOnKeys(() => {
-              if (env === current) return;
-              const values = { environment: env };
-              if (env === "wsl" && distro) values.wsl_distro = distro;
-              save(values);
-            })}
-          >
-            <span className="radio" />{env}
+      <GroupLabel>{t("settings.envTitle")}</GroupLabel>
+      <div className="set-card">
+        <div className="set-row set-row-desc-only">
+          <div className="set-row-text">
+            <div className="set-row-desc">{t("settings.envHint")}</div>
           </div>
-        ))}
-        <div className={`wsl-distro-field${current === "wsl" && wslDistros.length ? "" : " hidden"}`}>
-          <label className="wsl-distro-label" htmlFor="wsl-distro">{t("settings.wslDistro")}</label>
-          <select
-            id="wsl-distro" className="wsl-distro-select" value={distro}
-            onChange={(event) => {
-              setDistro(event.target.value);
-              if (current === "wsl" && event.target.value) save({ wsl_distro: event.target.value });
-            }}
-          >
-            {wslDistros.map((name) => <option key={name} value={name}>{name}</option>)}
-          </select>
         </div>
-        <div className={note.cls}>{note.text}</div>
+        <SetRow title={t("settings.envSource")}>
+          <Seg
+            value={current}
+            onChange={(env) => {
+              if (env === current) return;
+              const values = { environment: env };
+              if (env === "wsl" && distro) values.wsl_distro = distro;
+              save(values);
+            }}
+            options={available.map((env) => [env, env === "wsl" ? "WSL" : t("settings.envNative")])}
+          />
+        </SetRow>
+        {current === "wsl" && wslDistros.length ? (
+          <SetRow title={t("settings.wslDistro")}>
+            <select
+              id="wsl-distro" className="wsl-distro-select" value={distro}
+              onChange={(event) => {
+                setDistro(event.target.value);
+                if (event.target.value) save({ wsl_distro: event.target.value });
+              }}
+            >
+              {wslDistros.map((name) => <option key={name} value={name}>{name}</option>)}
+            </select>
+          </SetRow>
+        ) : null}
+        <div className="set-row set-row-foot"><RowNote note={note} /></div>
       </div>
     </div>
   );
 }
+
+// --- 关于 ---------------------------------------------------------------------------
 
 // 检查更新：下载阶段显示真实进度条（phase 文案走 i18n），失败保留重试按钮
 function UpdateSection() {
@@ -616,133 +751,99 @@ function UpdateSection() {
   };
 
   return (
-    <div style={{ marginTop: 10 }}>
-      <div className="about-row"><span>{t("settings.update")}</span><strong>{status.text}</strong></div>
+    <>
+      <div className="set-row">
+        <div className="set-row-text">
+          <div className="set-row-title">{t("settings.update")}</div>
+          <div className="set-row-desc">{status.text}</div>
+        </div>
+        <div className="set-row-control settings-update-btns">
+          <button type="button" className="login-btn" disabled={busy} onClick={check}>{t("settings.checkUpdates")}</button>
+          {status.available && (
+            <button type="button" className="settings-save" disabled={busy} onClick={install}>
+              {busy && progressText ? progressText : t("settings.downloadInstall")}
+            </button>
+          )}
+        </div>
+      </div>
       {progress && (
-        <div className="update-progress">
-          <div className="update-progress-head">
-            <span>{phaseLabel(progress.phase)}</span>
-            <span>{progress.percent == null ? "" : `${progress.percent}%`}</span>
-          </div>
-          <div className="update-progress-track">
-            <div
-              className={`update-progress-fill${progress.percent == null ? " indeterminate" : ""}`}
-              style={progress.percent == null ? undefined : { width: `${progress.percent}%` }}
-            />
+        <div className="set-row set-row-desc-only">
+          <div className="update-progress">
+            <div className="update-progress-head">
+              <span>{phaseLabel(progress.phase)}</span>
+              <span>{progress.percent == null ? "" : `${progress.percent}%`}</span>
+            </div>
+            <div className="update-progress-track">
+              <div
+                className={`update-progress-fill${progress.percent == null ? " indeterminate" : ""}`}
+                style={progress.percent == null ? undefined : { width: `${progress.percent}%` }}
+              />
+            </div>
           </div>
         </div>
       )}
-      <div className="settings-actions" style={{ justifyContent: "flex-start" }}>
-        <button type="button" className="settings-save" disabled={busy} onClick={check}>{t("settings.checkUpdates")}</button>
-        {status.available && (
-          <button type="button" className="settings-save" disabled={busy} onClick={install}>
-            {busy && progressText ? progressText : t("settings.downloadInstall")}
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function WeekStartPanel({ settings }) {
-  const [value, setValue] = useState("monday");
-  const [note, setNote] = useState({ cls: "settings-note", text: "" });
-  useEffect(() => {
-    setValue((settings && settings.week_start) || "monday");
-  }, [settings]);
-  const save = async (next) => {
-    setValue(next);
-    setNote({ cls: "settings-note", text: t("state.saving") });
-    try {
-      const result = await window.api.setSettings({ week_start: next });
-      if (!result || !result.ok) throw new Error((result && result.error) || t("state.unknownError"));
-      setNote({ cls: "settings-note ok", text: t("state.saved") });
-    } catch (err) {
-      setNote({ cls: "settings-note error", text: `${t("state.saveFailed")}: ${err.message || err}` });
-    }
-  };
-  const options = [
-    ["monday", t("settings.weekMonday")],
-    ["sunday", t("settings.weekSunday")],
-  ];
-  return (
-    <div className="panel" id="panel-weekstart">
-      <div className="panel-title">{t("settings.week")}</div>
-      <div className="panel-hint">{t("settings.weekHint")}</div>
-      {options.map(([key, label]) => (
-        <div
-          key={key}
-          className={`env-option${value === key ? " selected" : ""}`}
-          onClick={() => value !== key && save(key)}
-        >
-          <span className="radio" />{label}
-        </div>
-      ))}
-      <div className={note.cls}>{note.text}</div>
-    </div>
-  );
-}
-
-function SpeedModePanel({ settings }) {
-  const [value, setValue] = useState("gen");
-  const [note, setNote] = useState({ cls: "settings-note", text: "" });
-  useEffect(() => {
-    setValue((settings && settings.speed_mode) || "gen");
-  }, [settings]);
-  const save = async (next) => {
-    setValue(next);
-    setNote({ cls: "settings-note", text: t("state.saving") });
-    try {
-      const result = await window.api.setSettings({ speed_mode: next });
-      if (!result || !result.ok) throw new Error((result && result.error) || t("state.unknownError"));
-      setNote({ cls: "settings-note ok", text: t("state.saved") });
-    } catch (err) {
-      setNote({ cls: "settings-note error", text: `${t("state.saveFailed")}: ${err.message || err}` });
-    }
-  };
-  const options = [
-    ["gen", t("settings.speedGen")],
-    ["throughput", t("settings.speedThroughput")],
-  ];
-  return (
-    <div className="panel" id="panel-speedmode">
-      <div className="panel-title">{t("settings.speed")}</div>
-      <div className="panel-hint">{t("settings.speedHint")}</div>
-      {options.map(([key, label]) => (
-        <div
-          key={key}
-          className={`env-option${value === key ? " selected" : ""}`}
-          onClick={() => value !== key && save(key)}
-        >
-          <span className="radio" />{label}
-        </div>
-      ))}
-      <div className={note.cls}>{note.text}</div>
-    </div>
+    </>
   );
 }
 
 function AboutPanel({ settings, backend }) {
+  const rows = [
+    [t("settings.version"), settings ? `v${settings.version}` : "—"],
+    [t("settings.dataSource"), settings ? (settings.environment === "wsl" && settings.wsl_distro ? `WSL (${settings.wsl_distro})` : settings.environment) : "—"],
+    [t("settings.backend"), backend ? backend.engine : t("settings.backendNotRunning")],
+  ];
   return (
     <div className="panel" id="panel-about">
-      <div className="panel-title">{t("settings.about")}</div>
-      <div className="settings-card">
-        <div className="about-row"><span>{t("settings.version")}</span><strong>{settings ? `v${settings.version}` : "—"}</strong></div>
-        <div className="about-row"><span>{t("settings.dataSource")}</span><strong>{settings ? (settings.environment === "wsl" && settings.wsl_distro ? `WSL (${settings.wsl_distro})` : settings.environment) : "—"}</strong></div>
-        <div className="about-row"><span>{t("settings.backend")}</span><strong className="about-path">{backend ? backend.engine : t("settings.backendNotRunning")}</strong></div>
+      <div className="set-card">
+        {rows.map(([label, value]) => (
+          <div className="set-row" key={label}>
+            <div className="set-row-text">
+              <div className="set-row-title">{label}</div>
+            </div>
+            <div className="set-row-control about-value">{value}</div>
+          </div>
+        ))}
         <UpdateSection />
       </div>
     </div>
   );
 }
 
-// --- 主组件：侧边栏（含返回按钮，分组导航） + 主体（居中列） ----------------------
+// --- 主组件：侧边栏（含返回按钮，图标导航） + 主体（分组卡片） -------------------------
+
+const NAV_ICONS = {
+  appearance: (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
+      <circle cx="8" cy="8" r="2.6" />
+      <path d="M8 1.8v1.6M8 12.6v1.6M1.8 8h1.6M12.6 8h1.6M3.6 3.6l1.1 1.1M11.3 11.3l1.1 1.1M12.4 3.6l-1.1 1.1M4.7 11.3l-1.1 1.1" />
+    </svg>
+  ),
+  account: (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
+      <circle cx="8" cy="5.2" r="2.6" />
+      <path d="M2.8 13.6c.7-2.6 2.8-4 5.2-4s4.5 1.4 5.2 4" />
+    </svg>
+  ),
+  environment: (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="2.6" width="12" height="4.6" rx="1.2" />
+      <rect x="2" y="8.8" width="12" height="4.6" rx="1.2" />
+      <path d="M4.6 4.9h.01M4.6 11.1h.01" />
+    </svg>
+  ),
+  about: (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
+      <circle cx="8" cy="8" r="6.2" />
+      <path d="M8 7.2v3.4M8 4.9h.01" />
+    </svg>
+  ),
+};
 
 const PANEL_GROUPS = [
   {
     key: "appearance",
     labelKey: "settings.groupAppearance",
-    panels: ["theme", "language", "display", "weekstart", "speedmode"],
+    panels: ["general", "display"],
   },
   {
     key: "account",
@@ -784,6 +885,7 @@ export default function SettingsPage({ lastPayload }) {
     const distros = (settings && settings.wsl_distros) || [];
     return available.length >= 2 || distros.length > 0;
   })();
+  const activeLabel = (PANEL_GROUPS.find((g) => g.key === activeGroup) || PANEL_GROUPS[0]).labelKey;
 
   return (
     <div className="app-body">
@@ -802,6 +904,7 @@ export default function SettingsPage({ lastPayload }) {
               onClick={() => setActiveGroup(group.key)}
               onKeyDown={activateOnKeys(() => setActiveGroup(group.key))}
             >
+              <span className="side-icon">{NAV_ICONS[group.key]}</span>
               {t(group.labelKey)}
             </div>
           );
@@ -809,12 +912,10 @@ export default function SettingsPage({ lastPayload }) {
       </div>
       <div className="settings-main page-scroll">
         <div className="settings-column">
+          <div className="settings-content-title">{t(activeLabel)}</div>
           <div className={groupClass("appearance")}>
-            <ThemePanel />
-            <LanguagePanel />
+            <GeneralCard settings={settings} />
             <DisplayPanel lastPayload={lastPayload} />
-            <WeekStartPanel settings={settings} />
-            <SpeedModePanel settings={settings} />
           </div>
           <div className={groupClass("account")}>
             <MembershipPanel

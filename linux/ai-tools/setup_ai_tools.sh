@@ -4,13 +4,17 @@
 #   setup_ai_tools.sh                  # 安装/更新全部工具
 #   setup_ai_tools.sh --codex          # 仅 codex
 #   setup_ai_tools.sh --kimi --codex   # 指定多个
+#   setup_ai_tools.sh --entire         # 仅 entire
 #   setup_ai_tools.sh --all            # 全部工具
 #   setup_ai_tools.sh --verbose        # 展开完整安装日志（默认折叠视图）
 # 依赖 nodejs（npm），缺失时自动调用 ../nodejs/setup_nodejs.sh 安装。
 # kimi 若为非 npm 方式安装（官方脚本二进制），更新时走官方安装脚本。
+# entire 为 Go 二进制（与 npm 无关），始终走官方安装脚本
+# （curl -fsSL https://entire.com/install.sh | bash），默认装到 ~/.local/bin，
+# 同时安装 entire 与 git-remote-entire。
 #
 # 输出约定（与 windows/ai-tools/setup_ai_tools.ps1 行为对齐）：
-#   交互终端下按安装对象（codex / kimi）分条陈述，每个对象的
+#   交互终端下按安装对象（codex / kimi / entire）分条陈述，每个对象的
 #   过程消息折叠为最新 3 行、原位刷新；--verbose 或非 TTY 时退化为全量流式输出。
 #   全部结束后打印一份安装简报（每个对象：安装/更新/已是最新/失败 + 版本变化）。
 set -uo pipefail
@@ -33,6 +37,7 @@ log() {
 
 KIMI_NPM_PKG="@moonshot-ai/kimi-code"
 KIMI_INSTALL_URL="https://code.kimi.com/kimi-code/install.sh"
+ENTIRE_INSTALL_URL="https://entire.com/install.sh"
 # npm 默认源失败时回退的国内镜像
 NPM_MIRROR="https://registry.npmmirror.com"
 VERBOSE=false
@@ -78,18 +83,19 @@ is_up_to_date() {
 targets=()
 for arg in "$@"; do
     case "$arg" in
-        --all)       targets=(codex kimi) ;;
+        --all)       targets=(codex kimi entire) ;;
         --codex)     targets+=(codex) ;;
         --kimi)      targets+=(kimi) ;;
+        --entire)    targets+=(entire) ;;
         --verbose|-v) VERBOSE=true ;;
         *)
-            log "未知参数: $arg（可选: --all / --codex / --kimi / --verbose）"
+            log "未知参数: $arg（可选: --all / --codex / --kimi / --entire / --verbose）"
             exit 2
             ;;
     esac
 done
 if ((${#targets[@]} == 0)); then
-    targets=(codex kimi)
+    targets=(codex kimi entire)
 fi
 
 log "=== ai-tools setup start (targets: ${targets[*]}) ==="
@@ -265,7 +271,7 @@ log "npm 就绪: $(version_of node) (node)"
 
 # --- 并行安装/更新 --------------------------------------------------------------
 # npm 全局目录不能安全地由多个 npm 进程同时写入，因此 npm 工具合并为一个线程；
-# 非 npm 安装的 kimi 使用官方脚本，作为第二个线程并行执行。
+# 非 npm 安装的 kimi/entire 使用官方脚本，各作为独立线程并行执行。
 
 write_result() {
     printf '%s\t%s\t%s\t%s\n' "$2" "$1" "${3:-?}" "${4:-?}" >"$RESULT_DIR/$1.result"
@@ -538,10 +544,66 @@ kimi_worker() {
     fi
 }
 
+# entire 版本：输出形如 "Entire CLI 0.11.5"（偶有更新提示行夹杂，优先取产品行）。
+# 官方脚本装到 ~/.local/bin；非终端启动的环境（如桌面图标拉起的 Electron）PATH
+# 可能缺该目录，回退到默认安装位置探测，避免误报未安装
+entire_version_of() {
+    local bin="" out=""
+    if command -v entire >/dev/null 2>&1; then
+        bin=entire
+    elif [ -x "$HOME/.local/bin/entire" ]; then
+        bin="$HOME/.local/bin/entire"
+    else
+        return 0
+    fi
+    out="$("$bin" version 2>/dev/null)"
+    printf '%s\n' "$out" | grep -m1 'Entire CLI' && return 0
+    printf '%s\n' "$out" | grep -m1 -E '[0-9]+\.[0-9]+\.[0-9]+' || true
+}
+
+# entire 官方脚本安装。官方没有独立的最新版本查询端点（install.sh 即最新版
+# 安装器），不做"已是最新"预判而直接安装；前后版本一致时简报自然显示"已是最新"
+entire_worker() {
+    local before after after_ver
+    local -a st
+    before="$(entire_version_of)"
+    if ! command -v curl >/dev/null 2>&1; then
+        emit entire 'ERROR: 安装/更新 entire 需要 curl'
+        write_result entire FAIL "${before:-未安装}"
+        return 1
+    fi
+    emit entire "安装/更新中: 官方安装脚本 ($ENTIRE_INSTALL_URL)，当前 ${before:-未安装}"
+    curl -fsSL "$ENTIRE_INSTALL_URL" 2>/dev/null | bash 2>&1 |
+        while IFS= read -r line; do
+            line="$(printf '%s' "$line" | tr -d '\r' | sed 's/\x1b\[[0-9;]*m//g')"
+            [ -n "${line//[[:space:]]/}" ] && emit entire "$line"
+        done
+    st=("${PIPESTATUS[@]}")
+    if (( st[0] != 0 || st[1] != 0 )); then
+        emit entire "ERROR: 安装/更新失败 (curl=${st[0]} install.sh=${st[1]})"
+        write_result entire FAIL "${before:-未安装}"
+        return 1
+    fi
+    hash -r 2>/dev/null || true
+    after="$(entire_version_of)"
+    after_ver="$(printf '%s' "$after" | extract_semver)"
+    if [ -z "$after_ver" ]; then
+        emit entire 'ERROR: 安装脚本返回成功，但升级后 PATH 中找不到 entire'
+        write_result entire FAIL "${before:-未安装}"
+        return 1
+    fi
+    emit entire "完成: ${before:-未安装} -> $after"
+    write_result entire OK "${before:-未安装}" "$after"
+}
+
 npm_targets=()
 kimi_script=false
+entire_script=false
 for name in "${targets[@]}"; do
-    if [ "$name" = kimi ] \
+    if [ "$name" = entire ]; then
+        # entire 是 Go 二进制，不在 npm 通道，始终走官方安装脚本
+        entire_script=true
+    elif [ "$name" = kimi ] \
         && ! npm ls -g --depth=0 "$KIMI_NPM_PKG" >/dev/null 2>&1; then
         kimi_script=true
     else
@@ -566,6 +628,9 @@ if ((${#npm_targets[@]} > 0)); then
 fi
 if $kimi_script; then
     start_worker kimi kimi "$RESULT_DIR/kimi.log" kimi_worker
+fi
+if $entire_script; then
+    start_worker entire entire "$RESULT_DIR/entire.log" entire_worker
 fi
 
 trap 'kill "${pids[@]}" 2>/dev/null; exit 130' INT TERM

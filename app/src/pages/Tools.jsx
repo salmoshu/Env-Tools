@@ -19,6 +19,7 @@ const COMPONENTS = [
     actions: [
       { key: "kimi", detect: "kimi", agent: "Kimi" },
       { key: "codex", detect: "codex", agent: "Codex" },
+      { key: "entire", detect: "entire", agent: "Entire" },
     ],
   },
   {
@@ -50,10 +51,12 @@ const COMPONENTS = [
 // ai-tools 卡的 agent 版本行：当前版本来自当前 Tab 的组件探测（Windows 经
 // cmd.exe、WSL 在发行版内），最新版本取 usage 载荷（npm/github 与平台无关）。
 // 有更新时徽章可点击直接升级（与用量配额卡的版本徽章同语义）。
+// Entire 不在 usage 载荷内（payloadKey 为空 → latest 恒空），只显示当前版本。
 function AgentVersionRow({ payloadVersions, detected, disabled, onUpgrade }) {
   const agents = [
     { key: "kimi", label: "Kimi", payloadKey: "Kimi Code" },
     { key: "codex", label: "Codex", payloadKey: "OpenAI Codex" },
+    { key: "entire", label: "Entire", payloadKey: "" },
   ];
   return (
     <div className="tool-vers">
@@ -106,7 +109,7 @@ export default function Tools({ lastPayload }) {
   const setRunning = setInstallRunning;
   const clearTerm = clearInstallLog;
   const [statuses, setStatuses] = useState({});
-  // 当前 Tab 的组件探测：{kimi,codex,node:版本|null, openssh,kdesk:bool}
+  // 当前 Tab 的组件探测：{kimi,codex,entire,node:版本|null, openssh,kdesk:bool}
   const [detected, setDetected] = useState(null);
   // WSL Tab 的发行版清单：[{name, version, current, manageable}]，null=未加载
   const [wslDistros, setWslDistros] = useState(null);

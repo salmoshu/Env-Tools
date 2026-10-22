@@ -1020,6 +1020,7 @@ const UPGRADE_FLAGS = {
 const COMPONENT_FLAGS = {
   kimi: "--kimi",
   codex: "--codex",
+  entire: "--entire",
 };
 // 下载速度不可控（code.kimi.com 可能被限速到几十 KB/s），且官方安装器在
 // tar 包不完整时会回退下载 152MB 裸二进制，慢速链路全程可达 40 分钟以上，
@@ -1349,9 +1350,9 @@ ipcMain.handle("upgrade-agents", (_event, providers, environment, windowsSetupSc
   return startInstall("upgrade", spec);
 });
 ipcMain.handle("run-component", async (_event, component, environment, windowsSetupScript, distro) => {
-  // kimi/codex 是 ai-tools 组件的子开关（setup.ps1 的 Component 参数不接受它们），
-  // 走 aiToolsSpec 生成 --kimi/--codex 标志，与看板升级同一条链路
-  const kind = component === "kimi" || component === "codex" ? "ai-tools" : String(component);
+  // kimi/codex/entire 是 ai-tools 组件的子开关（setup.ps1 的 Component 参数不接受它们），
+  // 走 aiToolsSpec 生成 --kimi/--codex/--entire 标志，与看板升级同一条链路
+  const kind = component === "kimi" || component === "codex" || component === "entire" ? "ai-tools" : String(component);
   let spec;
   if (environment === "wsl" && !WSL_BACKEND && process.platform === "win32") {
     // 本地 Windows 模式的 WSL Tab：目标 = 显式指定的管理目标，缺省为设置的数据源发行版
@@ -1366,7 +1367,7 @@ ipcMain.handle("run-component", async (_event, component, environment, windowsSe
   if (!spec) return { ok: false, error: "no installable target for this component" };
   return startInstall(`component:${component}`, spec);
 });
-// 组件探测（Tools 页）：kimi/codex/node 返回已装版本（null=未装），
+// 组件探测（Tools 页）：kimi/codex/entire/node 返回已装版本（null=未装），
 // openssh/kdesk 返回是否部署。Windows 侧经 cmd.exe（npm .cmd 垫片）+
 // where/schtasks；WSL 侧在目标发行版（显式 distro 参数优先，缺省为数据源
 // 发行版）内交互式 bash 探测（NVM/PATH 生效）。kdesk 仅 Windows：以
@@ -1386,12 +1387,12 @@ ipcMain.handle("component-detect", async (_event, environment, distro) => {
       exec(command, { timeout: 15000, windowsHide: true },
         (err, stdout) => resolve(!err && String(stdout || "").trim().length > 0));
     });
-    const [kimi, codex, node, openssh, kdesk] = await Promise.all([
-      winProbe("kimi"), winProbe("codex"), winProbe("node"),
+    const [kimi, codex, entire, node, openssh, kdesk] = await Promise.all([
+      winProbe("kimi"), winProbe("codex"), winProbe("entire"), winProbe("node"),
       winHas("where sshd"),
       winHas("schtasks /query /tn KdeskAutoDeploy"),
     ]);
-    return { ok: true, components: { kimi, codex, node, openssh, kdesk } };
+    return { ok: true, components: { kimi, codex, entire, node, openssh, kdesk } };
   }
   const target = (typeof distro === "string" && distro.trim())
     ? distro.trim()
@@ -1402,10 +1403,10 @@ ipcMain.handle("component-detect", async (_event, environment, distro) => {
     .then((r) => (r && !r.error ? semver(String(r.stdout || "") + String(r.stderr || "")) : null));
   const hasSshd = wslCommand(target, ["command -v sshd >/dev/null 2>&1 && echo yes || true"], { timeoutMs: 15000 })
     .then((r) => /yes/.test(String((r && r.stdout) || "")));
-  const [kimi, codex, node, openssh] = await Promise.all([
-    probe("kimi"), probe("codex"), probe("node"), hasSshd,
+  const [kimi, codex, entire, node, openssh] = await Promise.all([
+    probe("kimi"), probe("codex"), probe("entire"), probe("node"), hasSshd,
   ]);
-  return { ok: true, components: { kimi, codex, node, openssh, kdesk: false } };
+  return { ok: true, components: { kimi, codex, entire, node, openssh, kdesk: false } };
 });
 
 // WSL 发行版清单（Tools 页 WSL Tab）：名称 + 系统版本（/etc/os-release 的

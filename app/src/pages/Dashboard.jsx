@@ -877,7 +877,6 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                 .replace("{to}", analytics.date_range[1])
                 .replace("{days}", analytics.days)
                 .replace("{at}", analytics.generated_at)
-                .replace("{src}", analytics.source || "~ local sessions")
               : t("state.loading")}
           </div>
         </div>

@@ -2,15 +2,15 @@ import { AGENT_COLORS } from "../utils";
 import kimiIcon from "../assets/brand/kimi.png";
 import openaiIcon from "../assets/brand/openai.png";
 import deepseekIcon from "../assets/brand/deepseek.png";
-import glmIcon from "../assets/brand/glm.png";
 import zaiIcon from "../assets/brand/zai.png";
 
-// 官方图标（kimi.com / github.com/openai / deepseek.com / github.com/THUDM / github.com/zai-org）
+// 官方图标（kimi.com / github.com/openai / deepseek.com / github.com/zai-org）
+// GLM 与 ZCode 同属智谱，共用 z.ai 的 Z 标
 const AGENT_ICONS = {
   kimi: kimiIcon,
   codex: openaiIcon,
   deepseek: deepseekIcon,
-  glm: glmIcon,
+  glm: zaiIcon,
   zcode: zaiIcon,
 };
 

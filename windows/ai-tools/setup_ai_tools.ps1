@@ -3,12 +3,13 @@
 #   setup_ai_tools.ps1                  # 安装/更新全部工具
 #   setup_ai_tools.ps1 --codex          # 仅 codex
 #   setup_ai_tools.ps1 --kimi --codex   # 指定多个
+#   setup_ai_tools.ps1 --entire         # 仅 entire
 #   setup_ai_tools.ps1 --all            # 全部工具
 #   setup_ai_tools.ps1 -Verbose         # 展开完整安装日志（默认折叠视图）
 # 依赖 nodejs（npm），缺失时自动调用 ..\nodejs\setup_nodejs.ps1 安装。
 #
 # 输出约定（与 linux/ai-tools/setup_ai_tools.sh 行为对齐）：
-#   交互终端下按安装对象（codex / kimi）分条陈述，每个对象的
+#   交互终端下按安装对象（codex / kimi / entire）分条陈述，每个对象的
 #   过程消息折叠为最新 3 行、原位刷新；-Verbose 或输出被重定向时退化为全量流式。
 #   全部结束后打印一份安装简报（每个对象：安装/更新/已是最新/失败 + 版本变化）。
 #
@@ -16,7 +17,10 @@
 #   codex 走 npm 全局安装（装到 npm prefix -g，通常为 %AppData%\npm）。
 #   kimi 走官方原生安装器（irm https://code.kimi.com/kimi-code/install.ps1 | iex），
 #   二进制装到 %USERPROFILE%\.kimi-code\bin（可用 KIMI_INSTALL_DIR 覆盖），与 npm 无关。
-#   npm 工具与 kimi 原生安装作为两个 Job 并行执行；Job 只输出协议行
+#   entire 走官方原生安装器（irm https://entire.com/install.ps1 | iex，Go 二进制，
+#   同时装 entire.exe 与 git-remote-entire.exe），默认装到 %USERPROFILE%\.local\bin
+#   并加入用户 PATH（检测到 Scoop 时改用 Scoop 安装），与 npm 无关。
+#   npm 工具与 kimi/entire 原生安装作为多个 Job 并行执行；Job 只输出协议行
 #   （LOG|<对象>|<文本> 与 RESULT|<对象>|<状态>|<前版本>|<后版本>），
 #   由主线程按对象归集渲染。
 #   若检测到 npm 全局残留的旧 kimi 副本，安装成功后自动卸载，避免双份并存互相遮蔽。
@@ -27,7 +31,8 @@
 param(
     [switch]$All,
     [switch]$Codex,
-    [switch]$Kimi
+    [switch]$Kimi,
+    [switch]$Entire
 )
 
 $dir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -131,6 +136,10 @@ function Remove-NpmKimi($npmExe, $cache, $prefix) {
 # kimi 官方安装器的安装位置与二进制路径（与 install.ps1 的默认保持一致）
 $kimiInstallDir = if ($env:KIMI_INSTALL_DIR) { $env:KIMI_INSTALL_DIR } else { Join-Path $env:USERPROFILE '.kimi-code' }
 $kimiBin = Join-Path $kimiInstallDir 'bin\kimi.exe'
+
+# entire 官方安装器的默认安装位置（install.ps1 默认装到 %USERPROFILE%\.local\bin；
+# 检测到 Scoop 时改走 Scoop，此时二进制不在此处，靠 PATH 回退探测）
+$entireBin = Join-Path $env:USERPROFILE '.local\bin\entire.exe'
 
 # --- npm 工具线程：版本查询 + 合并安装（Job 内无法访问主线程函数， helpers 内置）------
 # Job 只输出协议行：LOG|<对象>|<文本> 与 RESULT|<对象>|<OK|FAIL>|<前版本>|<后版本>
@@ -310,6 +319,64 @@ $kimiWorker = {
     "RESULT|kimi|OK|$beforeText|$afterText"
 }
 
+# --- entire 线程：官方原生安装器 -----------------------------------------------------
+$entireWorker = {
+    param([string]$entireBin)
+    $ErrorActionPreference = 'Continue'
+    # Job 是全新 PowerShell 进程，需同样启用 TLS 1.2 并绕开系统代理
+    # （本地代理对 code.kimi.com 会 TLS EOF；entire.com 同样约定直连不走代理）
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    [System.Net.WebRequest]::DefaultWebProxy = $null
+
+    # entire 版本以官方安装位置的二进制为准（PATH 上的 entire 可能被其他来源遮蔽，
+    # 如 Scoop shim 与其他安装源）。--version 输出形如 "Entire CLI 0.11.5"，
+    # 偶有更新提示行（Update available! ...）夹杂，优先取带版本号的产品行
+    function Get-EntireVersion {
+        $lines = @()
+        if (Test-Path $entireBin) {
+            $lines = @(& $entireBin --version 2>$null)
+        } elseif (Get-Command entire -ErrorAction SilentlyContinue) {
+            $lines = @(& entire --version 2>$null)
+        }
+        $hit = $lines | Where-Object { $_ -match 'Entire CLI.*\d+\.\d+\.\d+' } | Select-Object -First 1
+        if (-not $hit) { $hit = $lines | Where-Object { $_ -match '\d+\.\d+\.\d+' } | Select-Object -First 1 }
+        return $hit
+    }
+
+    $before = Get-EntireVersion
+    $beforeText = if ($before) { $before } else { '未安装' }
+    # 官方没有独立的最新版本查询端点（install.ps1 即最新版安装器），不做"已是最新"
+    # 预判而直接安装；前后版本一致时简报自然显示"已是最新"
+    "LOG|entire|安装/更新中: 官方安装器 (install.ps1)，当前 $beforeText"
+    # 子进程是全新 PowerShell 会话，需同样启用 TLS 1.2 并绕开系统代理。
+    # 瞬时 DNS/网络抖动自动重试，最多 3 次（与 kimi 线程同约定）。
+    $installerExit = 1
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        if ($attempt -gt 1) {
+            "LOG|entire|第 $attempt 次重试（前一次失败：网络/DNS 瞬时错误）"
+            Start-Sleep -Seconds 5
+        }
+        & powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; [System.Net.WebRequest]::DefaultWebProxy = `$null; irm https://entire.com/install.ps1 | iex" 2>&1 | ForEach-Object {
+            $s = "$_" -replace '\x1b\[[0-9;]*m', '' -replace "`r", ''
+            if ($s.Trim()) { "LOG|entire|$s" }
+        }
+        $installerExit = $LASTEXITCODE
+        if ($installerExit -eq 0) { break }
+        "LOG|entire|install.ps1 exit=$installerExit (attempt $attempt/3)"
+    }
+    if ($installerExit -ne 0) {
+        "LOG|entire|ERROR: 安装失败 (install.ps1 exit=$installerExit，已重试 3 次)"
+        "RESULT|entire|FAIL|$beforeText|"
+        return
+    }
+    # 安装器可能刚把安装目录写入用户 PATH（当前 Job 会话不自动继承），刷新后再探测
+    $env:Path = "$([Environment]::GetEnvironmentVariable('Path', 'Machine'));$([Environment]::GetEnvironmentVariable('Path', 'User'))"
+    $after = Get-EntireVersion
+    $afterText = if ($after) { $after } else { '未知' }
+    "LOG|entire|完成: $beforeText -> $afterText"
+    "RESULT|entire|OK|$beforeText|$afterText"
+}
+
 # --- 输出机制 ----------------------------------------------------------------------
 # Job 协议行在主线程按安装对象归集：折叠模式下每个对象只保留最新 3 行原位刷新；
 # 非折叠模式流式打印 [对象] 文本。两种模式都会把干净文本写入日志。
@@ -440,13 +507,15 @@ function Receive-NodejsOutput($job) {
 }
 
 $tools = [ordered]@{
-    codex = @{ Command = 'codex'; Method = 'npm' }
-    kimi  = @{ Command = 'kimi';  Method = 'native' }
+    codex  = @{ Command = 'codex';  Method = 'npm' }
+    kimi   = @{ Command = 'kimi';   Method = 'native' }
+    entire = @{ Command = 'entire'; Method = 'native' }
 }
 
 $targets = @()
 if ($Codex)     { $targets += 'codex' }
 if ($Kimi)      { $targets += 'kimi' }
+if ($Entire)    { $targets += 'entire' }
 if ($All -or $targets.Count -eq 0) { $targets = @($tools.Keys) }
 
 Log "=== ai-tools setup start (targets: $($targets -join ', ')) ==="
@@ -522,6 +591,7 @@ if (-not (Test-ValidPrefix $npmPrefix)) {
 
 $npmNames = @($targets | Where-Object { $tools[$_].Method -eq 'npm' })
 $kimiTarget = @($targets | Where-Object { $_ -eq 'kimi' }).Count -gt 0
+$entireTarget = @($targets | Where-Object { $_ -eq 'entire' }).Count -gt 0
 
 $workers = @()
 try {
@@ -532,6 +602,9 @@ try {
     }
     if ($kimiTarget) {
         $workers += @{ Tag = 'kimi'; Tools = @('kimi'); Job = (Start-Job $kimiWorker -ArgumentList $kimiBin) }
+    }
+    if ($entireTarget) {
+        $workers += @{ Tag = 'entire'; Tools = @('entire'); Job = (Start-Job $entireWorker -ArgumentList $entireBin) }
     }
 
     while (@($workers | Where-Object { $_.Job.State -eq 'Running' }).Count -gt 0) {
@@ -563,7 +636,11 @@ try {
 
     Update-SessionPath
     foreach ($name in $targets) {
-        $expected = if ($name -eq 'kimi') { Split-Path -Parent $kimiBin } else { $npmPrefix }
+        # entire 走 Scoop 安装时二进制不在默认目录，无法判定预期位置，跳过遮蔽检查
+        if ($name -eq 'entire' -and -not (Test-Path $entireBin)) { continue }
+        $expected = if ($name -eq 'kimi') { Split-Path -Parent $kimiBin }
+                    elseif ($name -eq 'entire') { Split-Path -Parent $entireBin }
+                    else { $npmPrefix }
         Test-CommandShadow $tools[$name].Command $expected
     }
 
