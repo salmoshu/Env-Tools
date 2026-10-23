@@ -1,4 +1,4 @@
-// Tools 页：Env-Tools 其它组件（nodejs / kdesk / openssh / ai-tools）的图形化
+// Tools 页：独立组件按 Agent、开发工具、系统工具分类管理。
 // 安装与升级入口。v0.7.11 起按平台 Tab（Windows / WSL）分区管理，不再混排；
 // WSL Tab 顶部为发行版条：展示系统版本（os-release），点击可切换组件管理
 // 目标（与设置页的数据源发行版解耦；无 bash 的发行版不可选）。
@@ -9,22 +9,45 @@ import { useEffect, useRef, useState } from "react";
 import { useInstallState, setInstallRunning, setInstallResult, clearInstallLog } from "../installState.js";
 import { t, useLang } from "../i18n.js";
 import { isNewerVersion, activateOnKeys } from "../utils.js";
+import BrandIcon from "../components/BrandIcon.jsx";
+
+const CATEGORIES = ["agents", "development", "system"];
 
 const COMPONENTS = [
   {
-    key: "ai-tools",
-    name: "AI Tools",
+    key: "kimi",
+    name: "Kimi Code",
+    category: "agents",
+    payloadKey: "Kimi Code",
+    detect: "kimi",
     platforms: ["linux", "windows"],
-    descKey: "tools.descAiTools",
-    actions: [
-      { key: "kimi", detect: "kimi", agent: "Kimi" },
-      { key: "codex", detect: "codex", agent: "Codex" },
-      { key: "entire", detect: "entire", agent: "Entire" },
-    ],
+    descKey: "tools.descKimi",
+    actions: [{ key: "kimi", detect: "kimi" }],
+  },
+  {
+    key: "codex",
+    name: "Codex",
+    category: "agents",
+    payloadKey: "OpenAI Codex",
+    detect: "codex",
+    platforms: ["linux", "windows"],
+    descKey: "tools.descCodex",
+    actions: [{ key: "codex", detect: "codex" }],
+  },
+  {
+    key: "entire",
+    name: "Entire CLI",
+    category: "development",
+    detect: "entire",
+    platforms: ["linux", "windows"],
+    descKey: "tools.descEntire",
+    actions: [{ key: "entire", detect: "entire" }],
   },
   {
     key: "nodejs",
     name: "Node.js",
+    category: "development",
+    detect: "node",
     platforms: ["linux", "windows"],
     descKey: "tools.descNodejs",
     actions: [{ key: "nodejs", detect: "node" }],
@@ -32,6 +55,7 @@ const COMPONENTS = [
   {
     key: "kdesk",
     name: "KDesk",
+    category: "system",
     platforms: ["windows"],
     descKey: "tools.descKdesk",
     actions: [{ key: "kdesk", detect: "kdesk" }],
@@ -39,6 +63,7 @@ const COMPONENTS = [
   {
     key: "openssh",
     name: "OpenSSH Server",
+    category: "system",
     platforms: ["linux", "windows"],
     descKey: "tools.descOpenssh",
     actions: [
@@ -48,40 +73,27 @@ const COMPONENTS = [
   },
 ];
 
-// ai-tools 卡的 agent 版本行：当前版本来自当前 Tab 的组件探测（Windows 经
-// cmd.exe、WSL 在发行版内），最新版本取 usage 载荷（npm/github 与平台无关）。
-// 有更新时徽章可点击直接升级（与用量配额卡的版本徽章同语义）。
-// Entire 不在 usage 载荷内（payloadKey 为空 → latest 恒空），只显示当前版本。
-function AgentVersionRow({ payloadVersions, detected, disabled, onUpgrade }) {
-  const agents = [
-    { key: "kimi", label: "Kimi", payloadKey: "Kimi Code" },
-    { key: "codex", label: "Codex", payloadKey: "OpenAI Codex" },
-    { key: "entire", label: "Entire", payloadKey: "" },
-  ];
+// 每个组件的版本只读取当前平台/发行版的探测结果。
+function ComponentVersion({ component, versions, detected, disabled, onUpgrade }) {
+  if (!component.detect) return null;
+  const current = detected && detected[component.detect];
+  const latest = (versions[component.payloadKey] || {}).latest;
+  const newer = current && latest && isNewerVersion(latest, current);
+  const clickable = newer && !disabled;
+  const fire = () => onUpgrade(component.key, `${t("tools.update")} ${component.name}`);
   return (
     <div className="tool-vers">
-      {agents.map((agent) => {
-        const current = (detected && detected[agent.key]) || null;
-        const latest = ((payloadVersions[agent.payloadKey] || {}).latest) || "";
-        const newer = current && latest && isNewerVersion(latest, current);
-        const clickable = newer && !disabled;
-        const fire = () => onUpgrade(agent.key, `${t("tools.update")} ${agent.label}`);
-        return (
-          <span
-            key={agent.key}
-            className={`tool-ver${clickable ? " upgrade" : ""}`}
-            role={clickable ? "button" : undefined}
-            tabIndex={clickable ? 0 : undefined}
-            title={clickable ? t("upgrade.click") : undefined}
-            onClick={clickable ? fire : undefined}
-            onKeyDown={clickable ? activateOnKeys(fire) : undefined}
-          >
-            {agent.label}
-            {current ? ` v${current}` : ""}
-            {newer ? <span className="new"> → {latest}</span> : null}
-          </span>
-        );
-      })}
+      <span
+        className={`tool-ver${clickable ? " upgrade" : ""}`}
+        role={clickable ? "button" : undefined}
+        tabIndex={clickable ? 0 : undefined}
+        title={clickable ? t("upgrade.click") : undefined}
+        onClick={clickable ? fire : undefined}
+        onKeyDown={clickable ? activateOnKeys(fire) : undefined}
+      >
+        {detected === null ? t("tools.checking") : current ? `v${current}` : t("tools.notInstalled")}
+        {newer ? <span className="new"> → {latest}</span> : null}
+      </span>
     </div>
   );
 }
@@ -90,6 +102,7 @@ const TAB_KEY = "tools.platform-tab";
 // WSL Tab 的组件管理目标发行版（与设置页的数据源发行版解耦：装哪台就探哪台，
 // 不连带改分析数据源）。空串 = 未定，回退数据源发行版。
 const WSL_TARGET_KEY = "tools.wsl-target";
+const CATEGORY_KEY = "tools.category";
 
 export default function Tools({ lastPayload }) {
   useLang();
@@ -101,16 +114,23 @@ export default function Tools({ lastPayload }) {
     return "windows";
   });
   const [showRemote, setShowRemote] = useState(false);
+  const [category, setCategory] = useState(() => {
+    try {
+      const stored = localStorage.getItem(CATEGORY_KEY);
+      if (CATEGORIES.includes(stored)) return stored;
+    } catch {}
+    return "all";
+  });
   // 运行状态与日志来自全局 installState：切页后回来仍在（升级/安装常驻）
   const install = useInstallState();
   const running = install.running;
   const log = install.log;
   const result = install.result;
-  const setRunning = setInstallRunning;
   const clearTerm = clearInstallLog;
   const [statuses, setStatuses] = useState({});
   // 当前 Tab 的组件探测：{kimi,codex,entire,node:版本|null, openssh,kdesk:bool}
   const [detected, setDetected] = useState(null);
+  const [detectError, setDetectError] = useState(false);
   // WSL Tab 的发行版清单：[{name, version, current, manageable}]，null=未加载
   const [wslDistros, setWslDistros] = useState(null);
   // 组件管理目标（仅影响 Tools 页动作，持久化在 localStorage）
@@ -123,6 +143,8 @@ export default function Tools({ lastPayload }) {
   const [sshBusy, setSshBusy] = useState("");
   const [sshNote, setSshNote] = useState("");
   const logRef = useRef(null);
+  const detectRequest = useRef(0);
+  const statusRequest = useRef(0);
 
   const data = (lastPayload && lastPayload.data) || {};
   const environment = data.environment || "wsl";
@@ -140,6 +162,8 @@ export default function Tools({ lastPayload }) {
   }, []);
 
   const selectTab = (tab) => {
+    setDetected(null);
+    setStatuses({});
     setPlatformTab(tab);
     try { localStorage.setItem(TAB_KEY, tab); } catch {}
   };
@@ -166,20 +190,28 @@ export default function Tools({ lastPayload }) {
   };
 
   const refreshSshStatus = async () => {
+    const request = ++statusRequest.current;
     setStatuses((prev) => ({ ...prev, openssh: { busy: true } }));
     try {
       const result = await window.api.componentStatus(
         "openssh", platformTab, platformTab === "wsl" ? wslTarget : undefined);
-      setStatuses((prev) => ({ ...prev, openssh: { output: result.output || result.error || "" } }));
+      if (request === statusRequest.current) setStatuses((prev) => ({ ...prev, openssh: { output: result.output || result.error || "" } }));
     } catch (err) {
-      setStatuses((prev) => ({ ...prev, openssh: { output: String(err.message || err) } }));
+      if (request === statusRequest.current) setStatuses((prev) => ({ ...prev, openssh: { output: String(err.message || err) } }));
     }
   };
 
   const detectComponents = () => {
+    const request = ++detectRequest.current;
+    setDetected(null);
+    setDetectError(false);
     window.api.componentDetect(platformTab, platformTab === "wsl" ? wslTarget : undefined)
-      .then((result) => { if (result && result.ok) setDetected(result.components || {}); })
-      .catch(() => {});
+      .then((result) => {
+        if (request !== detectRequest.current) return;
+        if (result && result.ok) setDetected(result.components || {});
+        else setDetectError(true);
+      })
+      .catch(() => { if (request === detectRequest.current) setDetectError(true); });
   };
 
   useEffect(() => {
@@ -190,6 +222,7 @@ export default function Tools({ lastPayload }) {
     if (platformTab === "wsl" && !wslTarget && wslDistros === null) return;
     refreshSshStatus();
     detectComponents();
+    return () => { detectRequest.current++; statusRequest.current++; };
   }, [platformTab, wslTarget, wslDistros]);
 
   useEffect(() => {
@@ -214,7 +247,7 @@ export default function Tools({ lastPayload }) {
     // 冷启动要几秒，按需加载且只拉一次；失败置空列表，探测走数据源回退）
     if (platformTab !== "wsl" || wslDistros) return;
     window.api.wslDistros()
-      .then((result) => { if (result && result.ok) setWslDistros(result.distros || []); })
+      .then((result) => setWslDistros(result && result.ok ? result.distros || [] : []))
       .catch(() => setWslDistros([]));
   }, [platformTab, wslDistros]);
 
@@ -224,8 +257,8 @@ export default function Tools({ lastPayload }) {
       await refreshSshStatus();
       return;
     }
-    setInstallRunning({ label });
     clearInstallLog();
+    setInstallRunning({ label, component: actionKey });
     try {
       const result = await window.api.runComponent(
         actionKey, platformTab, windowsSetupScript, platformTab === "wsl" ? wslTarget : undefined);
@@ -256,6 +289,7 @@ export default function Tools({ lastPayload }) {
           role="tab"
           aria-selected={platformTab === "windows"}
           className={`tools-tab${platformTab === "windows" ? " active" : ""}`}
+          disabled={Boolean(running)}
           onClick={() => selectTab("windows")}
         >
           Windows
@@ -265,6 +299,7 @@ export default function Tools({ lastPayload }) {
           role="tab"
           aria-selected={platformTab === "wsl"}
           className={`tools-tab${platformTab === "wsl" ? " active" : ""}`}
+          disabled={Boolean(running)}
           onClick={() => selectTab("wsl")}
         >
           WSL
@@ -380,61 +415,90 @@ export default function Tools({ lastPayload }) {
         </div>
       )}
 
-      <div className="tools-grid">
-        {visibleComponents.map((component) => (
-          <div className="tool-card" key={component.key}>
-            <div className="tool-head">
-              <span className="tool-name">{component.name}</span>
-              <span className="tool-platform">
-                {platformTab === "windows" ? "Windows" : "Linux"}
-              </span>
-            </div>
-            <div className="tool-desc">{t(component.descKey)}</div>
-            {component.key === "ai-tools" ? (
-              <AgentVersionRow
-                platform={platformTab}
-                payloadVersions={versions}
-                detected={detected}
-                disabled={Boolean(running)}
-                onUpgrade={(key, label) => run(key, label)}
-              />
-            ) : null}
-            {component.key === "openssh" && statuses.openssh && statuses.openssh.output ? (
-              <div className="tool-status">{statuses.openssh.output}</div>
-            ) : null}
-            <div className="tool-actions">
-              {component.actions.map((action) => {
-                if (action.labelKey) {
-                  return (
-                    <button
-                      type="button"
-                      key={action.key}
-                      className={`tool-btn${action.ghost ? " ghost" : ""}`}
-                      disabled={Boolean(running)}
-                      onClick={() => run(action.key, t(action.labelKey))}
-                    >
-                      {running && running.label === t(action.labelKey) ? t("tools.running") : t(action.labelKey)}
-                    </button>
-                  );
-                }
-                const installed = Boolean(detected && detected[action.detect]);
-                const label = `${t(installed ? "tools.update" : "tools.install")}${action.agent ? ` ${action.agent}` : ""}`;
-                return (
-                  <button
-                    type="button"
-                    key={action.key}
-                    className={`tool-btn${action.ghost ? " ghost" : ""}`}
-                    disabled={Boolean(running)}
-                    onClick={() => run(action.key, label)}
-                  >
-                    {running && running.label === label ? t("tools.running") : label}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
+      <div className="tools-categories" role="group" aria-label={t("tools.categories")}>
+        {["all", ...CATEGORIES].map((key) => (
+          <button
+            type="button" key={key} className={`tools-category${category === key ? " active" : ""}`}
+            aria-pressed={category === key}
+            onClick={() => {
+              setCategory(key);
+              try { localStorage.setItem(CATEGORY_KEY, key); } catch {}
+            }}
+          >
+            {t(`tools.category.${key}`)}
+            <span className="tools-category-count">{visibleComponents.filter((c) => key === "all" || c.category === key).length}</span>
+          </button>
         ))}
       </div>
+
+      {detectError && (
+        <div className="tools-detect-error" role="status">
+          <span>{t("tools.detectFailed")}</span>
+          <button type="button" className="tool-btn ghost" onClick={detectComponents}>{t("tools.retryDetect")}</button>
+        </div>
+      )}
+
+      {CATEGORIES.filter((key) => category === "all" || category === key).map((key) => (
+        <section className="tools-group" key={key}>
+          <h2 className="tools-group-title">{t(`tools.category.${key}`)}</h2>
+          <div className="tools-grid">
+            {visibleComponents.filter((component) => component.category === key).map((component) => (
+              <div className="tool-card" key={component.key} data-component={component.key}>
+                <div className="tool-head">
+                  <span className="tool-name">
+                    {component.payloadKey ? <BrandIcon of={component.payloadKey} size={20} /> : null}
+                    {component.name}
+                  </span>
+                  <span className="tool-platform">
+                    {platformTab === "windows" ? "Windows" : "Linux"}
+                  </span>
+                </div>
+                <div className="tool-desc">{t(component.descKey)}</div>
+                <ComponentVersion
+                  component={component}
+                  versions={versions}
+                  detected={detected}
+                  disabled={Boolean(running)}
+                  onUpgrade={(key, label) => run(key, label)}
+                />
+                {component.key === "openssh" && statuses.openssh && statuses.openssh.output ? (
+                  <div className="tool-status">{statuses.openssh.output}</div>
+                ) : null}
+                <div className="tool-actions">
+                  {component.actions.map((action) => {
+                    if (action.labelKey) {
+                      return (
+                        <button
+                          type="button"
+                          key={action.key}
+                          className={`tool-btn${action.ghost ? " ghost" : ""}`}
+                          disabled={Boolean(running)}
+                          onClick={() => run(action.key, t(action.labelKey))}
+                        >
+                          {running && running.component === action.key ? t("tools.running") : t(action.labelKey)}
+                        </button>
+                      );
+                    }
+                    const installed = Boolean(detected && detected[action.detect]);
+                    const label = `${t(installed ? "tools.update" : "tools.install")} ${component.name}`;
+                    return (
+                      <button
+                        type="button"
+                        key={action.key}
+                        className={`tool-btn${action.ghost ? " ghost" : ""}`}
+                        disabled={Boolean(running) || detected === null}
+                        onClick={() => run(action.key, label)}
+                      >
+                        {running && running.component === action.key ? t("tools.running") : detected === null ? t("tools.checking") : t(installed ? "tools.update" : "tools.install")}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      ))}
 
       <div className="card" style={{ marginTop: 14 }}>
         <h2>{t("tools.runtime")}</h2>

@@ -1350,15 +1350,12 @@ ipcMain.handle("upgrade-agents", (_event, providers, environment, windowsSetupSc
   return startInstall("upgrade", spec);
 });
 ipcMain.handle("run-component", async (_event, component, environment, windowsSetupScript, distro) => {
-  // kimi/codex/entire 是 ai-tools 组件的子开关（setup.ps1 的 Component 参数不接受它们），
-  // 走 aiToolsSpec 生成 --kimi/--codex/--entire 标志，与看板升级同一条链路
+  // 独立 CLI 组件共用安装引擎；每次只传对应组件的开关，与看板升级同一条链路。
   const kind = component === "kimi" || component === "codex" || component === "entire" ? "ai-tools" : String(component);
   let spec;
   if (environment === "wsl" && !WSL_BACKEND && process.platform === "win32") {
     // 本地 Windows 模式的 WSL Tab：目标 = 显式指定的管理目标，缺省为设置的数据源发行版
-    const scriptArgs = kind === "ai-tools"
-      ? ["ai-tools", COMPONENT_FLAGS[component]].filter(Boolean)
-      : [component];
+    const scriptArgs = [component];
     spec = await localWslScriptSpec(path.join(REPO_ROOT, "scripts", "setup.sh"), scriptArgs, distro);
     if (!spec) return { ok: false, error: "no WSL distro configured — set the data-source distro in Settings" };
   } else {

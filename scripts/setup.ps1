@@ -6,7 +6,10 @@
 #   setup.ps1                    # 部署全部组件
 #   setup.ps1 kdesk              # 仅安装/更新/重部署 kdesk
 #   setup.ps1 nodejs             # 仅部署 nodejs
-#   setup.ps1 ai-tools           # 安装/更新全部 AI CLI 工具
+#   setup.ps1 kimi               # 独立安装/更新 Kimi Code Agent
+#   setup.ps1 codex              # 独立安装/更新 Codex Agent
+#   setup.ps1 entire             # 独立安装/更新 Entire CLI
+#   setup.ps1 ai-tools           # 兼容入口：批量安装/更新 AI CLI 工具
 #   setup.ps1 ai-tools --codex   # 仅安装/更新 codex（--all/--kimi/--entire 同理）
 #   setup.ps1 openssh            # 部署 OpenSSH Server（默认端口 2222）
 #   setup.ps1 openssh -Port 2223 # 指定 SSH 端口（-FirewallProfile Any 同理）
@@ -17,7 +20,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('all', 'kdesk', 'nodejs', 'ai-tools', 'openssh')]
+    [ValidateSet('all', 'kdesk', 'nodejs', 'kimi', 'codex', 'entire', 'ai-tools', 'openssh')]
     [string[]]$Component = @('all'),
     # 透传给组件脚本的参数（ai-tools: --all/--codex/--kimi/--entire；openssh: -Port/-FirewallProfile）
     [Parameter(ValueFromRemainingArguments = $true)]
@@ -44,11 +47,13 @@ if (-not $PSBoundParameters.ContainsKey('Component')) {
         '1' = 'all'
         '2' = 'kdesk'
         '3' = 'nodejs'
-        '4' = 'ai-tools'
-        '5' = 'openssh'
+        '4' = 'kimi'
+        '5' = 'codex'
+        '6' = 'entire'
+        '7' = 'openssh'
     }
     Write-Host '可部署组件:' -ForegroundColor Cyan
-    Write-Host '  [1] all (全部)  [2] kdesk  [3] nodejs  [4] ai-tools  [5] openssh'
+    Write-Host '  [1] all (全部)  [2] kdesk  [3] nodejs  [4] kimi  [5] codex  [6] entire  [7] openssh'
     $answer = Read-Host '请输入编号（多个用空格分隔，直接回车 = 1）'
     if (-not [string]::IsNullOrWhiteSpace($answer)) {
         $picked = @()
@@ -68,12 +73,17 @@ if (-not $PSBoundParameters.ContainsKey('Component')) {
 # --- ValueFromRemainingArguments 会把第二个及以后的位置参数收进 $ToolArgs， ------
 # --- 将其中合法的组件名并回 $Component（如 setup.ps1 kdesk nodejs）-------------
 if ($ToolArgs) {
-    $validNames = @('all','kdesk','nodejs','ai-tools','openssh')
+    $validNames = @('all','kdesk','nodejs','kimi','codex','entire','ai-tools','openssh')
     $left = @()
     foreach ($a in $ToolArgs) {
         if ($a -in $validNames) { $Component += $a } else { $left += $a }
     }
     $ToolArgs = $left
+}
+
+if ($ToolArgs -and @($Component | Where-Object { $_ -in @('kimi','codex','entire') }).Count -gt 0) {
+    Write-Host 'kimi / codex / entire 是独立组件，不接受额外的工具开关。批量安装请指定多个组件名。' -ForegroundColor Red
+    exit 1
 }
 
 # --- self-elevate -----------------------------------------------------------
@@ -100,6 +110,9 @@ $scripts = [ordered]@{
     kdesk      = 'windows\kdesk\setup_elevated.ps1'
     nodejs     = 'windows\nodejs\setup_nodejs.ps1'
     'ai-tools' = 'windows\ai-tools\setup_ai_tools.ps1'
+    kimi       = 'windows\ai-tools\setup_ai_tools.ps1'
+    codex      = 'windows\ai-tools\setup_ai_tools.ps1'
+    entire     = 'windows\ai-tools\setup_ai_tools.ps1'
     openssh    = 'windows\openssh\setup_openssh.ps1'
 }
 
@@ -125,6 +138,7 @@ foreach ($name in $targets) {
     }
 
     $childArgs = @('-NoProfile','-ExecutionPolicy','Bypass','-File',$childScript)
+    if ($name -in @('kimi','codex','entire')) { $childArgs += "--$name" }
     if ($name -in @('ai-tools','openssh') -and $ToolArgs) { $childArgs += $ToolArgs }
     & powershell @childArgs
     if ($LASTEXITCODE -ne 0) {

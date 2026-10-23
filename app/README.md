@@ -13,6 +13,11 @@
 
 ## 窗口
 
+v0.7.38：组件管理将 Kimi Code、Codex、Entire CLI 拆为独立组件，按 Agent /
+开发工具 / 系统工具分组并提供分类筛选；Windows 与 WSL 目标分别探测安装状态。
+设置页采用 Kimi Brand 的灰底 16px 卡片、240px 导航、18px SVG 返回图标与
+8px 圆角标准按钮，兼容中英文、深浅色和窄窗口布局。
+
 - **全量窗口 "Env-Tools"**（默认打开）：Usage Analytics（多 agent 会话分析 +
   套餐配额，支持本机/WSL/SSH 目标与跨源汇总）与 Tools（组件管理）、Settings
   （侧边栏设置页）页签，标题栏左侧图标化切换，右上角带最大化按钮。

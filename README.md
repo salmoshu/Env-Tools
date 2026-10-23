@@ -27,7 +27,8 @@ Windows（PowerShell，自动弹 UAC 提权）：
 scripts\setup.ps1                  # 部署全部组件
 scripts\setup.ps1 nodejs           # 只部署某个组件
 scripts\setup.ps1 kdesk nodejs     # 部署多个组件
-scripts\setup.ps1 ai-tools --codex # ai-tools 只装/更新 codex（--all/--kimi 同理）
+scripts\setup.ps1 codex            # 独立安装/更新 Codex Agent
+scripts\setup.ps1 kimi entire      # 安装/更新指定的多个组件
 scripts\setup.ps1 openssh -Port 2223     # openssh 指定端口（Windows 默认 2222）
 ```
 
@@ -36,7 +37,8 @@ Linux（bash）：
 ```bash
 ./scripts/setup.sh                       # 部署全部组件
 ./scripts/setup.sh nodejs                # 只部署某个组件
-./scripts/setup.sh ai-tools --kimi       # ai-tools 只装/更新 kimi
+./scripts/setup.sh kimi                  # 独立安装/更新 Kimi Code Agent
+./scripts/setup.sh codex entire          # 安装/更新指定的多个组件
 ./scripts/setup.sh openssh --port 2222   # openssh 指定端口（Linux 默认 22）
 ```
 
@@ -49,8 +51,15 @@ Linux（bash）：
 | --- | --- | --- | --- |
 | `kdesk` | ✓ | — | 元气桌面免安装便携部署 + 快照对抗自动升级，详见 [docs/kdesk-notes.md](docs/kdesk-notes.md) |
 | `nodejs` | ✓ | ✓ | Node.js 环境部署 |
-| `ai-tools` | ✓ | ✓ | Kimi Code / Codex CLI 安装与更新，详见 [docs/ai-tools-notes.md](docs/ai-tools-notes.md) |
+| `kimi` | ✓ | ✓ | Agent：Kimi Code 独立安装与更新 |
+| `codex` | ✓ | ✓ | Agent：OpenAI Codex 独立安装与更新 |
+| `entire` | ✓ | ✓ | 开发工具：Entire CLI 独立安装与更新 |
 | `openssh` | ✓ | ✓ | OpenSSH Server 安装与配置，详见 [docs/openssh-notes.md](docs/openssh-notes.md) |
+
+组件管理按 **Agent**（Kimi Code、Codex）、**开发工具**（Entire CLI、Node.js）、
+**系统工具**（KDesk、OpenSSH Server）分类，支持筛选。CLI 的共用安装引擎仍在
+`windows/ai-tools/` 和 `linux/ai-tools/`；旧的 `setup ai-tools --kimi/--codex/--entire`
+调用方式继续兼容，维护经验见 [docs/ai-tools-notes.md](docs/ai-tools-notes.md)。
 
 ## 日常操作（tools.sh / tools.ps1）
 

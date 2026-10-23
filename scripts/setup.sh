@@ -4,7 +4,10 @@
 # 用法: ./setup.sh [组件...] [--工具参数...]
 #   ./setup.sh                  # 部署全部组件
 #   ./setup.sh nodejs           # 仅部署 nodejs
-#   ./setup.sh ai-tools         # 安装/更新全部 AI CLI 工具
+#   ./setup.sh kimi             # 独立安装/更新 Kimi Code Agent
+#   ./setup.sh codex            # 独立安装/更新 Codex Agent
+#   ./setup.sh entire           # 独立安装/更新 Entire CLI
+#   ./setup.sh ai-tools         # 兼容入口：批量安装/更新 AI CLI 工具
 #   ./setup.sh ai-tools --codex # 仅安装/更新 codex（--all/--kimi/--entire 同理）
 #   ./setup.sh openssh          # 部署 OpenSSH Server（默认端口 22）
 #   ./setup.sh openssh --port 2222  # 指定 SSH 端口
@@ -47,6 +50,17 @@ case "$(uname -s)" in
         done
         ((${#components[@]} == 0)) && components=(all)
 
+        if ((${#tool_args[@]} > 0)); then
+            for name in "${components[@]}"; do
+                case "$name" in
+                    kimi|codex|entire)
+                        echo 'ERROR: kimi / codex / entire 是独立组件，不接受额外的工具开关；批量安装请指定多个组件名。'
+                        exit 1
+                        ;;
+                esac
+            done
+        fi
+
         deploy_nodejs() {
             echo '=== 部署 nodejs ==='
             bash "$ROOT/linux/nodejs/setup_nodejs.sh"
@@ -54,6 +68,10 @@ case "$(uname -s)" in
         deploy_ai_tools() {
             echo '=== 部署 ai-tools ==='
             bash "$ROOT/linux/ai-tools/setup_ai_tools.sh" ${tool_args[@]+"${tool_args[@]}"}
+        }
+        deploy_cli() {
+            echo "=== 部署 $1 ==="
+            bash "$ROOT/linux/ai-tools/setup_ai_tools.sh" "--$1"
         }
         deploy_openssh() {
             echo '=== 部署 openssh ==='
@@ -73,6 +91,9 @@ case "$(uname -s)" in
                 ai-tools)
                     deploy_ai_tools
                     ;;
+                kimi|codex|entire)
+                    deploy_cli "$name"
+                    ;;
                 openssh)
                     deploy_openssh
                     ;;
@@ -80,7 +101,7 @@ case "$(uname -s)" in
                     echo 'kdesk 仅支持 Windows，Linux 下跳过。'
                     ;;
                 *)
-                    echo "无效组件: $name（可选: all / nodejs / ai-tools / openssh）"
+                    echo "无效组件: $name（可选: all / nodejs / kimi / codex / entire / openssh；兼容入口: ai-tools）"
                     exit 1
                     ;;
             esac

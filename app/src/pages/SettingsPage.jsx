@@ -1,7 +1,6 @@
 // 设置页（主窗口内，侧边栏 + 主体布局；侧边栏顶部带返回按钮）。
-// v0.7.37：参考 Kimi 桌面端设置重排——侧边栏条目带图标；主体每个分组
-// 以大标题开场，内容组织为「小组标签 + 卡片」，卡片内是 标题+描述在左、
-// 控件（分段开关/下拉/按钮/输入）在右 的行（.set-row），行间细分隔线。
+// Kimi Brand 12：240px 导航、640px 内容、Fills-F1 灰底卡片和线性返回图标。
+// 行内反馈属于对应设置；窄窗口下控件换行，说明文字保持正常阅读宽度。
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -51,8 +50,8 @@ function membershipEndStatus(endsAt, autoRenew = false) {
   if (!Number.isFinite(endMs)) return { text: "", ended: false };
   const seconds = Math.floor((endMs - Date.now()) / 1000);
   return seconds >= 0
-    ? { text: `${autoRenew ? "renews" : "ends"} in ${fmtSpan(seconds)}`, ended: false }
-    : { text: `ended ${fmtSpan(-seconds)} ago`, ended: true };
+    ? { text: t(autoRenew ? "settings.membershipRenewsIn" : "settings.membershipEndsIn").replace("{time}", fmtSpan(seconds)), ended: false }
+    : { text: t("settings.membershipEndedAgo").replace("{time}", fmtSpan(-seconds)), ended: true };
 }
 
 // --- 行式布局基元（Kimi 设置风格） ------------------------------------------------
@@ -63,13 +62,14 @@ function GroupLabel({ children }) {
 }
 
 // 卡片行：可选图标 + 标题/描述（左） + 控件（右）
-function SetRow({ icon, title, desc, children }) {
+function SetRow({ icon, title, desc, note, stacked = false, children }) {
   return (
-    <div className="set-row">
+    <div className={`set-row${stacked ? " set-row-stacked" : ""}`}>
       {icon ? <span className="set-row-icon">{icon}</span> : null}
       <div className="set-row-text">
         <div className="set-row-title">{title}</div>
         {desc ? <div className="set-row-desc">{desc}</div> : null}
+        {note ? <RowNote note={note} /> : null}
       </div>
       {children ? <div className="set-row-control">{children}</div> : null}
     </div>
@@ -79,13 +79,12 @@ function SetRow({ icon, title, desc, children }) {
 // 分段开关（brand 允许 pill 的唯一控件形态之一）
 function Seg({ value, options, onChange, disabled = false }) {
   return (
-    <div className={`seg${disabled ? " disabled" : ""}`} role="radiogroup">
+    <div className={`seg${disabled ? " disabled" : ""}`} role="group">
       {options.map(([key, label]) => (
         <button
           key={key}
           type="button"
-          role="radio"
-          aria-checked={value === key}
+          aria-pressed={value === key}
           className={value === key ? "active" : ""}
           disabled={disabled}
           onClick={() => value !== key && onChange(key)}
@@ -99,8 +98,9 @@ function Seg({ value, options, onChange, disabled = false }) {
 
 // 设置行内反馈文字（保存中/已保存/失败）
 function RowNote({ note }) {
-  if (!note.text) return null;
-  return <div className={note.cls}>{note.text}</div>;
+  const text = note.key ? `${t(note.key)}${note.detail ? `: ${note.detail}` : ""}` : note.text;
+  if (!text) return null;
+  return <div className={note.cls} role="status" aria-live="polite">{text}</div>;
 }
 
 // --- 通用（外观/语言/每周起始/速率口径 四行一卡） ----------------------------------
@@ -142,69 +142,77 @@ function LanguageRow() {
 
 function WeekStartRow({ settings }) {
   const [value, setValue] = useState("monday");
+  const [saving, setSaving] = useState(false);
   const [note, setNote] = useState({ cls: "settings-note", text: "" });
   useEffect(() => {
     setValue((settings && settings.week_start) || "monday");
-  }, [settings]);
+  }, [settings && settings.week_start]);
   const save = async (next) => {
+    const previous = value;
+    setSaving(true);
     setValue(next);
-    setNote({ cls: "settings-note", text: t("state.saving") });
+    setNote({ cls: "settings-note", key: "state.saving" });
     try {
       const result = await window.api.setSettings({ week_start: next });
       if (!result || !result.ok) throw new Error((result && result.error) || t("state.unknownError"));
-      setNote({ cls: "settings-note ok", text: t("state.saved") });
+      setNote({ cls: "settings-note ok", key: "state.saved" });
     } catch (err) {
-      setNote({ cls: "settings-note error", text: `${t("state.saveFailed")}: ${err.message || err}` });
+      setValue(previous);
+      setNote({ cls: "settings-note error", key: "state.saveFailed", detail: String(err.message || err) });
+    } finally {
+      setSaving(false);
     }
   };
   return (
-    <>
-      <SetRow title={t("settings.week")} desc={t("settings.weekHint")}>
-        <Seg
-          value={value}
-          onChange={save}
-          options={[["monday", t("settings.weekMonday")], ["sunday", t("settings.weekSunday")]]}
-        />
-      </SetRow>
-      <RowNote note={note} />
-    </>
+    <SetRow title={t("settings.week")} desc={t("settings.weekHint")} note={note}>
+      <Seg
+        value={value}
+        disabled={saving || !settings}
+        onChange={save}
+        options={[["monday", t("settings.weekMonday")], ["sunday", t("settings.weekSunday")]]}
+      />
+    </SetRow>
   );
 }
 
 function SpeedModeRow({ settings }) {
   const [value, setValue] = useState("gen");
+  const [saving, setSaving] = useState(false);
   const [note, setNote] = useState({ cls: "settings-note", text: "" });
   useEffect(() => {
     setValue((settings && settings.speed_mode) || "gen");
-  }, [settings]);
+  }, [settings && settings.speed_mode]);
   const save = async (next) => {
+    const previous = value;
+    setSaving(true);
     setValue(next);
-    setNote({ cls: "settings-note", text: t("state.saving") });
+    setNote({ cls: "settings-note", key: "state.saving" });
     try {
       const result = await window.api.setSettings({ speed_mode: next });
       if (!result || !result.ok) throw new Error((result && result.error) || t("state.unknownError"));
-      setNote({ cls: "settings-note ok", text: t("state.saved") });
+      setNote({ cls: "settings-note ok", key: "state.saved" });
     } catch (err) {
-      setNote({ cls: "settings-note error", text: `${t("state.saveFailed")}: ${err.message || err}` });
+      setValue(previous);
+      setNote({ cls: "settings-note error", key: "state.saveFailed", detail: String(err.message || err) });
+    } finally {
+      setSaving(false);
     }
   };
   return (
-    <>
-      <SetRow title={t("settings.speed")} desc={t("settings.speedHint")}>
-        <Seg
-          value={value}
-          onChange={save}
-          options={[["gen", t("settings.speedGen")], ["throughput", t("settings.speedThroughput")]]}
-        />
-      </SetRow>
-      <RowNote note={note} />
-    </>
+    <SetRow title={t("settings.speed")} desc={t("settings.speedHint")} note={note} stacked>
+      <Seg
+        value={value}
+        disabled={saving || !settings}
+        onChange={save}
+        options={[["gen", t("settings.speedGen")], ["throughput", t("settings.speedThroughput")]]}
+      />
+    </SetRow>
   );
 }
 
 function GeneralCard({ settings }) {
   return (
-    <>
+    <section className="panel" id="panel-general">
       <GroupLabel>{t("settings.secGeneral")}</GroupLabel>
       <div className="set-card">
         <ThemeRow />
@@ -212,7 +220,7 @@ function GeneralCard({ settings }) {
         <WeekStartRow settings={settings} />
         <SpeedModeRow settings={settings} />
       </div>
-    </>
+    </section>
   );
 }
 
@@ -301,8 +309,16 @@ function DisplayPanel({ lastPayload }) {
           className="display-list-item"
           role="button"
           tabIndex={0}
-          onClick={() => setSelectedProviders(allSelected ? new Set() : new Set(knownProviders))}
-          onKeyDown={activateOnKeys(() => setSelectedProviders(allSelected ? new Set() : new Set(knownProviders)))}
+          onClick={() => {
+            const next = allSelected ? new Set() : new Set(knownProviders);
+            setSelectedProviders(next);
+            persist(next);
+          }}
+          onKeyDown={activateOnKeys(() => {
+            const next = allSelected ? new Set() : new Set(knownProviders);
+            setSelectedProviders(next);
+            persist(next);
+          })}
         >
           <span className="display-drag-spacer" />
           <span className={`cb${allSelected ? " on" : selectedProviders.size > 0 ? " partial" : ""}`} />
@@ -368,7 +384,7 @@ function MembershipPanel({ settings, lastPayload, onSaved }) {
         months: manual && entry.duration_months ? String(entry.duration_months) : "",
       };
     }));
-  }, [settings]);
+  }, [settings && settings.membership]);
 
   const membership = (settings && settings.membership) || {};
   const accounts = (lastPayload && lastPayload.data && lastPayload.data.accounts) || [];
@@ -387,7 +403,7 @@ function MembershipPanel({ settings, lastPayload, onSaved }) {
 
   const save = async () => {
     setSaving(true);
-    setNote({ cls: "settings-note", text: t("state.saving") });
+    setNote({ cls: "settings-note", key: "state.saving" });
     const values = {};
     for (const row of rowsWithAuto) {
       if (row.auto) continue; // 自动获取行不提交、不清除
@@ -399,11 +415,11 @@ function MembershipPanel({ settings, lastPayload, onSaved }) {
     try {
       const result = await window.api.setSettings({ membership: values });
       if (!result || !result.ok) throw new Error((result && result.error) || t("state.unknownError"));
-      setNote({ cls: "settings-note ok", text: t("state.saved") });
+      setNote({ cls: "settings-note ok", key: "state.saved" });
       onSaved(result);
       try { window.api.refresh(); } catch {}
     } catch (err) {
-      setNote({ cls: "settings-note error", text: `${t("state.saveFailed")}: ${err.message || err}` });
+      setNote({ cls: "settings-note error", key: "state.saveFailed", detail: String(err.message || err) });
     } finally {
       setSaving(false);
     }
@@ -447,14 +463,16 @@ function MembershipPanel({ settings, lastPayload, onSaved }) {
               <div className="set-row-control membership-inputs">
                 <input
                   type="datetime-local" className="membership-date" value={row.date}
-                  disabled={row.auto}
+                  aria-label={`${row.label} · ${t("settings.membershipDate")}`}
+                  disabled={row.auto || saving}
                   onChange={(event) => setRows((prev) => prev.map((r) =>
                     r.key === row.key ? { ...r, date: event.target.value } : r))}
                 />
                 <input
                   type="number" className="membership-months" min="1" max="120" step="1"
                   placeholder="1" value={row.months}
-                  disabled={row.auto}
+                  aria-label={`${row.label} · ${t("settings.membershipMonths")}`}
+                  disabled={row.auto || saving}
                   onChange={(event) => setRows((prev) => prev.map((r) =>
                     r.key === row.key ? { ...r, months: event.target.value } : r))}
                 />
@@ -466,7 +484,7 @@ function MembershipPanel({ settings, lastPayload, onSaved }) {
         <div className="set-row set-row-foot">
           <RowNote note={note} />
           <div className="set-row-control">
-            <button type="button" className="settings-save" disabled={saving} onClick={save}>{t("state.save")}</button>
+            <button type="button" className="settings-save" disabled={saving || !settings} onClick={save}>{t(saving ? "state.saving" : "state.save")}</button>
           </div>
         </div>
       </div>
@@ -479,15 +497,15 @@ function LoginPanel({ currentSettings, lastPayload }) {
   const [busy, setBusy] = useState(false);
   const login = async (agent) => {
     setBusy(true);
-    setNote({ cls: "settings-note", text: t("settings.startingLogin") });
+    setNote({ cls: "settings-note", key: "settings.startingLogin" });
     try {
       const environment = (currentSettings && currentSettings.environment)
         || (lastPayload && lastPayload.data && lastPayload.data.environment);
       const result = await window.api.loginAgent(agent, environment);
       if (!result || !result.ok) throw new Error((result && result.error) || t("state.unknownError"));
-      setNote({ cls: "settings-note ok", text: t("settings.loginStarted") });
+      setNote({ cls: "settings-note ok", key: "settings.loginStarted" });
     } catch (err) {
-      setNote({ cls: "settings-note error", text: `${t("state.saveFailed")}: ${err.message || err}` });
+      setNote({ cls: "settings-note error", key: "state.saveFailed", detail: String(err.message || err) });
     } finally {
       setBusy(false);
     }
@@ -520,24 +538,12 @@ function LoginPanel({ currentSettings, lastPayload }) {
 
 function ApiKeysPanel({ reloadKey }) {
   const inputs = { deepseek: useRef(null), glm: useRef(null) };
-  const [states, setStates] = useState({
-    deepseek: { text: "Checking…", cls: "" },
-    glm: { text: "Checking…", cls: "" },
-  });
+  const [states, setStates] = useState({});
   const [note, setNote] = useState({ cls: "settings-note", text: "" });
   const [saving, setSaving] = useState(false);
 
   const showStatus = (provider, info = {}) => {
-    if (info.configured) {
-      setStates((prev) => ({ ...prev, [provider]: { text: t("settings.configured").replace("{src}", info.source || "local"), cls: " configured" } }));
-      if (inputs[provider].current) inputs[provider].current.placeholder = t("settings.keepKeyPh");
-    } else if (info.source === "invalid") {
-      setStates((prev) => ({ ...prev, [provider]: { text: t("settings.invalidCred"), cls: " invalid" } }));
-      if (inputs[provider].current) inputs[provider].current.placeholder = t("settings.replaceKeyPh");
-    } else {
-      setStates((prev) => ({ ...prev, [provider]: { text: t("settings.notConfigured"), cls: "" } }));
-      if (inputs[provider].current) inputs[provider].current.placeholder = t("settings.enterKeyPh");
-    }
+    setStates((prev) => ({ ...prev, [provider]: info }));
   };
 
   useEffect(() => {
@@ -551,7 +557,7 @@ function ApiKeysPanel({ reloadKey }) {
           showStatus(provider, (result.status || {})[provider]);
         }
       } catch (err) {
-        if (!cancelled) setNote({ cls: "settings-note error", text: `Cannot read key status: ${err.message || err}` });
+        if (!cancelled) setNote({ cls: "settings-note error", key: "settings.keyStatusFailed", detail: String(err.message || err) });
       }
     })();
     return () => { cancelled = true; };
@@ -564,11 +570,11 @@ function ApiKeysPanel({ reloadKey }) {
       if (value) values[provider] = value;
     }
     if (Object.keys(values).length === 0) {
-      setNote({ cls: "settings-note error", text: t("settings.needOneKey") });
+      setNote({ cls: "settings-note error", key: "settings.needOneKey" });
       return;
     }
     setSaving(true);
-    setNote({ cls: "settings-note", text: t("state.saving") });
+    setNote({ cls: "settings-note", key: "state.saving" });
     try {
       const result = await window.api.saveApiKeys(values);
       if (!result || !result.ok) throw new Error((result && result.error) || t("state.unknownError"));
@@ -576,9 +582,9 @@ function ApiKeysPanel({ reloadKey }) {
         showStatus(provider, (result.status || {})[provider]);
         if (inputs[provider].current) inputs[provider].current.value = "";
       }
-      setNote({ cls: "settings-note ok", text: t("state.saved") });
+      setNote({ cls: "settings-note ok", key: "state.saved" });
     } catch (err) {
-      setNote({ cls: "settings-note error", text: `${t("state.saveFailed")}: ${err.message || err}` });
+      setNote({ cls: "settings-note error", key: "state.saveFailed", detail: String(err.message || err) });
     } finally {
       setSaving(false);
     }
@@ -597,25 +603,35 @@ function ApiKeysPanel({ reloadKey }) {
             <div className="set-row-desc">{t("settings.apiKeysHint")}</div>
           </div>
         </div>
-        {providers.map(([provider, name]) => (
+        {providers.map(([provider, name]) => {
+          const info = states[provider];
+          const configured = info && info.configured;
+          const invalid = info && info.source === "invalid";
+          const label = !info ? t("state.checking") : configured
+            ? t("settings.configured").replace("{src}", info.source || "local")
+            : t(invalid ? "settings.invalidCred" : "settings.notConfigured");
+          const placeholder = t(configured ? "settings.keepKeyPh" : invalid ? "settings.replaceKeyPh" : "settings.enterKeyPh");
+          return (
           <div className="set-row" key={provider}>
             <span className="set-row-icon"><BrandIcon of={provider} size={16} /></span>
             <div className="set-row-text">
               <div className="set-row-title">{name}</div>
-              <div className={`set-row-desc key-state${states[provider].cls}`}>{states[provider].text}</div>
+              <div className={`set-row-desc key-state${configured ? " configured" : invalid ? " invalid" : ""}`}>{label}</div>
             </div>
             <div className="set-row-control">
               <input
                 ref={inputs[provider]} className="key-input key-input-inline" type="password"
-                autoComplete="off" spellCheck={false} placeholder={t("settings.enterKeyPh")}
+                aria-label={`${name} API key`} disabled={saving}
+                autoComplete="off" spellCheck={false} placeholder={placeholder}
               />
             </div>
           </div>
-        ))}
+          );
+        })}
         <div className="set-row set-row-foot">
           <RowNote note={note} />
           <div className="set-row-control">
-            <button type="button" className="settings-save" disabled={saving} onClick={save}>{t("state.save")}</button>
+            <button type="button" className="settings-save" disabled={saving} onClick={save}>{t(saving ? "state.saving" : "state.save")}</button>
           </div>
         </div>
       </div>
@@ -640,14 +656,14 @@ function EnvironmentPanel({ settings, onSaved }) {
   }, [wslDistros.join("|"), (settings && settings.wsl_distro) || ""]);
   if (available.length < 2 && wslDistros.length === 0) return null;
   const save = async (values) => {
-    setNote({ cls: "settings-note", text: t("state.saving") });
+    setNote({ cls: "settings-note", key: "state.saving" });
     try {
       const result = await window.api.setSettings(values);
       if (!result || !result.ok) throw new Error((result && result.error) || t("state.unknownError"));
-      setNote({ cls: "settings-note ok", text: t("state.saved") });
+      setNote({ cls: "settings-note ok", key: "state.saved" });
       onSaved(result.settings || {});
     } catch (err) {
-      setNote({ cls: "settings-note error", text: `${t("state.saveFailed")}: ${err.message || err}` });
+      setNote({ cls: "settings-note error", key: "state.saveFailed", detail: String(err.message || err) });
     }
   };
   return (
@@ -726,6 +742,8 @@ function UpdateSection() {
       } else {
         setStatus({ text: `${t("settings.upToDate")} (v${result.current})`, available: false });
       }
+    } catch (err) {
+      setStatus({ text: `${t("settings.checkFailed")}: ${err.message || err}`, available: false });
     } finally {
       setBusy(false);
     }
@@ -888,28 +906,30 @@ export default function SettingsPage({ lastPayload }) {
   const activeLabel = (PANEL_GROUPS.find((g) => g.key === activeGroup) || PANEL_GROUPS[0]).labelKey;
 
   return (
-    <div className="app-body">
-      <div className="settings-sidebar main-settings-nav">
+    <div className="app-body settings-body">
+      <nav className="settings-sidebar main-settings-nav" aria-label={t("tip.settings")}>
         <button type="button" className="settings-back" onClick={() => { window.location.hash = "#/dashboard"; }}>
-          ← {t("nav.back")}
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="m10 5-7 7 7 7M3 12h18" />
+          </svg>
+          {t("nav.back")}
         </button>
         {PANEL_GROUPS.map((group) => {
           if (group.key === "environment" && !envAvailable) return null;
           return (
-            <div
+            <button
+              type="button"
               key={group.key}
               className={`side-item${activeGroup === group.key ? " active" : ""}`}
-              role="button"
-              tabIndex={0}
+              aria-current={activeGroup === group.key ? "page" : undefined}
               onClick={() => setActiveGroup(group.key)}
-              onKeyDown={activateOnKeys(() => setActiveGroup(group.key))}
             >
               <span className="side-icon">{NAV_ICONS[group.key]}</span>
               {t(group.labelKey)}
-            </div>
+            </button>
           );
         })}
-      </div>
+      </nav>
       <div className="settings-main page-scroll">
         <div className="settings-column">
           <div className="settings-content-title">{t(activeLabel)}</div>
@@ -922,7 +942,10 @@ export default function SettingsPage({ lastPayload }) {
               settings={settings}
               lastPayload={lastPayload}
               onSaved={(result) => {
-                if (result.settings) setSettings((prev) => ({ ...(prev || {}), ...result.settings }));
+                setSettings((prev) => ({
+                  ...(prev || {}), ...result.settings,
+                  ...(result.membership ? { membership: result.membership } : {}),
+                }));
               }}
             />
             <LoginPanel currentSettings={settings} lastPayload={lastPayload} />
