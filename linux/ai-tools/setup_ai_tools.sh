@@ -635,6 +635,14 @@ install_codex_profile() {
         return 1
     fi
 
+    # 写入前只移除链接本身，避免 printf/cp 跟随链接覆盖真实文件。
+    for link in "$wrapper" "$resolver"; do
+        if [ -L "$link" ] && ! rm -- "$link"; then
+            log "ERROR: 无法移除旧的 Codex wrapper 链接: $link"
+            return 1
+        fi
+    done
+
     local real_canon wrapper_canon
     real_canon="$(readlink -f -- "$real" 2>/dev/null || true)"
     wrapper_canon="$(readlink -f -- "$wrapper" 2>/dev/null || true)"

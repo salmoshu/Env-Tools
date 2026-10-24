@@ -347,22 +347,18 @@ pub fn collect(profile: &AccountProfile, errors: &mut Vec<Value>) -> Option<Valu
     let mut account = match fetch_kimi_account(profile) {
         Ok(account) => account,
         Err(err) => {
-            errors.push(serde_json::json!({
-                "provider": "Kimi Code",
-                "account_id": profile.id,
-                "account_label": profile.label,
-                "error": err,
-            }));
-            let mut minimal = serde_json::json!({
+            let mut error = serde_json::json!({
                 "provider": "Kimi Code",
                 "account_id": profile.id,
                 "account_label": profile.label,
                 "plan": "unknown",
                 "windows": [],
                 "fetched_at": fetched_now(),
+                "error": err,
             });
-            return attach_manual_membership(&mut minimal, &profile.membership_key())
-                .then_some(minimal);
+            attach_manual_membership(&mut error, &profile.membership_key());
+            errors.push(error);
+            return None;
         }
     };
     let manual_membership = attach_manual_membership(&mut account, &profile.membership_key());

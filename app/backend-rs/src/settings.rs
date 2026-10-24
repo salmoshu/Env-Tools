@@ -1016,7 +1016,7 @@ mod tests {
     }
 
     #[test]
-    fn quota_collection_suppresses_duplicate_errors_when_account_exists() {
+    fn quota_errors_preserve_membership_and_credential_details() {
         let _lock = env_lock();
         let _env = TestEnv::new("quota-card-error-dedup");
         crate::quota::invalidate_codex_retry_state();
@@ -1027,15 +1027,20 @@ mod tests {
         .unwrap();
         let (accounts, errors) = crate::quota::collect_all();
         crate::quota::invalidate_codex_retry_state();
-        assert_eq!(accounts.len(), 2);
-        assert!(accounts.iter().all(|account| {
-            account["account_id"] == "default"
-                && matches!(account["provider"].as_str(), Some("OpenAI Codex" | "Kimi Code"))
-        }));
-        assert_eq!(errors.len(), 2);
-        assert!(errors.iter().all(|error| {
-            matches!(error["provider"].as_str(), Some("GLM" | "DeepSeek"))
-        }));
+        assert!(accounts.is_empty());
+        assert_eq!(errors.len(), 4);
+        let codex = errors
+            .iter()
+            .find(|error| error["provider"] == "OpenAI Codex")
+            .unwrap();
+        assert_eq!(codex["membership"]["duration_months"], 12);
+        assert!(codex["error"].as_str().unwrap().contains("credentials"));
+        let kimi = errors
+            .iter()
+            .find(|error| error["provider"] == "Kimi Code")
+            .unwrap();
+        assert_eq!(kimi["membership"]["duration_months"], 6);
+        assert!(kimi["error"].as_str().unwrap().contains("credentials"));
     }
 
     fn collect_kimi_with_mock(profile: &AccountProfile) -> (Option<Value>, Vec<Value>) {

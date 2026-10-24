@@ -309,31 +309,23 @@ pub fn collect(account: &AccountProfile, errors: &mut Vec<Value>) -> Option<Valu
     match apply_retry_window_for(&account.id, generation, outcome) {
         WindowOutcome::Fresh(account) | WindowOutcome::Stale(account) => Some(account),
         WindowOutcome::Failed(message) => {
-            // 错误降级：配额接口失败但存在该账号的手动会员配置时，返回最小账户
-            // （会员到期仍在前端展示）。同一账号不再同时推送错误条目，避免双卡。
-            let mut account_data = serde_json::json!({
+            // 配额失败统一进入错误卡片；手动会员信息随错误保留，避免
+            // unknown 占位卡遮蔽登录失效或网络异常。
+            let mut error = serde_json::json!({
                 "provider": "OpenAI Codex",
                 "account_id": account.id,
                 "account_label": account.label,
                 "plan": "unknown",
                 "windows": [],
                 "fetched_at": fetched_now(),
+                "error": message,
             });
-            if attach_manual_membership(
-                &mut account_data,
+            attach_manual_membership(
+                &mut error,
                 &crate::settings::codex_membership_key(&account.id),
-            ) {
-                eprintln!("[codex] quota fetch failed for {}, serving minimal account with manual membership: {message}", account.label);
-                Some(account_data)
-            } else {
-                errors.push(serde_json::json!({
-                    "provider": "OpenAI Codex",
-                    "account_id": account.id,
-                    "account_label": account.label,
-                    "error": message,
-                }));
-                None
-            }
+            );
+            errors.push(error);
+            None
         }
     }
 }

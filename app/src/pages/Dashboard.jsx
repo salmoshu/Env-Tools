@@ -263,6 +263,7 @@ function QuotaErrorCard({ err, onFix, providerKey, accountState }) {
           ? "keys"
           : "retry";
   const hints = { login: t("err.loginHint"), keys: t("err.keysHint"), retry: t("err.retryHint"), network: t("err.networkHint") };
+  const loginFeedback = err && err.login_feedback;
   return (
     <div
       className="qcard qcard-error"
@@ -276,6 +277,7 @@ function QuotaErrorCard({ err, onFix, providerKey, accountState }) {
         <span className="plan">{t("dash.unavailable")}</span>
       </div>
       <div className="qerror-hint">{hints[kind]}</div>
+      <MembershipLine account={err} />
       <button className="qerror-toggle" onClick={() => setExpanded(!expanded)}>
         {expanded ? t("state.hideDetails") : t("state.details")}
       </button>
@@ -291,6 +293,7 @@ function QuotaErrorCard({ err, onFix, providerKey, accountState }) {
           <RefreshIcon /> {t("state.retry")}
         </button>
       </div>
+      {loginFeedback ? <div className={`qerror-login-feedback${loginFeedback.ok ? " ok" : ""}`}>{loginFeedback.text}</div> : null}
     </div>
   );
 }
@@ -429,6 +432,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
   const [weekStart, setWeekStart] = useState("monday");
   const [speedMode, setSpeedMode] = useState("gen");
   const [upgradeProvider, setUpgradeProvider] = useState(null);
+  const [loginFeedback, setLoginFeedback] = useState({});
   // 铺满视图的卡片 id（每日 Token 及以下各区块）；Esc 退出
   const [expandedCard, setExpandedCard] = useState(null);
   useEffect(() => {
@@ -778,9 +782,12 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
   // 只取末段，避免 kimi/kimi-code/k3-256k、omp/kimi-code/k3-256k 这类双重前缀；
   // 悬浮提示保留完整模型名
   const rateModelLabel = (agent, model) => {
-    if (!model) return agent || "—";
-    if (!agent) return model;
-    return `${agent}/${model.split("/").pop()}`;
+    const agentLabel = AGENT_LABELS[agent] || agent || "—";
+    if (!model) return agentLabel;
+    if (!agent) return model.split("/").pop();
+    const bare = model.split("/").pop();
+    const vendor = agent === "kimi" ? "kimi" : agent;
+    return `${vendor}/${bare}`;
   };
 
   // 排序作用于全集；分组与 200 行渲染上限在排序之后套用。
@@ -854,11 +861,11 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
           {session.session_id.replace("session_", "").replace(/^codex-/, "").slice(0, 8)}…
         </td>
         <td className="l" title={session.work_dir}>{session.project}</td>
-        <td className="l"><span className="sess-agent"><BrandIcon of={session.agent} size={12} />{session.agent}</span></td>
+        <td className="l"><span className="sess-agent"><BrandIcon of={session.agent} size={12} />{AGENT_LABELS[session.agent] || session.agent}</span></td>
         <td className="l mono" title={(session.models || []).join(", ")}>
           {(session.models || []).length > 1
             ? `${session.models.length} models`
-            : ((session.models || [])[0] || "-")}
+            : rateModelLabel(session.agent, (session.models || [])[0])}
         </td>
         <td
           className="sess-tokens"
@@ -1040,7 +1047,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                             <span className="mono act-sid" title={s.session_id}>
                               {String(s.session_id).replace("session_", "").replace(/^codex-/, "").slice(0, 8)}…
                             </span>
-                            <span className="act-agent"><BrandIcon of={s.agent} size={11} />{s.agent}</span>
+                            <span className="act-agent"><BrandIcon of={s.agent} size={11} />{AGENT_LABELS[s.agent] || s.agent}</span>
                             <span className="act-meta">
                               {fmt(s.output)} out · {s.requests} req · {t("dash.rateEndedAgo").replace("{d}", fmtSpan(s.ended_ago_seconds || 0))}
                             </span>
@@ -1127,21 +1134,37 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
               accountState={accountStates[agentProviderKey(account.provider)]}
             />
           ))}
-          {(usagePayload && !usagePayload.error ? shownErrors : []).map((err) => (
-            <QuotaErrorCard
+          {(usagePayload && !usagePayload.error ? shownErrors : []).map((err) => {
+            const errorKey = `${err.provider}:${err.account_id || "default"}`;
+            const providerKey = agentProviderKey(err.provider);
+            const displayError = loginFeedback[errorKey] ? { ...err, login_feedback: loginFeedback[errorKey] } : err;
+            return (<QuotaErrorCard
               key={`${err.provider}:${err.account_id || "default"}:${err.error}`}
-              err={err}
-              providerKey={agentProviderKey(err.provider)}
-              accountState={accountStates[agentProviderKey(err.provider)]}
-              onFix={(action) => {
+              err={displayError}
+              providerKey={providerKey}
+              accountState={accountStates[providerKey]}
+              onFix={async (action) => {
                 if (action === "refresh") {
                   if (onRefresh) onRefresh();
+                } else if (action === "login" && providerKey) {
+                  setLoginFeedback((prev) => ({ ...prev, [errorKey]: { ok: true, text: t("err.loginStarting") } }));
+                  const result = await window.api.loginAgent(providerKey, data && data.environment, err.account_id || "default");
+                  if (!result || !result.ok) {
+                    try { localStorage.setItem("env-tools.settings-focus-agent", providerKey); } catch {}
+                    setLoginFeedback((prev) => ({ ...prev, [errorKey]: { ok: false, text: t("err.loginNeedsSettings") } }));
+                    window.location.hash = "#/settings";
+                  } else {
+                    setLoginFeedback((prev) => ({ ...prev, [errorKey]: { ok: true, text: t("err.loginStarted") } }));
+                    setTimeout(() => { if (onRefresh) onRefresh(); }, 1200);
+                  }
                 } else {
+                  try { if (providerKey) localStorage.setItem("env-tools.settings-focus-agent", providerKey); } catch {}
                   window.location.hash = "#/settings";
                 }
               }}
             />
-          ))}
+            );
+          })}
           {accounts.length === 0 && shownErrors.length === 0
             ? (usagePayload && !usagePayload.error
               ? <div className="status">{t("state.noData")}</div>

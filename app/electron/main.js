@@ -905,6 +905,9 @@ function broadcastAgentAccounts(provider, payload) {
   const eventPayload = { ...payload, provider };
   for (const window of liveWindows()) window.webContents.send("agent-accounts-update", eventPayload);
 }
+function broadcastLoginAgent(payload) {
+  for (const window of liveWindows()) window.webContents.send("login-agent-update", payload);
+}
 async function refreshAgentAccounts(provider) {
   const result = await backendJson(agentAccountsPath(provider));
   if (result && result.ok) broadcastAgentAccounts(provider, result);
@@ -1057,6 +1060,11 @@ ipcMain.handle("login-agent", async (_event, agent, environment, accountId) => {
         ...(spec.env ? { env: spec.env } : {}),
       });
       child.once("error", (err) => resolve({ ok: false, error: err.message }));
+      child.once("close", (code) => {
+        const ok = code === 0;
+        broadcastLoginAgent({ agent, account_id: accountId || "default", ok, error: ok ? "" : `login process exited with code ${code}` });
+        if (ok) pushUsage().catch(() => {});
+      });
       child.once("spawn", () => {
         child.unref();
         resolve({ ok: true, agent, account_id: accountId || "default" });

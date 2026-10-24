@@ -56,6 +56,7 @@ contextBridge.exposeInMainWorld("api", {
   updateCodexAccounts: (values) => ipcRenderer.invoke("update-codex-accounts", values),
   onCodexAccountsUpdate: (callback) => subscribe("codex-accounts-update", callback),
   loginAgent: (agent, environment, accountId) => ipcRenderer.invoke("login-agent", agent, environment, accountId),
+  onLoginAgentUpdate: (callback) => subscribe("login-agent-update", callback),
   // 安装 / 升级（看板版本徽章升级与 Tools 组件共用运行器）
   upgrade: (targets, environment, windowsSetupScript) =>
     ipcRenderer.invoke("upgrade-agents", targets, environment, windowsSetupScript),

@@ -29,7 +29,7 @@ function usageItems(account) {
     .sort((a, b) => rank(a.window) - rank(b.window) || a.index - b.index)
     .slice(0, 2)
     .map(({ window }) => ({
-      label: String(window.label || "usage"),
+      label: String(window.label || "usage").replace(/\s+window$/i, ""),
       percent: windowPercent(window),
     }));
 }

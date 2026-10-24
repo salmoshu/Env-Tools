@@ -93,7 +93,7 @@ export function isNewerVersion(latest, current) {
 
 export const AGENT_LABELS = {
   all: "All agents",
-  kimi: "Kimi",
+  kimi: "Kimi Code",
   codex: "Codex",
   glm: "GLM",
   deepseek: "DeepSeek",

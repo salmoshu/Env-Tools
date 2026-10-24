@@ -389,15 +389,22 @@ function MembershipPanel({ settings, lastPayload, onSaved, providers, id }) {
 
   // 自动获取状态在渲染时从 lastPayload 派生（随用量推送实时更新）
   const rowsWithAuto = rows.map((row) => {
-    if (row.manual) return { ...row, auto: false, autoEndsAt: null, autoError: null };
+    if (row.manual) return { ...row, auto: false, autoEndsAt: null, autoDurationMonths: "", autoError: null };
     const account = accounts.find((item) => item.provider === row.provider
       && (!row.accountId || (item.account_id || "default") === row.accountId));
     const accountMembership = account && account.membership;
     if (accountMembership && accountMembership.error) {
-      return { ...row, auto: false, autoEndsAt: null, autoError: accountMembership.error };
+      return { ...row, auto: false, autoEndsAt: null, autoDurationMonths: "", autoError: accountMembership.error };
     }
     const endsAt = accountMembership && accountMembership.ends_at;
-    return { ...row, auto: Boolean(endsAt), autoEndsAt: endsAt || null, autoError: null };
+    return {
+      ...row,
+      auto: Boolean(endsAt),
+      autoEndsAt: endsAt || null,
+      autoDurationMonths: accountMembership && accountMembership.duration_months
+        ? String(accountMembership.duration_months) : "",
+      autoError: null,
+    };
   });
 
   const save = async () => {
@@ -461,7 +468,8 @@ function MembershipPanel({ settings, lastPayload, onSaved, providers, id }) {
               </div>
               <div className="set-row-control membership-inputs">
                 <input
-                  type="datetime-local" className="membership-date" value={row.date}
+                  type="datetime-local" className="membership-date"
+                  value={row.auto ? toLocalInputValue(row.autoEndsAt) : row.date}
                   aria-label={`${row.label} · ${t("settings.membershipDate")}`}
                   disabled={row.auto || saving}
                   onChange={(event) => setRows((prev) => prev.map((r) =>
@@ -469,7 +477,7 @@ function MembershipPanel({ settings, lastPayload, onSaved, providers, id }) {
                 />
                 <input
                   type="number" className="membership-months" min="1" max="120" step="1"
-                  placeholder="1" value={row.months}
+                  placeholder="1" value={row.auto ? row.autoDurationMonths || "" : row.months}
                   aria-label={`${row.label} · ${t("settings.membershipMonths")}`}
                   disabled={row.auto || saving}
                   onChange={(event) => setRows((prev) => prev.map((r) =>
@@ -602,6 +610,21 @@ function AgentAccountsPanel({ provider, settings, lastPayload, onSaved }) {
     ready,
   } = useAgentAccounts(provider, quotaAccounts);
   const busy = pending || switching;
+  useEffect(() => {
+    if (!window.api.onLoginAgentUpdate) return undefined;
+    return window.api.onLoginAgentUpdate((payload) => {
+      if (!payload || payload.agent !== provider) return;
+      if (payload.account_id && !registry.some((account) => account.id === payload.account_id)) return;
+      setPending(false);
+      if (payload.ok) {
+        setNote({ cls: "settings-note ok", key: "settings.loginCompleted" });
+        reload().catch(() => {});
+        try { window.api.refresh(); } catch {}
+      } else {
+        setNote({ cls: "settings-note error", key: "settings.loginFailed", detail: payload.error || t("state.unknownError") });
+      }
+    });
+  }, [provider, registry, reload]);
   const visibleNote = note.key || note.text ? note
     : error ? { cls: "settings-note error", text: error } : note;
   const hasDefault = registry.some((account) => account.id === "default");
@@ -1061,7 +1084,12 @@ const PANEL_GROUPS = [
 ];
 
 export default function SettingsPage({ lastPayload }) {
-  const [activeGroup, setActiveGroup] = useState("appearance");
+  const [activeGroup, setActiveGroup] = useState(() => {
+    try { return localStorage.getItem("env-tools.settings-focus-agent") ? "account" : "appearance"; } catch { return "appearance"; }
+  });
+  const [focusProvider] = useState(() => {
+    try { return localStorage.getItem("env-tools.settings-focus-agent") || ""; } catch { return ""; }
+  });
   const [settings, setSettings] = useState(null);
   const [backend, setBackend] = useState(null);
   useLang();
@@ -1075,6 +1103,14 @@ export default function SettingsPage({ lastPayload }) {
   }, []);
 
   useEffect(() => { refreshSettings(); }, [refreshSettings]);
+  useEffect(() => {
+    if (!focusProvider) return;
+    try { localStorage.removeItem("env-tools.settings-focus-agent"); } catch {}
+    const timer = setTimeout(() => {
+      document.getElementById(`panel-agent-${focusProvider}`)?.scrollIntoView({ block: "start", behavior: "smooth" });
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [focusProvider]);
 
   const groupClass = (key) => `panel-group${activeGroup === key ? "" : " hidden"}`;
   const envAvailable = (() => {
@@ -1095,7 +1131,7 @@ export default function SettingsPage({ lastPayload }) {
       <nav className="settings-sidebar main-settings-nav" aria-label={t("tip.settings")}>
         <button type="button" className="settings-back" onClick={() => { window.location.hash = "#/dashboard"; }}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="m10 5-7 7 7 7M3 12h18" />
+            <path d="m14 5-7 7 7 7" />
           </svg>
           {t("nav.back")}
         </button>
