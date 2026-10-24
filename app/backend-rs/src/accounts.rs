@@ -691,6 +691,46 @@ pub fn update_accounts(provider: Provider, payload: &Value) -> Result<Value, Str
     Ok(payload_from_config(provider, &config))
 }
 
+/// 更新当前机器所有可访问的账号注册表。
+///
+/// 账号切换只需要同步 active 字段：账号的名称、凭证和 profile 仍由各环境
+/// 自己管理。Windows 原生后端可以通过 `\\wsl.localhost` 访问 WSL 用户目录，
+/// 因此这里同时写入本机注册表和所有已发现的 WSL 用户注册表，并返回每个
+/// scope 的结果供前端提示；其它账号管理动作保持单环境语义。
+pub fn update_active_all_scopes(provider: Provider, payload: &Value) -> Result<Value, String> {
+    if payload.get("action").and_then(Value::as_str) != Some("set-active") {
+        return update_accounts(provider, payload);
+    }
+
+    let config = apply_action(provider, &load_registry(provider), payload)?;
+    write_private_json(&registry_path(provider), &config)?;
+
+    let mut succeeded = vec!["local".to_string()];
+    let mut failed = Vec::new();
+    for home in crate::settings::wsl_homes() {
+        let scope = format!("WSL {}", home.display());
+        let path = home
+            .join(".config")
+            .join("ai-usage-monitor")
+            .join(provider.spec().registry_file);
+        let existing = read_json(&path).unwrap_or_else(|_| serde_json::json!({}));
+        match apply_action(provider, &existing, payload)
+            .and_then(|next| write_private_json(&path, &next).map(|_| next))
+        {
+            Ok(_) => succeeded.push(scope),
+            Err(error) => failed.push(serde_json::json!({ "scope": scope, "error": error })),
+        }
+    }
+
+    let mut result = payload_from_config(provider, &config);
+    result["account_sync"] = serde_json::json!({
+        "requested": succeeded.len() + failed.len(),
+        "succeeded": succeeded,
+        "failed": failed,
+    });
+    Ok(result)
+}
+
 pub fn profile_for_membership_key(key: &str) -> Option<AccountProfile> {
     for provider in Provider::ALL {
         let prefix = provider.spec().membership_prefix;

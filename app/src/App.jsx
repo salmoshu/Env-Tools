@@ -75,6 +75,22 @@ export default function App() {
   }, [quotaNote]);
 
   useEffect(() => {
+    const onAccountSync = (event) => {
+      const sync = event.detail && event.detail.sync;
+      if (!sync) return;
+      const failed = Array.isArray(sync.failed) ? sync.failed : [];
+      const succeeded = Array.isArray(sync.succeeded) ? sync.succeeded : [];
+      setQuotaNote(failed.length
+        ? t("settings.accountSyncPartial")
+          .replace("{n}", String(failed.length))
+          .replace("{scopes}", failed.map((item) => item.scope).join(", "))
+        : t("settings.accountSyncSuccess").replace("{n}", String(succeeded.length)));
+    };
+    window.addEventListener("agent-account-sync", onAccountSync);
+    return () => window.removeEventListener("agent-account-sync", onAccountSync);
+  }, []);
+
+  useEffect(() => {
     const off = window.api.onUsageUpdate((payload) => {
       clearTimeout(refreshWatchdog.current);
       setLastPayload(payload);

@@ -61,7 +61,11 @@ pub fn accounts_payload(provider: Provider) -> Value {
 }
 
 pub fn update_accounts(provider: Provider, payload: &Value) -> Result<Value, String> {
-    let result = crate::accounts::update_accounts(provider, payload)?;
+    let result = if payload.get("action").and_then(Value::as_str) == Some("set-active") {
+        crate::accounts::update_active_all_scopes(provider, payload)?
+    } else {
+        crate::accounts::update_accounts(provider, payload)?
+    };
     if provider == Provider::Codex
         && payload.get("action").and_then(Value::as_str) != Some("set-active")
     {

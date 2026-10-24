@@ -908,6 +908,37 @@ function broadcastAgentAccounts(provider, payload) {
 function broadcastLoginAgent(payload) {
   for (const window of liveWindows()) window.webContents.send("login-agent-update", payload);
 }
+const ACCOUNT_REGISTRY_FILES = {
+  kimi: "kimi-accounts.json",
+  codex: "codex-accounts.json",
+  glm: "glm-accounts.json",
+  deepseek: "deepseek-accounts.json",
+};
+function syncWindowsHostActiveAccount(provider, id) {
+  const filename = ACCOUNT_REGISTRY_FILES[provider];
+  if (!filename) return { ok: false, scope: "Windows host", error: `unknown provider: ${provider}` };
+  const dir = path.join(os.homedir(), ".config", "ai-usage-monitor");
+  const file = path.join(dir, filename);
+  let config = {};
+  try {
+    if (fs.existsSync(file)) config = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch (error) {
+    return { ok: false, scope: "Windows host", error: `cannot read account registry: ${error.message}` };
+  }
+  const accounts = Array.isArray(config.accounts) ? config.accounts : [];
+  const exists = id === "default"
+    ? config.default_removed !== true
+    : accounts.some((account) => account && account.id === id);
+  if (!exists) return { ok: false, scope: "Windows host", error: `account ${id} is not registered on Windows host` };
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    config.active = id;
+    fs.writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+    return { ok: true, scope: "Windows host" };
+  } catch (error) {
+    return { ok: false, scope: "Windows host", error: `cannot write account registry: ${error.message}` };
+  }
+}
 async function refreshAgentAccounts(provider) {
   const result = await backendJson(agentAccountsPath(provider));
   if (result && result.ok) broadcastAgentAccounts(provider, result);
@@ -923,6 +954,14 @@ ipcMain.handle("update-agent-accounts", async (_event, provider, values) => {
   if (!pathname) return { ok: false, error: `unknown provider: ${provider}` };
   const result = await backendJson(pathname, values || {});
   if (result && result.ok) {
+    if (WSL_BACKEND && (values || {}).action === "set-active" && result.account_sync) {
+      const host = syncWindowsHostActiveAccount(provider, values.id || "default");
+      const sync = result.account_sync;
+      sync.requested = Number(sync.requested || 0) + 1;
+      if (host.ok) sync.succeeded = [...(sync.succeeded || []), host.scope];
+      else sync.failed = [...(sync.failed || []), { scope: host.scope, error: host.error }];
+      result.account_sync = sync;
+    }
     broadcastAgentAccounts(provider, result);
     if ((values || {}).action !== "set-active") await pushUsage();
   }

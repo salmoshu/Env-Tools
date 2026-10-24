@@ -23,6 +23,14 @@ export function agentMembershipKey(provider, account) {
   return account.membership_key || (account.id === "default" ? prefix : `${prefix}:${account.id}`);
 }
 
+function announceAccountSync(provider, result) {
+  const sync = result && result.account_sync;
+  if (!sync || typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent("agent-account-sync", {
+    detail: { provider, sync },
+  }));
+}
+
 function readStoredAccount(selectionKey) {
   try { return localStorage.getItem(selectionKey) || "default"; } catch { return "default"; }
 }
@@ -125,7 +133,7 @@ export function useAgentAccounts(provider, quotaAccounts = [], sync = true) {
     if (!sync) {
       setError("");
       commitActive(id);
-      return true;
+      return { ok: true };
     }
     if (switchingRef.current) return false;
     const previous = activeRef.current;
@@ -136,12 +144,13 @@ export function useAgentAccounts(provider, quotaAccounts = [], sync = true) {
     try {
       const result = await window.api.updateAgentAccounts(provider, { action: "set-active", id });
       if (!result || !result.ok) throw new Error((result && result.error) || t("state.unknownError"));
+      announceAccountSync(provider, result);
       applyPayload(result);
-      return true;
+      return result;
     } catch (err) {
       commitActive(previous);
       setError(String(err && (err.message || err) || err));
-      return false;
+      return { ok: false, error: String(err && (err.message || err) || err) };
     } finally {
       switchingRef.current = false;
       setSwitching(false);

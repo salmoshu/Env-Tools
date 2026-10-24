@@ -658,10 +658,14 @@ function AgentAccountsPanel({ provider, settings, lastPayload, onSaved }) {
 
   const activate = async (accountId) => {
     setNote({ cls: "settings-note", key: "state.saving" });
-    const ok = await selectAccount(accountId);
-    setNote(ok
-      ? { cls: "settings-note ok", key: "settings.accountActivated" }
-      : { cls: "settings-note error", key: "settings.accountSwitchFailed" });
+    const result = await selectAccount(accountId);
+    const ok = Boolean(result && result.ok !== false);
+    const failed = result && result.account_sync && result.account_sync.failed || [];
+    setNote(failed.length
+      ? { cls: "settings-note error", key: "settings.accountSyncPartial", detail: failed.map((item) => item.scope).join(", ") }
+      : ok
+        ? { cls: "settings-note ok", key: "settings.accountActivated" }
+        : { cls: "settings-note error", key: "settings.accountSwitchFailed" });
   };
 
   const rename = async (accountId) => {
