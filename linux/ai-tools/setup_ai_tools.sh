@@ -8,6 +8,9 @@
 #   setup_ai_tools.sh --all            # 全部工具
 #   setup_ai_tools.sh --verbose        # 展开完整安装日志（默认折叠视图）
 # 依赖 nodejs（npm），缺失时自动调用 ../nodejs/setup_nodejs.sh 安装。
+# Codex 安装或已是最新且校验成功后，在 ~/.local/bin 安装受管多账号 wrapper
+# （codex 与 codex-resolve.cjs）；每次调用重新读取 active 并注入 CODEX_HOME，
+# 显式 CODEX_HOME 始终优先，不读取凭证文件。
 # kimi 若为非 npm 方式安装（官方脚本二进制），更新时走官方安装脚本。
 # entire 为 Go 二进制（与 npm 无关），始终走官方安装脚本
 # （curl -fsSL https://entire.com/install.sh | bash），默认装到 ~/.local/bin，
@@ -51,6 +54,19 @@ pkg_of() {
 
 version_of() {
     command -v "$1" >/dev/null 2>&1 && "$1" --version 2>/dev/null | head -1
+}
+
+codex_version_of() {
+    [ -n "${CODEX_REAL_SHIM:-}" ] && [ -f "$CODEX_REAL_SHIM" ] || return 0
+    "$CODEX_REAL_SHIM" --version 2>/dev/null | head -1
+}
+
+npm_tool_version_of() {
+    if [ "$1" = codex ]; then
+        codex_version_of
+    else
+        version_of "$1"
+    fi
 }
 
 # 从 --version 输出中提取 x.y.z（各 CLI 输出格式不一，如 "codex-cli 0.25.0"）
@@ -269,6 +285,16 @@ if ! command -v npm >/dev/null 2>&1; then
 fi
 log "npm 就绪: $(version_of node) (node)"
 
+CODEX_REAL_SHIM=''
+if [[ " ${targets[*]} " == *" codex "* ]]; then
+    CODEX_NPM_PREFIX="$(npm prefix -g 2>/dev/null | tail -1)"
+    if [ -z "$CODEX_NPM_PREFIX" ] || [[ "$CODEX_NPM_PREFIX" != /* ]]; then
+        log "ERROR: 无法获取有效的 npm prefix（npm prefix -g 返回: '$CODEX_NPM_PREFIX'）"
+        exit 1
+    fi
+    CODEX_REAL_SHIM="$CODEX_NPM_PREFIX/bin/codex"
+fi
+
 # --- 并行安装/更新 --------------------------------------------------------------
 # npm 全局目录不能安全地由多个 npm 进程同时写入，因此 npm 工具合并为一个线程；
 # 非 npm 安装的 kimi/entire 使用官方脚本，各作为独立线程并行执行。
@@ -284,7 +310,7 @@ npm_worker() {
     local verify_failed=false
     local -A before_map=() latest_map=()
     for name in "${names[@]}"; do
-        before_map[$name]="$(version_of "$name")"
+        before_map[$name]="$(npm_tool_version_of "$name")"
         local_ver="$(printf '%s' "${before_map[$name]}" | extract_semver)"
         emit "$name" "查询最新版本 ($(pkg_of "$name")) ..."
         latest="$(latest_npm_version "$(pkg_of "$name")")"
@@ -324,10 +350,14 @@ npm_worker() {
     fi
     hash -r 2>/dev/null || true
     for name in "${install_names[@]}"; do
-        after="$(version_of "$name")"
+        after="$(npm_tool_version_of "$name")"
         after_ver="$(printf '%s' "$after" | extract_semver)"
         if [ -z "$after_ver" ]; then
-            emit "$name" "ERROR: npm 返回成功，但升级后 PATH 中找不到 $name"
+            if [ "$name" = codex ]; then
+                emit "$name" "ERROR: npm 返回成功，但真实 Codex shim 无法执行: ${CODEX_REAL_SHIM:-未定位}"
+            else
+                emit "$name" "ERROR: npm 返回成功，但升级后 PATH 中找不到 $name"
+            fi
             write_result "$name" FAIL "${before_map[$name]:-未安装}" ''
             verify_failed=true
         elif [ -n "${latest_map[$name]}" ] && [ "$after_ver" != "${latest_map[$name]}" ]; then
@@ -596,6 +626,65 @@ entire_worker() {
     write_result entire OK "${before:-未安装}" "$after"
 }
 
+install_codex_profile() {
+    local real="${CODEX_REAL_SHIM:-}" bin="$HOME/.local/bin"
+    local wrapper="$bin/codex" resolver="$bin/codex-resolve.cjs"
+    local template_dir="$DIR/codex-profile"
+    if [ -z "$real" ] || [ ! -f "$real" ]; then
+        log "ERROR: 真实 Codex shim 不存在: ${real:-未定位}"
+        return 1
+    fi
+
+    local real_canon wrapper_canon
+    real_canon="$(readlink -f -- "$real" 2>/dev/null || true)"
+    wrapper_canon="$(readlink -f -- "$wrapper" 2>/dev/null || true)"
+    if [ "${real_canon:-$real}" = "${wrapper_canon:-$wrapper}" ]; then
+        log "ERROR: 真实 Codex shim 不能指向 wrapper: $real"
+        return 1
+    fi
+    if [ ! -f "$template_dir/codex" ] || [ ! -f "$template_dir/codex-resolve.cjs" ]; then
+        log "ERROR: Codex wrapper 模板不完整: $template_dir"
+        return 1
+    fi
+    if ! mkdir -p "$bin"; then
+        log "ERROR: 无法创建 Codex wrapper 目录: $bin"
+        return 1
+    fi
+
+    local quoted_real quoted_bin template
+    printf -v quoted_real '%q' "$real"
+    template="$(<"$template_dir/codex")"
+    template="${template//__CODEX_REAL_SHIM__/$quoted_real}"
+    if ! printf '%s\n' "$template" >"$wrapper"; then
+        log "ERROR: 无法写入 Codex wrapper: $wrapper"
+        return 1
+    fi
+    if ! chmod +x "$wrapper"; then
+        log "ERROR: 无法设置 Codex wrapper 可执行权限: $wrapper"
+        return 1
+    fi
+    if ! cp -- "$template_dir/codex-resolve.cjs" "$resolver"; then
+        log "ERROR: 无法安装 Codex resolver: $resolver"
+        return 1
+    fi
+
+    # 与 nodejs 安装器一致，用 marker 幂等写入新终端的 PATH。
+    printf -v quoted_bin '%q' "$bin"
+    local marker='# env-tools codex'
+    if ! grep -qF "$marker" "$HOME/.bashrc" 2>/dev/null; then
+        if ! {
+            printf '%s\n' "$marker"
+            printf 'export PATH=%s:"$PATH"\n' "$quoted_bin"
+        } >>"$HOME/.bashrc"; then
+            log "ERROR: 无法更新 ~/.bashrc 以加入 Codex wrapper 目录: $bin"
+            return 1
+        fi
+    fi
+    export PATH="$bin:$PATH"
+    hash -r 2>/dev/null || true
+    log "Codex 受管多账号 wrapper 已安装: $bin"
+}
+
 npm_targets=()
 kimi_script=false
 entire_script=false
@@ -663,6 +752,16 @@ done
 
 pump
 pump_flush
+
+# npm 安装/更新（包括已是最新）成功后，才安装或修复 Codex 受管入口。
+if [[ " ${targets[*]} " == *" codex "* ]] && [ -f "$RESULT_DIR/codex.result" ] && grep -q '^OK' "$RESULT_DIR/codex.result"; then
+    codex_before=''
+    codex_after=''
+    IFS=$'\t' read -r _ _ codex_before codex_after <"$RESULT_DIR/codex.result"
+    if ! install_codex_profile; then
+        write_result codex FAIL "${codex_before:-未安装}" "${codex_after:-}"
+    fi
+fi
 if $collapsed; then
     render_panel   # 终态（✓/✗ + 每个对象最后 3 行）
     printf '\033[?25h'

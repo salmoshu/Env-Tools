@@ -9,7 +9,7 @@ import { t } from "../i18n";
  * 主进程在重置成功后同步广播全新配额（await pushUsage 后才返回 IPC），
  * 结果提示出现时卡片数值已是重置后的状态；结果内联展示 6s 后自动复位。
  */
-export default function ResetButton({ provider, resetType = null, what, disabled = false, children }) {
+export default function ResetButton({ provider, resetType = null, accountId = null, what, disabled = false, children }) {
   const [phase, setPhase] = useState("idle"); // idle | confirm | pending | ok | err
   const [message, setMessage] = useState("");
   const timer = useRef(null);
@@ -25,7 +25,7 @@ export default function ResetButton({ provider, resetType = null, what, disabled
   const run = async () => {
     setPhase("pending");
     try {
-      const result = await window.api.quotaReset(provider, resetType);
+      const result = await window.api.quotaReset(provider, resetType, accountId);
       if (result && result.ok) {
         const data = result.data || {};
         if (provider === "codex") {

@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+
+REAL_CODEX=__CODEX_REAL_SHIM__
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+RESOLVER="$SCRIPT_DIR/codex-resolve.cjs"
+
+if [ ! -f "$REAL_CODEX" ]; then
+    printf 'codex-profile: real Codex shim not found: %s\n' "$REAL_CODEX" >&2
+    exit 127
+fi
+
+if [ "${CODEX_HOME+x}" != x ]; then
+    if [ ! -f "$RESOLVER" ]; then
+        printf 'codex-profile: resolver not found: %s\n' "$RESOLVER" >&2
+        exit 1
+    fi
+    if ! command -v node >/dev/null 2>&1; then
+        printf 'codex-profile: node is required but was not found\n' >&2
+        exit 127
+    fi
+    CODEX_HOME="$(node "$RESOLVER")"
+    resolver_status=$?
+    if [ "$resolver_status" -ne 0 ]; then
+        exit "$resolver_status"
+    fi
+    if [ -z "$CODEX_HOME" ]; then
+        printf 'codex-profile: could not resolve a Codex home\n' >&2
+        exit 1
+    fi
+    export CODEX_HOME
+fi
+
+exec "$REAL_CODEX" "$@"

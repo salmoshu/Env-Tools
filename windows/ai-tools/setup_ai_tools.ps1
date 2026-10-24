@@ -15,6 +15,9 @@
 #
 # 安装方式说明：
 #   codex 走 npm 全局安装（装到 npm prefix -g，通常为 %AppData%\npm）。
+#   Codex 安装或已是最新且校验成功后，在 %USERPROFILE%\.local\bin 安装受管多账号
+#   wrapper（codex.cmd / codex.ps1 / Git Bash codex）与 codex-resolve.cjs；每次调用
+#   重新读取 active 并注入 CODEX_HOME，显式 CODEX_HOME 始终优先，不读取凭证文件。
 #   kimi 走官方原生安装器（irm https://code.kimi.com/kimi-code/install.ps1 | iex），
 #   二进制装到 %USERPROFILE%\.kimi-code\bin（可用 KIMI_INSTALL_DIR 覆盖），与 npm 无关。
 #   entire 走官方原生安装器（irm https://entire.com/install.ps1 | iex，Go 二进制，
@@ -140,6 +143,76 @@ $kimiBin = Join-Path $kimiInstallDir 'bin\kimi.exe'
 # entire 官方安装器的默认安装位置（install.ps1 默认装到 %USERPROFILE%\.local\bin；
 # 检测到 Scoop 时改走 Scoop，此时二进制不在此处，靠 PATH 回退探测）
 $entireBin = Join-Path $env:USERPROFILE '.local\bin\entire.exe'
+$codexBin = Join-Path $env:USERPROFILE '.local\bin'
+
+# 安装 Codex 多账号入口。真实 shim 始终来自 npm prefix，不经过 PATH 查找。
+function Install-CodexProfile($prefix, $installDir) {
+    if (-not $prefix) { throw 'npm prefix 为空，无法定位真实 Codex shim' }
+    if (-not $installDir) { throw 'Codex wrapper 安装目录为空' }
+
+    $templateDir = Join-Path $dir 'codex-profile'
+    $realCmd = Join-Path $prefix 'codex.cmd'
+    $realBash = Join-Path $prefix 'codex'
+    $wrapperCmd = Join-Path $installDir 'codex.cmd'
+    $wrapperPs1 = Join-Path $installDir 'codex.ps1'
+    $wrapperBash = Join-Path $installDir 'codex'
+
+    foreach ($real in @($realCmd, $realBash)) {
+        if (-not (Test-Path -LiteralPath $real -PathType Leaf)) {
+            throw "真实 Codex shim 不存在: $real"
+        }
+    }
+    $realFull = @($realCmd, $realBash) | ForEach-Object { [IO.Path]::GetFullPath($_) }
+    $wrapperFull = @($wrapperCmd, $wrapperPs1, $wrapperBash) | ForEach-Object { [IO.Path]::GetFullPath($_) }
+    foreach ($real in $realFull) {
+        foreach ($wrapper in $wrapperFull) {
+            if ($real -ieq $wrapper) {
+                throw "真实 Codex shim 不能指向 wrapper: $real"
+            }
+        }
+    }
+    foreach ($name in @('codex.cmd', 'codex.ps1', 'codex', 'codex-resolve.cjs')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $templateDir $name) -PathType Leaf)) {
+            throw "Codex wrapper 模板缺失: $(Join-Path $templateDir $name)"
+        }
+    }
+
+    New-Item -ItemType Directory -Path $installDir -Force | Out-Null
+    $utf8NoBom = New-Object 'System.Text.UTF8Encoding' -ArgumentList $false
+    $utf8Bom = New-Object 'System.Text.UTF8Encoding' -ArgumentList $true
+    $cmdEncoding = [Text.Encoding]::Default
+
+    $cmdText = [IO.File]::ReadAllText((Join-Path $templateDir 'codex.cmd'))
+    $cmdReal = $realCmd.Replace('^', '^^').Replace('%', '%%')
+    [IO.File]::WriteAllText($wrapperCmd, $cmdText.Replace('__CODEX_REAL_SHIM__', $cmdReal), $cmdEncoding)
+
+    $psText = [IO.File]::ReadAllText((Join-Path $templateDir 'codex.ps1'))
+    $psReal = $realCmd.Replace("'", "''")
+    [IO.File]::WriteAllText($wrapperPs1, $psText.Replace('__CODEX_REAL_SHIM__', $psReal), $utf8Bom)
+
+    $bashText = [IO.File]::ReadAllText((Join-Path $templateDir 'codex'))
+    $bashReal = "'" + $realBash.Replace("'", "'\''") + "'"
+    [IO.File]::WriteAllText($wrapperBash, $bashText.Replace('__CODEX_REAL_SHIM__', $bashReal), $utf8NoBom)
+    Copy-Item -LiteralPath (Join-Path $templateDir 'codex-resolve.cjs') -Destination (Join-Path $installDir 'codex-resolve.cjs') -Force
+
+    # 将目录移到用户 PATH 前端，保留其它用户 PATH 项；不触碰 Machine PATH。
+    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    $installFull = [IO.Path]::GetFullPath($installDir).TrimEnd('\')
+    $remaining = @()
+    foreach ($entry in @($userPath -split ';')) {
+        if ([string]::IsNullOrEmpty($entry)) { continue }
+        $same = $false
+        try {
+            $same = [IO.Path]::GetFullPath($entry).TrimEnd('\') -ieq $installFull
+        } catch { }
+        if (-not $same) { $remaining += $entry }
+    }
+    $newUserPath = (@($installDir) + $remaining) -join ';'
+    if ($newUserPath -ne $userPath) {
+        [Environment]::SetEnvironmentVariable('Path', $newUserPath, 'User')
+    }
+    Update-SessionPath
+}
 
 # --- npm 工具线程：版本查询 + 合并安装（Job 内无法访问主线程函数， helpers 内置）------
 # Job 只输出协议行：LOG|<对象>|<文本> 与 RESULT|<对象>|<OK|FAIL>|<前版本>|<后版本>
@@ -629,6 +702,18 @@ try {
         }
         Remove-Job $w.Job
     }
+
+    # npm 安装/更新（包括已是最新）成功后，才安装或修复 Codex 受管入口。
+    if ($targets -contains 'codex' -and $script:results.Contains('codex') -and $script:results['codex'].Status -eq 'OK') {
+        try {
+            Install-CodexProfile $npmPrefix $codexBin
+            Write-ToolLine 'codex' "受管多账号 wrapper 已安装: $codexBin"
+        } catch {
+            $script:results['codex'].Status = 'FAIL'
+            $script:toolState['codex'] = 'FAIL'
+            Write-ToolLine 'codex' "ERROR: 受管 wrapper 安装失败 - $($_.Exception.Message)"
+        }
+    }
     if ($collapsed) { try { Render-MainPanel } catch { $collapsed = $false } }  # 终态（√/× + 每个对象最后 3 行）
 
     # 原生安装就绪后，清理 npm 全局残留的旧 kimi 副本，避免双份并存
@@ -640,6 +725,7 @@ try {
         if ($name -eq 'entire' -and -not (Test-Path $entireBin)) { continue }
         $expected = if ($name -eq 'kimi') { Split-Path -Parent $kimiBin }
                     elseif ($name -eq 'entire') { Split-Path -Parent $entireBin }
+                    elseif ($name -eq 'codex') { $codexBin }
                     else { $npmPrefix }
         Test-CommandShadow $tools[$name].Command $expected
     }

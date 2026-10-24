@@ -81,13 +81,16 @@ mod tests {
     /// 环境变量，拆成并行测试会互相踩（cargo test 默认多线程）。
     #[test]
     fn normalized_manual_entry_shape_and_error() {
+        let _env = crate::settings::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir =
             std::env::temp_dir().join(format!("env-tools-membership-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let config = dir.join("config.json");
         std::env::set_var("AI_USAGE_CONFIG_PATH", &config);
 
-        std::fs::write(&config, r#"{"openai":{"membership_purchased_at":"2026-09-20T15:30","membership_duration_months":12}}"#)
+        std::fs::write(&config, r#"{"openai":{"membership_purchased_at":"2026-09-20T15:30","membership_duration_months":12},"openai:work":{"membership_purchased_at":"2026-01-10T09:00","membership_duration_months":3}}"#)
             .unwrap();
         let entry = normalized_manual_entry("openai").expect("configured provider yields entry");
         assert_eq!(entry["source"], "manual");
@@ -102,6 +105,13 @@ mod tests {
             .unwrap()
             .starts_with("2027-09-20T15:30:00"));
         assert!(entry["end_after_seconds"].as_i64().unwrap() > 0);
+        let work = normalized_manual_entry("openai:work").expect("account-specific entry");
+        assert_eq!(work["duration_months"], 3);
+        assert!(work["ends_at"]
+            .as_str()
+            .unwrap()
+            .starts_with("2026-04-10T09:00:00"));
+        assert!(normalized_manual_entry("openai:other").is_none());
         // 无配置的 provider 不出现在结果里
         assert!(normalized_manual_entry("glm").is_none());
 

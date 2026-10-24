@@ -1,25 +1,22 @@
 //! OpenAI Codex：本地 auth.json 的 ChatGPT 后端配额查询（wham/usage）。
 
-use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use serde_json::Value;
 
 use super::http::{build_agent, post_json};
 use super::membership::attach_manual_membership;
 use super::util::{env_timeout, fetched_now, normalize_window, num_of};
-use super::{credential_homes, find_file_across_homes};
+
+use crate::accounts::AccountProfile;
 use crate::settings::{env_enabled, env_value};
 
 const CODEX_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
 const CODEX_RESET_CONSUME_URL: &str =
     "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume";
 
-fn codex_credential(homes: &[PathBuf]) -> Option<PathBuf> {
-    let mut homes = homes.to_vec();
-    if let Some(home) = env_value("CODEX_HOME") {
-        homes.insert(0, PathBuf::from(home));
-    }
-    find_file_across_homes(&homes, &[".codex/auth.json"], "CODEX_AUTH_PATH")
+fn codex_credential(account: &AccountProfile) -> Option<std::path::PathBuf> {
+    crate::accounts::credential_path(account)
 }
 
 fn window_label(seconds: i64, fallback: &str) -> String {
@@ -102,9 +99,13 @@ pub fn normalize_codex(data: &Value) -> Value {
 
 /// 单轮真实采集：凭证发现 → HTTP → 归一化（成功路径附加手动会员）。
 /// 只反映本轮配额接口是否成功，不涉及轮次窗口（见 collect）
-fn fetch_account(homes: &[PathBuf]) -> Result<Value, String> {
-    let path = codex_credential(homes)
-        .ok_or_else(|| "Codex credentials not found; run `codex login`".to_string())?;
+fn fetch_account(account: &AccountProfile) -> Result<Value, String> {
+    let path = codex_credential(account).ok_or_else(|| {
+        format!(
+            "Codex credentials not found for {}; run `codex login`",
+            account.label
+        )
+    })?;
     let credentials = crate::settings::read_json(&path).map_err(|err| err.to_string())?;
     let tokens = credentials
         .get("tokens")
@@ -151,9 +152,14 @@ fn fetch_account(homes: &[PathBuf]) -> Result<Value, String> {
         }
         Err(err) => return Err(format!("Network request failed: {err}")),
     };
-    let mut account = normalize_codex(&data);
-    attach_manual_membership(&mut account, "openai");
-    Ok(account)
+    let mut account_data = normalize_codex(&data);
+    account_data["account_id"] = Value::String(account.id.clone());
+    account_data["account_label"] = Value::String(account.label.clone());
+    attach_manual_membership(
+        &mut account_data,
+        &crate::settings::codex_membership_key(&account.id),
+    );
+    Ok(account_data)
 }
 
 /// 轮次窗口决策结果：纯逻辑（不读任何机器配置），可确定性测试
@@ -184,28 +190,77 @@ struct RetryWindow {
 const CODEX_FAIL_STREAK_LIMIT: u32 = 3;
 const CODEX_FAIL_COUNT_INTERVAL_MS: i64 = 30_000;
 
-static RETRY_WINDOW: std::sync::Mutex<RetryWindow> = std::sync::Mutex::new(RetryWindow {
-    last_good: None,
-    consecutive_fails: 0,
-    last_fail_ms: 0,
-});
+static RETRY_WINDOWS: OnceLock<std::sync::Mutex<std::collections::HashMap<String, RetryWindow>>> =
+    OnceLock::new();
+static RETRY_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-pub(crate) fn apply_retry_window(outcome: Result<Value, String>) -> WindowOutcome {
+fn retry_windows() -> &'static std::sync::Mutex<std::collections::HashMap<String, RetryWindow>> {
+    RETRY_WINDOWS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn retry_generation() -> u64 {
+    RETRY_GENERATION.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+pub fn invalidate_retry_state() {
+    let mut windows = retry_windows()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    RETRY_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    windows.clear();
+}
+
+pub(crate) fn apply_retry_window_for(
+    account_id: &str,
+    expected_generation: u64,
+    outcome: Result<Value, String>,
+) -> WindowOutcome {
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
-    apply_retry_window_at(outcome, now_ms)
+    apply_retry_window_at_for_guarded(account_id, outcome, now_ms, Some(expected_generation))
 }
 
-/// 窗口决策核心（时钟注入以便测试）
+/// 窗口决策核心（时钟注入以便测试），默认账号兼容旧测试与旧调用。
+#[allow(dead_code)]
 pub(crate) fn apply_retry_window_at(
     outcome: Result<Value, String>,
     now_ms: i64,
 ) -> WindowOutcome {
-    let mut win = RETRY_WINDOW
+    apply_retry_window_at_for("default", outcome, now_ms)
+}
+
+fn apply_retry_window_at_for(
+    account_id: &str,
+    outcome: Result<Value, String>,
+    now_ms: i64,
+) -> WindowOutcome {
+    apply_retry_window_at_for_guarded(account_id, outcome, now_ms, None)
+}
+
+fn apply_retry_window_at_for_guarded(
+    account_id: &str,
+    outcome: Result<Value, String>,
+    now_ms: i64,
+    expected_generation: Option<u64>,
+) -> WindowOutcome {
+    let mut windows = retry_windows()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if expected_generation
+        .map(|generation| generation != retry_generation())
+        .unwrap_or(false)
+    {
+        return WindowOutcome::Failed(
+            "Codex account registration changed during query; retry".into(),
+        );
+    }
+    let win = windows.entry(account_id.to_string()).or_insert_with(|| RetryWindow {
+        last_good: None,
+        consecutive_fails: 0,
+        last_fail_ms: 0,
+    });
     match outcome {
         Ok(account) => {
             win.last_good = Some(account.clone());
@@ -248,24 +303,35 @@ pub(crate) fn apply_retry_window_at(
     }
 }
 
-pub fn collect(homes: &[PathBuf], errors: &mut Vec<Value>) -> Option<Value> {
-    match apply_retry_window(fetch_account(homes)) {
+pub fn collect(account: &AccountProfile, errors: &mut Vec<Value>) -> Option<Value> {
+    let generation = retry_generation();
+    let outcome = fetch_account(account);
+    match apply_retry_window_for(&account.id, generation, outcome) {
         WindowOutcome::Fresh(account) | WindowOutcome::Stale(account) => Some(account),
         WindowOutcome::Failed(message) => {
-            // 错误降级：配额接口失败但存在手动会员配置时，返回一个最小账户
-            // （会员到期仍在前端展示）。一个 provider 只出一张卡：此时不再推送
-            // 错误条目，否则前端会同时渲染账号卡片与错误占位卡片。
-            let mut account = serde_json::json!({
+            // 错误降级：配额接口失败但存在该账号的手动会员配置时，返回最小账户
+            // （会员到期仍在前端展示）。同一账号不再同时推送错误条目，避免双卡。
+            let mut account_data = serde_json::json!({
                 "provider": "OpenAI Codex",
+                "account_id": account.id,
+                "account_label": account.label,
                 "plan": "unknown",
                 "windows": [],
                 "fetched_at": fetched_now(),
             });
-            if attach_manual_membership(&mut account, "openai") {
-                eprintln!("[codex] quota fetch failed, serving minimal account with manual membership: {message}");
-                Some(account)
+            if attach_manual_membership(
+                &mut account_data,
+                &crate::settings::codex_membership_key(&account.id),
+            ) {
+                eprintln!("[codex] quota fetch failed for {}, serving minimal account with manual membership: {message}", account.label);
+                Some(account_data)
             } else {
-                errors.push(serde_json::json!({ "provider": "OpenAI Codex", "error": message }));
+                errors.push(serde_json::json!({
+                    "provider": "OpenAI Codex",
+                    "account_id": account.id,
+                    "account_label": account.label,
+                    "error": message,
+                }));
                 None
             }
         }
@@ -275,10 +341,15 @@ pub fn collect(homes: &[PathBuf], errors: &mut Vec<Value>) -> Option<Value> {
 /// 消耗一个速率限制重置额度（wham rate-limit-reset-credits/consume，口径同
 /// codex CLI 的 backend-client）。返回 {"code": "reset"|"nothing_to_reset"|
 /// "no_credit"|"already_redeemed", "windows_reset": n}；网络/HTTP 错误返回 Err。
-pub fn consume_reset_credit() -> Result<Value, String> {
-    let homes = credential_homes();
-    let path = codex_credential(&homes)
-        .ok_or_else(|| "Codex credentials not found; run `codex login`".to_string())?;
+pub fn consume_reset_credit(account_id: &str) -> Result<Value, String> {
+    let account = crate::settings::codex_account(account_id)
+        .ok_or_else(|| format!("Codex account not found: {account_id}"))?;
+    let path = codex_credential(&account).ok_or_else(|| {
+        format!(
+            "Codex credentials not found for {}; run `codex login`",
+            account.label
+        )
+    })?;
     let credentials = crate::settings::read_json(&path).map_err(|err| err.to_string())?;
     let tokens = credentials
         .get("tokens")

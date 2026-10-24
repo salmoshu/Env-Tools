@@ -9,7 +9,8 @@ use super::util::{
     env_timeout, fetched_now, iso_seconds, monthly_window_seconds, num, parse_local_datetime,
     parse_timestamp, seconds_until,
 };
-use crate::settings::{env_enabled, env_value, local_home};
+use crate::accounts::AccountProfile;
+use crate::settings::{env_enabled, env_value};
 
 const GLM_QUOTA_URL: &str = "https://open.bigmodel.cn/api/monitor/usage/quota/limit";
 const GLM_SUBSCRIPTION_PATH: &str = "/api/biz/subscription/list";
@@ -19,29 +20,6 @@ const GLM_BILLING_CYCLE_MONTHS: &[(&str, i64)] = &[
     ("semi-annually", 6),
     ("yearly", 12),
 ];
-
-/// 凭证：GLM_API_KEY / ZHIPU_API_KEY / ZHIPUAI_API_KEY 环境变量优先，其次 credentials 文件。
-fn api_key() -> Result<String, String> {
-    for name in ["GLM_API_KEY", "ZHIPU_API_KEY", "ZHIPUAI_API_KEY"] {
-        if let Some(key) = env_value(name) {
-            return Ok(key);
-        }
-    }
-    let path = env_value("GLM_CREDENTIALS_PATH")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| local_home().join(".glm").join("credentials.json"));
-    if path.is_file() {
-        return super::api_key_from_file(
-            &path,
-            "GLM",
-            &["api_key", "GLM_API_KEY", "ZHIPU_API_KEY", "ZHIPUAI_API_KEY"],
-        );
-    }
-    Err(
-        "GLM_API_KEY not set; export it, write it to ~/.glm/credentials.json, or pass --glm-key"
-            .into(),
-    )
-}
 
 fn limit_percent(limit: &Value) -> Option<f64> {
     match limit.get("percentage").and_then(|v| v.as_f64()) {
@@ -293,8 +271,8 @@ fn glm_subscription_url() -> String {
 }
 
 /// 配额失败即跳过订阅查询；成功时附加订阅 membership。
-pub fn collect() -> Result<Value, String> {
-    let key = api_key()?;
+pub fn collect(profile: &AccountProfile) -> Result<Value, String> {
+    let key = crate::accounts::api_key(profile)?;
     let use_proxy = env_enabled("GLM_USE_PROXY", true);
     let timeout = env_timeout("GLM_TIMEOUT", 30);
     let quota_url = env_value("GLM_QUOTA_URL").unwrap_or_else(|| GLM_QUOTA_URL.into());
@@ -316,19 +294,19 @@ pub fn collect() -> Result<Value, String> {
         return Err(format!("GLM quota query failed: {error}"));
     }
     let mut account = normalize_glm(&result);
+    account["account_id"] = Value::String(profile.id.clone());
+    account["account_label"] = Value::String(profile.label.clone());
     let subscription_url = env_value("GLM_SUBSCRIPTION_URL").unwrap_or_else(glm_subscription_url);
     let mut subscription_membership = None;
     if let Ok(subscription) = get_json(&subscription_url, &key, use_proxy, timeout.min(10)) {
         subscription_membership = normalize_glm_subscription(&subscription, Local::now());
     }
-    // 手动会员配置优先（口径同 kimi.rs），订阅结果仅作兜底
-    if !super::membership::attach_manual_membership(&mut account, "glm") {
+    if !super::membership::attach_manual_membership(&mut account, &profile.membership_key()) {
         if let Some(membership) = subscription_membership {
             account["membership"] = membership;
         }
     }
-    // Coding Plan 重置卡走 ZCode 本机凭证通道，无凭证时静默跳过
-    if let Some(cards) = super::glm_reset::collect_reset_cards() {
+    if let Some(cards) = super::glm_reset::collect_reset_cards(profile) {
         account["reset_cards"] = cards;
     }
     Ok(account)

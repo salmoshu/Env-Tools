@@ -75,6 +75,20 @@ shell；私钥不进配置与日志；远端流量走 SSH 隧道 + token。已�
 
 ## 凭证
 
+v0.7.39 起，Kimi Code、OpenAI Codex、GLM / BigModel、DeepSeek 均支持多账号。
+各 provider 在 `~/.config/ai-usage-monitor/` 下分别使用 `<provider>-accounts.json`
+保存账号和 active（Codex 仍为 `codex-accounts.json`），互不影响。默认账号沿用
+原有的 `~/.kimi-code`、`~/.codex`、`~/.glm`、`~/.deepseek`；额外 profile 为
+`<provider>-accounts/<id>`，其中 Codex 保存 `auth.json`，Kimi 保存
+`credentials/kimi-code.json`（可选 `kimi-web.json`），GLM/DeepSeek 保存
+`credentials.json`。环境变量中的 Key 和完整凭证路径覆盖只作用于默认账号。
+
+所有账号都可新增、重命名、使用和移除，默认账号还可恢复；操作只改变注册状态，
+不删除凭证或会员配置。删除 active 后会回退到默认或首个账号，允许空账号列表。
+额外账号用同一名称重新添加时可复用原 ID 及保留的凭证。配额与错误按账号隔离，
+账号菜单收起仅显示名称，展开才显示 5h / 7d 等窗口用量。SSH 远端仅切换显示，
+不修改本机 active。
+
 - Kimi：默认读取 `~/.kimi-code/credentials/kimi-code.json`，并在即将过期时
   自动刷新。首次使用前请在 Kimi Code CLI 中登录。
 - Kimi 月度总量与会员信息（可选）：官网订阅页的「总使用量」（月总量，跨 Kimi
@@ -94,6 +108,17 @@ shell；私钥不进配置与日志；远端流量走 SSH 隧道 + token。已�
   `KIMI_WEB_STATS_URL` 可覆盖接口地址。未配置时自动跳过，不影响其它窗口；
   此时会员名称保持 unknown，到期时间可用设置页 Membership 手动配置。
 - Codex：默认读取 `~/.codex/auth.json`。首次使用前执行 `codex login`。
+  v0.7.39 起可在桌面应用 **设置 → 智能体 → OpenAI Codex** 中添加多个独立
+  profile；默认账号继续使用 `~/.codex`，新增账号使用
+  `~/.config/ai-usage-monitor/codex-accounts/<id>`。为指定账号点击登录后，
+  应用会在对应的 `CODEX_HOME` 下启动 `codex login`，不会覆盖其它账号的凭证。
+  看板和用量分析中的 Codex 卡片共用后端保存的当前账号，下拉项同时显示
+  5h / 7d 已用百分比；未登录账号也保留在选项中。
+  点击「使用」还会决定后续新启动的 Codex 使用哪个 profile。普通 `codex` 命令
+  通过受管启动器读取该选择：首次需在 **工具 → Codex** 执行一次安装/更新，
+  让启动器进入 PATH。正在运行的进程不会热切换；显式设置的 `CODEX_HOME`
+  始终优先于 Env-Tools 的当前账号。Windows 与每个 WSL 发行版分别保存选择，
+  并分别安装启动器；首次修改 PATH 后，旧终端或 IDE 可能需要重启。
 - DeepSeek：使用 API Key（platform.deepseek.com 的 API keys 页面生成，与
   `/usage` 网页看到的余额是同一套账户数据）。三种配置方式（按优先级）：
   1. `--deepseek-key` 命令行参数；
@@ -127,13 +152,17 @@ shell；私钥不进配置与日志；远端流量走 SSH 隧道 + token。已�
 ## 会员到期时间
 
 每个模型都可以显示会员到期时间（终止日期 + 剩余时长，终端与 Electron 同步
-展示）。配置写入 monitor 同目录的 `config.json`，可在 Electron 设置页
-**Membership** 中统一管理（购买/续费日期 + 时长月数，留空即隐藏），也可直接
-编辑文件：`kimi` / `openai` / `glm` / `deepseek` 各小节的
-`membership_purchased_at`（无时区按本机时区解释）与
-`membership_duration_months`（默认 1 个月）。Kimi（需网页凭证）与 GLM 未手动
-配置时会自动使用订阅接口返回的周期终止/续费日期。也可通过 `--config` 或环境
-变量 `AI_USAGE_CONFIG_PATH` 使用其他配置文件。
+展示）。配置写入 monitor 同目录的 `config.json`，可在 Electron **智能体**
+设置页按厂商和账号分别管理（购买/续费日期 + 时长月数，留空即隐藏），也可直接
+编辑文件。默认账号使用 `kimi` / `openai` / `glm` / `deepseek` 小节，额外账号
+使用对应的 `<前缀>:<账号ID>`；Codex 的前缀固定为 `openai`，例如 `openai:work`。
+每行包含 `membership_purchased_at`（无时区按本机时区解释）与
+`membership_duration_months`（默认 1 个月）。旧配置继续属于默认账号，不会复制
+或继承到其它账号。各账号独立保存，移除注册项不会删除会员配置或凭证。
+
+Kimi（需网页凭证）与 GLM 未手动配置时会自动使用各自账号订阅接口返回的周期
+终止/续费日期；Codex 与 DeepSeek 无法自动取得时在对应账号行手动填写。也可通过
+`--config` 或环境变量 `AI_USAGE_CONFIG_PATH` 使用其他配置文件。
 
 程序不会复制或输出访问令牌。也可以通过
 `KIMI_CREDENTIALS_PATH`、`CODEX_AUTH_PATH`
@@ -177,17 +206,18 @@ WSL 终端里也可以直接输出同一份分析 JSON：
 - **Display**：勾选要在看板上显示的模型（原标题栏筛选下拉框已迁入此处）；选择会
   持久化，重启 Electron 后仍然保留。
 - **Theme**：亮 / 暗主题切换，默认跟随系统（System）；选择持久化在本机。
-- **Membership**：统一管理各模型的会员购买/续费日期与时长（见上文「会员到期
-  时间」）；保存后看板立即刷新。Kimi（需网页凭证）与 GLM 留空时自动显示订阅
-  接口返回的续费日期。
-- **Login**：为 Kimi Code 或 OpenAI Codex 手动启动网页授权。看板启动和刷新时
-  不会自动打开登录页面；终端 watch 中也可按 `Ctrl+L` 选择 agent 登录。
-- **API Keys**：配置 DeepSeek 和 GLM API Key。输入框不会回显已保存的 Key；
-  留空表示保留原值。保存时密钥只通过子进程的标准输入传给 WSL 后端，不会
-  进入命令行、进程列表或日志，最终分别写入 `~/.deepseek/credentials.json`
-  和 `~/.glm/credentials.json`（权限 0600）。如果对应环境变量已经配置，
-  看板只显示“已配置（环境变量）”，不会读取或覆盖环境变量的内容；输入新值
-  时仍会写入凭证文件，但环境变量继续拥有更高优先级。
+- **Agent（智能体）**：主体按厂商分块，四家均支持账号新增、重命名、使用、
+  移除和默认恢复，以及逐账号会员配置。Kimi/Codex 为指定账号启动登录时分别
+  注入 `KIMI_CODE_HOME` / `CODEX_HOME`；GLM/DeepSeek 为每个账号单独保存
+  API Key。保存后看板立即刷新，Kimi（需网页凭证）与 GLM 留空时自动显示
+  对应账号的订阅续费日期。API Key 输入框不会回显已保存的 Key；留空表示保留
+  原值。默认账号仍使用 `~/.deepseek/credentials.json` 和
+  `~/.glm/credentials.json`，额外账号写入各自 profile 的 `credentials.json`
+  （权限 0600）。环境变量只作用于默认账号且拥有更高优先级，不会被读取、输出
+  或复制给额外账号。
+- **GLM 重置卡**：默认账号沿用 ZCode 凭证。额外账号只有在注册项中设置
+  `zcode_credentials_path`，或将凭证放在 `<profile>/zcode/v2/credentials.json`
+  时才显示并允许使用重置卡；未绑定时拒绝操作，不会回退到默认账号的凭证。
 - **Environment**（仅在 WSL 中检测到 Windows 侧可达时出现）：切换看板数据
   源。WSL 和 Windows 中的 agent 版本与凭据可能不同；切换后用量、版本号、
   升级操作和 API Key 配置均作用于所选环境。选择持久化在

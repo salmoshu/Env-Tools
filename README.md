@@ -51,8 +51,8 @@ Linux（bash）：
 | --- | --- | --- | --- |
 | `kdesk` | ✓ | — | 元气桌面免安装便携部署 + 快照对抗自动升级，详见 [docs/kdesk-notes.md](docs/kdesk-notes.md) |
 | `nodejs` | ✓ | ✓ | Node.js 环境部署 |
-| `kimi` | ✓ | ✓ | Agent：Kimi Code 独立安装与更新 |
-| `codex` | ✓ | ✓ | Agent：OpenAI Codex 独立安装与更新 |
+| `kimi` | ✓ | ✓ | Agent：Kimi Code 安装与更新，支持多账号 profile |
+| `codex` | ✓ | ✓ | Agent：OpenAI Codex 安装与更新，含多账号受管启动器 |
 | `entire` | ✓ | ✓ | 开发工具：Entire CLI 独立安装与更新 |
 | `openssh` | ✓ | ✓ | OpenSSH Server 安装与配置，详见 [docs/openssh-notes.md](docs/openssh-notes.md) |
 

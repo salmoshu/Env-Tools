@@ -10,14 +10,9 @@ import {
 } from "../utils.js";
 import { t, useLang, setLang, getLang } from "../i18n.js";
 import BrandIcon from "../components/BrandIcon.jsx";
-
-// 用量账户 provider 显示名 → 设置 membership 小节键
-const MEMBERSHIP_PROVIDERS = [
-  ["kimi", "Kimi Code"],
-  ["openai", "OpenAI Codex"],
-  ["glm", "GLM"],
-  ["deepseek", "DeepSeek"],
-];
+import {
+  AGENT_ACCOUNTS, agentMembershipKey, useAgentAccounts,
+} from "../agentAccounts.js";
 
 const UPDATE_PHASE_KEYS = {
   download: "settings.phaseDownload",
@@ -236,7 +231,7 @@ function DisplayPanel({ lastPayload }) {
 
   useEffect(() => {
     if (!lastPayload || !lastPayload.data) return;
-    const names = (lastPayload.data.accounts || []).map((a) => a.provider);
+    const names = [...new Set((lastPayload.data.accounts || []).map((a) => a.provider))];
     const seen = new Set(names);
     for (const err of (lastPayload.data.errors || [])) {
       const p = err && err.provider;
@@ -360,31 +355,34 @@ function DisplayPanel({ lastPayload }) {
   );
 }
 
-// --- 账户：会员 / 登录 / API Keys ---------------------------------------------------
+// --- 智能体：厂商 / 会员 / 登录 / API Keys ------------------------------------------
 
 // 会员面板：每行三态 —— 手动配置（可编辑，回填 purchased_at/duration_months）/
 // 自动获取（provider 订阅接口给出 ends_at，禁用输入并标注，不随保存提交）/
 // 可编辑空行。保存后触发 window.api.refresh() 让看板立即刷新。
-function MembershipPanel({ settings, lastPayload, onSaved }) {
+function MembershipPanel({ settings, lastPayload, onSaved, providers, id }) {
   const [rows, setRows] = useState([]);
   const [note, setNote] = useState({ cls: "settings-note", text: "" });
   const [saving, setSaving] = useState(false);
+  const providerSignature = providers.map((definition) => definition.join(":")).join("|");
 
-  // 可编辑字段只在 settings 变化时重建，避免用量推送冲刷输入中的内容
+  // 可编辑字段只在 settings 或账号列表变化时重建，避免用量推送冲刷输入中的内容
   useEffect(() => {
     const membership = (settings && settings.membership) || {};
-    setRows(MEMBERSHIP_PROVIDERS.map(([key, label]) => {
+    setRows(providers.map(([key, label, accountId, providerName]) => {
       const entry = membership[key];
       const manual = Boolean(entry && !entry.error && entry.purchased_at);
       return {
         key,
         label,
+        accountId,
+        provider: providerName || label,
         manual,
         date: manual ? toLocalInputValue(entry.purchased_at) : "",
         months: manual && entry.duration_months ? String(entry.duration_months) : "",
       };
     }));
-  }, [settings && settings.membership]);
+  }, [settings && settings.membership, providerSignature]);
 
   const membership = (settings && settings.membership) || {};
   const accounts = (lastPayload && lastPayload.data && lastPayload.data.accounts) || [];
@@ -392,7 +390,8 @@ function MembershipPanel({ settings, lastPayload, onSaved }) {
   // 自动获取状态在渲染时从 lastPayload 派生（随用量推送实时更新）
   const rowsWithAuto = rows.map((row) => {
     if (row.manual) return { ...row, auto: false, autoEndsAt: null, autoError: null };
-    const account = accounts.find((a) => a.provider === row.label);
+    const account = accounts.find((item) => item.provider === row.provider
+      && (!row.accountId || (item.account_id || "default") === row.accountId));
     const accountMembership = account && account.membership;
     if (accountMembership && accountMembership.error) {
       return { ...row, auto: false, autoEndsAt: null, autoError: accountMembership.error };
@@ -425,7 +424,7 @@ function MembershipPanel({ settings, lastPayload, onSaved }) {
     }
   };
   return (
-    <div className="panel" id="panel-membership">
+    <div className="panel" id={id}>
       <GroupLabel>{t("settings.membership")}</GroupLabel>
       <div className="set-card">
         <div className="set-row set-row-desc-only">
@@ -452,7 +451,7 @@ function MembershipPanel({ settings, lastPayload, onSaved }) {
           }
           return (
             <div className="set-row membership-set-row" key={row.key}>
-              <span className="set-row-icon"><BrandIcon of={row.label} size={16} /></span>
+              <span className="set-row-icon"><BrandIcon of={row.provider} size={16} /></span>
               <div className="set-row-text">
                 <div className="set-row-title">
                   {row.label}
@@ -492,41 +491,87 @@ function MembershipPanel({ settings, lastPayload, onSaved }) {
   );
 }
 
-function LoginPanel({ currentSettings, lastPayload }) {
+function accountApiKeyStatus(account) {
+  if (account.source === "invalid") {
+    return { text: t("settings.invalidCred"), className: " invalid", placeholder: t("settings.replaceKeyPh") };
+  }
+  if (account.configured) {
+    return {
+      text: account.source
+        ? t("settings.configured").replace("{src}", account.source)
+        : t("settings.accountApiKeyConfigured"),
+      className: " configured",
+      placeholder: t("settings.keepKeyPh"),
+    };
+  }
+  return { text: t("settings.accountApiKeyMissing"), className: "", placeholder: t("settings.enterKeyPh") };
+}
+
+function AccountApiKeysPanel({ provider, accounts, reload }) {
+  const definition = AGENT_ACCOUNTS[provider];
+  const [values, setValues] = useState({});
+  const [savingId, setSavingId] = useState("");
   const [note, setNote] = useState({ cls: "settings-note", text: "" });
-  const [busy, setBusy] = useState(false);
-  const login = async (agent) => {
-    setBusy(true);
-    setNote({ cls: "settings-note", key: "settings.startingLogin" });
+
+  const save = async (accountId) => {
+    const apiKey = String(values[accountId] || "").trim();
+    if (!apiKey) {
+      setNote({ cls: "settings-note error", key: "settings.needOneKey" });
+      return;
+    }
+    setSavingId(accountId);
+    setNote({ cls: "settings-note", key: "state.saving" });
     try {
-      const environment = (currentSettings && currentSettings.environment)
-        || (lastPayload && lastPayload.data && lastPayload.data.environment);
-      const result = await window.api.loginAgent(agent, environment);
+      const result = await window.api.saveApiKeys({ provider, account_id: accountId, api_key: apiKey });
       if (!result || !result.ok) throw new Error((result && result.error) || t("state.unknownError"));
-      setNote({ cls: "settings-note ok", key: "settings.loginStarted" });
+      setValues((previous) => ({ ...previous, [accountId]: "" }));
+      await reload().catch(() => {});
+      try { window.api.refresh(); } catch {}
+      setNote({ cls: "settings-note ok", key: "state.saved" });
     } catch (err) {
       setNote({ cls: "settings-note error", key: "state.saveFailed", detail: String(err.message || err) });
     } finally {
-      setBusy(false);
+      setSavingId("");
     }
   };
-  const agents = [
-    ["kimi", "Kimi Code"],
-    ["codex", "OpenAI Codex"],
-  ];
+
   return (
-    <div className="panel" id="panel-login">
-      <GroupLabel>{t("settings.loginTitle")}</GroupLabel>
+    <div className="panel" id={`panel-apikeys-${provider}`}>
+      <GroupLabel>{t("settings.apikeys")}</GroupLabel>
       <div className="set-card">
-        {agents.map(([agent, name]) => (
-          <div className="set-row" key={agent}>
-            <span className="set-row-icon"><BrandIcon of={name} size={16} /></span>
+        <div className="set-row set-row-desc-only">
+          <div className="set-row-text">
+            <div className="set-row-desc">{t("settings.apiKeysHint")}</div>
+          </div>
+        </div>
+        {accounts.map((account) => (
+          <div className="set-row agent-api-key-row" data-account-id={account.id} key={account.id}>
+            <span className="set-row-icon"><BrandIcon of={definition.quotaProvider} size={16} /></span>
             <div className="set-row-text">
-              <div className="set-row-title">{name}</div>
-              <div className="set-row-desc">{t("settings.loginMethod")}</div>
+              <div className="set-row-title">{account.label}</div>
+              <div className={`set-row-desc key-state${accountApiKeyStatus(account).className}`}>
+                {accountApiKeyStatus(account).text}
+              </div>
             </div>
-            <div className="set-row-control">
-              <button type="button" className="login-btn" disabled={busy} onClick={() => login(agent)}>{t("settings.loginBtn")}</button>
+            <div className="set-row-control agent-api-key-control">
+              <input
+                className="key-input key-input-inline"
+                type="password"
+                aria-label={`${account.label} API key`}
+                disabled={Boolean(savingId)}
+                autoComplete="off"
+                spellCheck={false}
+                value={values[account.id] || ""}
+                placeholder={accountApiKeyStatus(account).placeholder}
+                onChange={(event) => setValues((previous) => ({ ...previous, [account.id]: event.target.value }))}
+                onKeyDown={(event) => { if (event.key === "Enter") save(account.id); }}
+              />
+              <button
+                type="button"
+                className="settings-save"
+                disabled={Boolean(savingId) || !String(values[account.id] || "").trim()}
+                onClick={() => save(account.id)}
+              >{t(savingId === account.id ? "state.saving" : "state.save")}</button>
             </div>
           </div>
         ))}
@@ -536,106 +581,229 @@ function LoginPanel({ currentSettings, lastPayload }) {
   );
 }
 
-function ApiKeysPanel({ reloadKey }) {
-  const inputs = { deepseek: useRef(null), glm: useRef(null) };
-  const [states, setStates] = useState({});
+function AgentAccountsPanel({ provider, settings, lastPayload, onSaved }) {
+  const definition = AGENT_ACCOUNTS[provider];
+  const [label, setLabel] = useState("");
+  const [editingId, setEditingId] = useState("");
+  const [editingLabel, setEditingLabel] = useState("");
   const [note, setNote] = useState({ cls: "settings-note", text: "" });
-  const [saving, setSaving] = useState(false);
+  const [pending, setPending] = useState(false);
+  const quotaAccounts = (lastPayload && lastPayload.data && lastPayload.data.accounts) || [];
+  const {
+    registry,
+    activeId,
+    selectAccount,
+    updateAccounts,
+    reload,
+    error,
+    switching,
+    defaultRemoved,
+    launcherInstalled,
+    ready,
+  } = useAgentAccounts(provider, quotaAccounts);
+  const busy = pending || switching;
+  const visibleNote = note.key || note.text ? note
+    : error ? { cls: "settings-note error", text: error } : note;
+  const hasDefault = registry.some((account) => account.id === "default");
+  const showRestore = defaultRemoved || (ready && !hasDefault);
 
-  const showStatus = (provider, info = {}) => {
-    setStates((prev) => ({ ...prev, [provider]: info }));
-  };
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const result = await window.api.getApiKeyStatus();
-        if (cancelled) return;
-        if (!result || !result.ok) throw new Error((result && result.error) || t("state.unknownError"));
-        for (const provider of Object.keys(inputs)) {
-          showStatus(provider, (result.status || {})[provider]);
-        }
-      } catch (err) {
-        if (!cancelled) setNote({ cls: "settings-note error", key: "settings.keyStatusFailed", detail: String(err.message || err) });
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [reloadKey]);
-
-  const save = async () => {
-    const values = {};
-    for (const [provider, ref] of Object.entries(inputs)) {
-      const value = ref.current ? ref.current.value.trim() : "";
-      if (value) values[provider] = value;
-    }
-    if (Object.keys(values).length === 0) {
-      setNote({ cls: "settings-note error", key: "settings.needOneKey" });
-      return;
-    }
-    setSaving(true);
+  const update = async (values) => {
+    setPending(true);
     setNote({ cls: "settings-note", key: "state.saving" });
     try {
-      const result = await window.api.saveApiKeys(values);
+      const result = await updateAccounts(values);
       if (!result || !result.ok) throw new Error((result && result.error) || t("state.unknownError"));
-      for (const provider of Object.keys(inputs)) {
-        showStatus(provider, (result.status || {})[provider]);
-        if (inputs[provider].current) inputs[provider].current.value = "";
-      }
       setNote({ cls: "settings-note ok", key: "state.saved" });
+      return result;
+    } catch (err) {
+      setNote({ cls: "settings-note error", key: "state.saveFailed", detail: String(err.message || err) });
+      return null;
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const add = async () => {
+    const value = label.trim();
+    if (!value) {
+      setNote({ cls: "settings-note error", key: "settings.accountNeedLabel" });
+      return;
+    }
+    const result = await update({ action: "add", label: value });
+    if (result) setLabel("");
+  };
+
+  const activate = async (accountId) => {
+    setNote({ cls: "settings-note", key: "state.saving" });
+    const ok = await selectAccount(accountId);
+    setNote(ok
+      ? { cls: "settings-note ok", key: "settings.accountActivated" }
+      : { cls: "settings-note error", key: "settings.accountSwitchFailed" });
+  };
+
+  const rename = async (accountId) => {
+    const value = editingLabel.trim();
+    if (!value) {
+      setNote({ cls: "settings-note error", key: "settings.accountNeedLabel" });
+      return;
+    }
+    const result = await update({ action: "rename", id: accountId, label: value });
+    if (result) setEditingId("");
+  };
+
+  const login = async (accountId) => {
+    setPending(true);
+    setNote({ cls: "settings-note", key: "settings.startingLogin" });
+    try {
+      const environment = (settings && settings.environment)
+        || (lastPayload && lastPayload.data && lastPayload.data.environment);
+      const result = await window.api.loginAgent(provider, environment, accountId);
+      if (!result || !result.ok) throw new Error((result && result.error) || t("state.unknownError"));
+      setNote({ cls: "settings-note ok", key: "settings.loginStarted" });
+      try { window.api.refresh(); } catch {}
     } catch (err) {
       setNote({ cls: "settings-note error", key: "state.saveFailed", detail: String(err.message || err) });
     } finally {
-      setSaving(false);
+      setPending(false);
     }
   };
 
-  const providers = [
-    ["deepseek", "DeepSeek"],
-    ["glm", "GLM / BigModel"],
-  ];
+  const membershipProviders = registry.map((account) => [
+    agentMembershipKey(provider, account),
+    account.label,
+    account.id,
+    definition.quotaProvider,
+  ]);
+
   return (
-    <div className="panel" id="panel-apikeys">
-      <GroupLabel>{t("settings.apikeys")}</GroupLabel>
-      <div className="set-card">
-        <div className="set-row set-row-desc-only">
-          <div className="set-row-text">
-            <div className="set-row-desc">{t("settings.apiKeysHint")}</div>
-          </div>
-        </div>
-        {providers.map(([provider, name]) => {
-          const info = states[provider];
-          const configured = info && info.configured;
-          const invalid = info && info.source === "invalid";
-          const label = !info ? t("state.checking") : configured
-            ? t("settings.configured").replace("{src}", info.source || "local")
-            : t(invalid ? "settings.invalidCred" : "settings.notConfigured");
-          const placeholder = t(configured ? "settings.keepKeyPh" : invalid ? "settings.replaceKeyPh" : "settings.enterKeyPh");
-          return (
-          <div className="set-row" key={provider}>
-            <span className="set-row-icon"><BrandIcon of={provider} size={16} /></span>
+    <AgentVendor id={`panel-agent-${provider}`} title={definition.label}>
+      <div className="panel" id={`panel-${provider}-accounts`}>
+        <GroupLabel>{t("settings.accountsTitle")}</GroupLabel>
+        <div className="set-card">
+          <div className="set-row set-row-desc-only">
             <div className="set-row-text">
-              <div className="set-row-title">{name}</div>
-              <div className={`set-row-desc key-state${configured ? " configured" : invalid ? " invalid" : ""}`}>{label}</div>
+              <div className="set-row-desc">
+                {t("settings.accountsHint").replace("{provider}", definition.label)} {t("settings.removeAccountHint")}
+                {definition.credential === "login" ? ` ${t("settings.profileAccountsHint")}` : ""}
+              </div>
+              {provider === "codex" ? (
+                <div className={`set-row-desc key-state${launcherInstalled ? " configured" : ""}`}>
+                  {t(launcherInstalled ? "settings.codexLauncherReady" : "settings.codexLauncherNeeded")}
+                </div>
+              ) : null}
+            </div>
+            {showRestore ? (
+              <div className="set-row-control">
+                <button type="button" className="login-btn" disabled={busy} onClick={() => update({ action: "restore-default" })}>
+                  {t("settings.accountRestoreDefault")}
+                </button>
+              </div>
+            ) : null}
+          </div>
+          {ready && registry.length === 0 ? (
+            <div className="set-row set-row-desc-only">
+              <div className="set-row-text"><div className="set-row-desc">{t("settings.accountsEmpty")}</div></div>
+            </div>
+          ) : null}
+          {registry.map((account) => {
+            const editing = editingId === account.id;
+            return (
+              <div className="set-row agent-account-row" data-account-id={account.id} key={account.id}>
+                <span className="set-row-icon"><BrandIcon of={definition.quotaProvider} size={16} /></span>
+                <div className="set-row-text">
+                  {editing ? (
+                    <input
+                      className="key-input agent-account-rename-input"
+                      value={editingLabel}
+                      disabled={busy}
+                      aria-label={t("settings.accountLabelPh")}
+                      onChange={(event) => setEditingLabel(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") rename(account.id);
+                        if (event.key === "Escape") setEditingId("");
+                      }}
+                    />
+                  ) : (
+                    <div className="set-row-title">
+                      {account.label}
+                      {account.id === activeId ? <span className="membership-auto">{t("settings.accountActive")}</span> : null}
+                    </div>
+                  )}
+                  <div className={`set-row-desc key-state${definition.credential === "login"
+                    ? account.configured ? " configured" : ""
+                    : accountApiKeyStatus(account).className}`}
+                  >
+                    {definition.credential === "login"
+                      ? t(account.configured ? "settings.accountConfigured" : "settings.accountNotConfigured")
+                      : accountApiKeyStatus(account).text}
+                  </div>
+                </div>
+                <div className={`set-row-control agent-account-actions${provider === "codex" ? " codex-account-actions" : ""}`}>
+                  {editing ? (
+                    <>
+                      <button type="button" className="settings-save" disabled={busy || !editingLabel.trim()} onClick={() => rename(account.id)}>{t("state.save")}</button>
+                      <button type="button" className="login-btn" disabled={busy} onClick={() => setEditingId("")}>{t("upgrade.cancel")}</button>
+                    </>
+                  ) : (
+                    <>
+                      <button type="button" className="login-btn" disabled={busy || account.id === activeId} onClick={() => activate(account.id)}>
+                        {t(account.id === activeId ? "settings.accountActive" : "settings.accountUse")}
+                      </button>
+                      {definition.credential === "login" ? (
+                        <button type="button" className="login-btn" disabled={busy} onClick={() => login(account.id)}>{t("settings.loginBtn")}</button>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="login-btn agent-account-rename"
+                        disabled={busy}
+                        onClick={() => { setEditingId(account.id); setEditingLabel(account.label); }}
+                      >{t("settings.accountRename")}</button>
+                      <button
+                        type="button"
+                        className="settings-delete agent-account-remove"
+                        disabled={busy}
+                        onClick={() => update({ action: "remove", id: account.id })}
+                      >{t("settings.accountRemove")}</button>
+                    </>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+          <div className={`set-row agent-account-add${provider === "codex" ? " codex-account-add" : ""}`}>
+            <div className="set-row-text">
+              <div className="set-row-title">{t("settings.accountAdd")}</div>
             </div>
             <div className="set-row-control">
               <input
-                ref={inputs[provider]} className="key-input key-input-inline" type="password"
-                aria-label={`${name} API key`} disabled={saving}
-                autoComplete="off" spellCheck={false} placeholder={placeholder}
+                className={`key-input agent-account-input${provider === "codex" ? " codex-account-input" : ""}`}
+                value={label}
+                disabled={busy}
+                placeholder={t("settings.accountLabelPh")}
+                onChange={(event) => setLabel(event.target.value)}
+                onKeyDown={(event) => { if (event.key === "Enter") add(); }}
               />
+              <button type="button" className="settings-save" disabled={busy || !label.trim()} onClick={add}>
+                {t("tools.add")}
+              </button>
             </div>
           </div>
-          );
-        })}
-        <div className="set-row set-row-foot">
-          <RowNote note={note} />
-          <div className="set-row-control">
-            <button type="button" className="settings-save" disabled={saving} onClick={save}>{t(saving ? "state.saving" : "state.save")}</button>
-          </div>
+          <div className="set-row set-row-foot"><RowNote note={visibleNote} /></div>
         </div>
       </div>
-    </div>
+      {definition.credential === "apiKey" && registry.length ? (
+        <AccountApiKeysPanel provider={provider} accounts={registry} reload={reload} />
+      ) : null}
+      {registry.length ? (
+        <MembershipPanel
+          id={`panel-membership-${provider}`}
+          settings={settings}
+          lastPayload={lastPayload}
+          onSaved={onSaved}
+          providers={membershipProviders}
+        />
+      ) : null}
+    </AgentVendor>
   );
 }
 
@@ -857,6 +1025,18 @@ const NAV_ICONS = {
   ),
 };
 
+function AgentVendor({ id, title, children }) {
+  return (
+    <section className="panel agent-vendor" id={id}>
+      <div className="set-group-label agent-vendor-title">
+        <BrandIcon of={title} size={15} />
+        <span>{title}</span>
+      </div>
+      <div className="agent-vendor-content">{children}</div>
+    </section>
+  );
+}
+
 const PANEL_GROUPS = [
   {
     key: "appearance",
@@ -866,7 +1046,7 @@ const PANEL_GROUPS = [
   {
     key: "account",
     labelKey: "settings.groupAccount",
-    panels: ["membership", "login", "apikeys"],
+    panels: ["kimi", "codex", "glm", "deepseek"],
   },
   {
     key: "environment",
@@ -884,7 +1064,6 @@ export default function SettingsPage({ lastPayload }) {
   const [activeGroup, setActiveGroup] = useState("appearance");
   const [settings, setSettings] = useState(null);
   const [backend, setBackend] = useState(null);
-  const [apiKeysReload, setApiKeysReload] = useState(0);
   useLang();
 
   const refreshSettings = useCallback(async () => {
@@ -904,6 +1083,12 @@ export default function SettingsPage({ lastPayload }) {
     return available.length >= 2 || distros.length > 0;
   })();
   const activeLabel = (PANEL_GROUPS.find((g) => g.key === activeGroup) || PANEL_GROUPS[0]).labelKey;
+  const onMembershipSaved = (result) => {
+    setSettings((prev) => ({
+      ...(prev || {}), ...result.settings,
+      ...(result.membership ? { membership: result.membership } : {}),
+    }));
+  };
 
   return (
     <div className="app-body settings-body">
@@ -938,26 +1123,20 @@ export default function SettingsPage({ lastPayload }) {
             <DisplayPanel lastPayload={lastPayload} />
           </div>
           <div className={groupClass("account")}>
-            <MembershipPanel
-              settings={settings}
-              lastPayload={lastPayload}
-              onSaved={(result) => {
-                setSettings((prev) => ({
-                  ...(prev || {}), ...result.settings,
-                  ...(result.membership ? { membership: result.membership } : {}),
-                }));
-              }}
-            />
-            <LoginPanel currentSettings={settings} lastPayload={lastPayload} />
-            <ApiKeysPanel reloadKey={apiKeysReload} />
+            {Object.keys(AGENT_ACCOUNTS).map((provider) => (
+              <AgentAccountsPanel
+                key={provider}
+                provider={provider}
+                settings={settings}
+                lastPayload={lastPayload}
+                onSaved={onMembershipSaved}
+              />
+            ))}
           </div>
           <div className={groupClass("environment")}>
             <EnvironmentPanel
               settings={settings}
-              onSaved={(next) => {
-                setSettings((prev) => ({ ...(prev || {}), ...next }));
-                setApiKeysReload((n) => n + 1);
-              }}
+              onSaved={(next) => setSettings((prev) => ({ ...(prev || {}), ...next }))}
             />
           </div>
           <div className={groupClass("about")}>

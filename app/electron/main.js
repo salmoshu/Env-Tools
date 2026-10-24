@@ -820,14 +820,16 @@ ipcMain.handle("get-usage", async (_event, targetId) => {
 // 同步刷新语义：后端重置成功时已失效配额缓存，这里先等任何在途的配额
 // 拉取收尾（它可能还拿着重置前的旧数据），再 await 一次全新广播——IPC
 // 返回时所有窗口的卡片已是重置后的数值，前端结果提示即所见即所得
-ipcMain.handle("quota-reset", async (_event, provider, resetType) => {
+ipcMain.handle("quota-reset", async (_event, provider, resetType, accountId) => {
   const path = provider === "glm"
     ? "/api/quota/reset/glm"
     : provider === "codex"
       ? "/api/quota/reset/codex"
       : null;
   if (!path) return { ok: false, error: `unknown provider: ${provider}` };
-  const body = provider === "glm" ? { reset_type: resetType } : {};
+  const body = provider === "glm"
+    ? { reset_type: resetType, account_id: accountId || "default" }
+    : { account_id: accountId || "default" };
   const result = await backendJson(path, body, FETCH_TIMEOUT_MS);
   if (result && result.ok) {
     if (usageFetchPromise) {
@@ -892,6 +894,46 @@ ipcMain.handle("get-backend-status", async () => {
   return info;
 });
 ipcMain.handle("api-key-status", () => backendJson("/api/api-keys"));
+
+const AGENT_ACCOUNT_PROVIDERS = new Set(["kimi", "codex", "glm", "deepseek"]);
+function agentAccountsPath(provider) {
+  return AGENT_ACCOUNT_PROVIDERS.has(provider)
+    ? `/api/accounts?provider=${encodeURIComponent(provider)}`
+    : "";
+}
+function broadcastAgentAccounts(provider, payload) {
+  const eventPayload = { ...payload, provider };
+  for (const window of liveWindows()) window.webContents.send("agent-accounts-update", eventPayload);
+}
+async function refreshAgentAccounts(provider) {
+  const result = await backendJson(agentAccountsPath(provider));
+  if (result && result.ok) broadcastAgentAccounts(provider, result);
+  return result;
+}
+
+ipcMain.handle("get-agent-accounts", (_event, provider) => {
+  const pathname = agentAccountsPath(provider);
+  return pathname ? backendJson(pathname) : { ok: false, error: `unknown provider: ${provider}` };
+});
+ipcMain.handle("update-agent-accounts", async (_event, provider, values) => {
+  const pathname = agentAccountsPath(provider);
+  if (!pathname) return { ok: false, error: `unknown provider: ${provider}` };
+  const result = await backendJson(pathname, values || {});
+  if (result && result.ok) {
+    broadcastAgentAccounts(provider, result);
+    if ((values || {}).action !== "set-active") await pushUsage();
+  }
+  return result;
+});
+ipcMain.handle("get-codex-accounts", () => backendJson("/api/codex-accounts"));
+ipcMain.handle("update-codex-accounts", async (_event, values) => {
+  const result = await backendJson("/api/codex-accounts", values || {});
+  if (result && result.ok) {
+    for (const window of liveWindows()) window.webContents.send("codex-accounts-update", result);
+    if ((values || {}).action !== "set-active") await pushUsage();
+  }
+  return result;
+});
 // 设置页：读取/保存后端设置（数据源环境等）；保存成功后立即刷新看板
 ipcMain.handle("get-settings", () => backendJson("/api/settings"));
 ipcMain.handle("set-settings", async (_event, values) => {
@@ -910,16 +952,38 @@ ipcMain.on("settings-open", () => {
   manualHeight = false;
 });
 ipcMain.handle("save-api-keys", async (_event, values) => {
-  const keys = {};
-  for (const provider of ["deepseek", "glm"]) {
-    const value = values && values[provider];
-    if (typeof value === "string" && value.trim()) keys[provider] = value.trim();
+  const scopedProvider = values && values.provider;
+  const scoped = scopedProvider !== undefined || (values && values.api_key !== undefined);
+  let result;
+  if (scoped) {
+    if (!["deepseek", "glm"].includes(scopedProvider)) {
+      return { ok: false, error: `unknown API key provider: ${scopedProvider}` };
+    }
+    const apiKey = typeof values.api_key === "string" ? values.api_key.trim() : "";
+    if (!apiKey) return { ok: false, error: "Enter an API key" };
+    const accountId = typeof values.account_id === "string" && values.account_id
+      ? values.account_id
+      : "default";
+    result = await backendJson("/api/api-keys", {
+      provider: scopedProvider,
+      account_id: accountId,
+      api_key: apiKey,
+    });
+  } else {
+    const keys = {};
+    for (const provider of ["deepseek", "glm"]) {
+      const value = values && values[provider];
+      if (typeof value === "string" && value.trim()) keys[provider] = value.trim();
+    }
+    if (Object.keys(keys).length === 0) {
+      return { ok: false, error: "Enter at least one API key" };
+    }
+    result = await backendJson("/api/api-keys", keys);
   }
-  if (Object.keys(keys).length === 0) {
-    return { ok: false, error: "Enter at least one API key" };
+  if (result && result.ok) {
+    if (scoped) await refreshAgentAccounts(scopedProvider);
+    await pushUsage();
   }
-  const result = await backendJson("/api/api-keys", keys);
-  if (result && result.ok) await pushUsage();
   return result;
 });
 
@@ -927,11 +991,18 @@ const LOGIN_AGENTS = {
   kimi: "kimi",
   codex: "codex",
 };
+const PROFILE_HOME_ENV = {
+  kimi: "KIMI_CODE_HOME",
+  codex: "CODEX_HOME",
+};
 
-function loginSpec(agent, environment) {
+function loginSpec(agent, environment, profileHome = "") {
   const commandName = LOGIN_AGENTS[agent];
+  const homeEnv = PROFILE_HOME_ENV[agent];
   if (!commandName) return null;
   if (WSL_BACKEND && environment === "windows") {
+    // WSL 后端只能提供 WSL profile 路径；Windows 环境沿用当前进程的默认
+    // profile，避免把 POSIX 路径误传给 PowerShell。
     return {
       command: "powershell.exe",
       args: ["-NoProfile", "-Command", `${commandName} login`],
@@ -939,43 +1010,62 @@ function loginSpec(agent, environment) {
   }
   if (WSL_BACKEND) {
     if (!WSL_DISTRO) return null;
-    return {
-      command: "wsl.exe",
-      args: [
-        "-d", WSL_DISTRO, "--exec", "bash", "-ic",
-        'exec "$@"', "env-tools-login", commandName, "login",
-      ],
-    };
+    const args = ["-d", WSL_DISTRO, "--exec", "bash", "-ic"];
+    if (homeEnv && profileHome) {
+      args.push(`mkdir -p "$1"; export ${homeEnv}="$1"; shift; exec "$@"`, "env-tools-login", profileHome, commandName, "login");
+    } else {
+      args.push('exec "$@"', "env-tools-login", commandName, "login");
+    }
+    return { command: "wsl.exe", args };
   }
   // npm 全局安装的 codex/kimi 在 Windows 上是 .cmd 垫片，直接 spawn 可执行名会 ENOENT
+  const env = homeEnv && profileHome
+    ? { ...process.env, [homeEnv]: profileHome }
+    : undefined;
   if (process.platform === "win32") {
-    return { command: "cmd.exe", args: ["/c", commandName, "login"] };
+    return { command: "cmd.exe", args: ["/c", commandName, "login"], env };
   }
-  return { command: commandName, args: ["login"] };
+  return { command: commandName, args: ["login"], env };
 }
 
-ipcMain.handle("login-agent", (_event, agent, environment) => new Promise((resolve) => {
+ipcMain.handle("login-agent", async (_event, agent, environment, accountId) => {
   const selectedEnvironment = environment || (WSL_BACKEND ? "wsl" : "windows");
-  const spec = loginSpec(agent, selectedEnvironment);
-  if (!spec) {
-    resolve({ ok: false, error: "unsupported login agent or missing WSL distro" });
-    return;
+  let profileHome = "";
+  if (PROFILE_HOME_ENV[agent] && accountId) {
+    const pathname = agentAccountsPath(agent);
+    const accountResult = await backendJson(pathname);
+    const account = accountResult && accountResult.ok
+      && (accountResult.accounts || []).find((item) => item.id === accountId);
+    if (!account) return { ok: false, error: `${agent} account not found: ${accountId}` };
+    profileHome = typeof account.home === "string" ? account.home : "";
+    if (!WSL_BACKEND && profileHome) {
+      try {
+        fs.mkdirSync(profileHome, { recursive: true });
+      } catch (err) {
+        return { ok: false, error: `Cannot create ${agent} profile directory: ${err.message}` };
+      }
+    }
   }
-  try {
-    const child = spawn(spec.command, spec.args, {
-      stdio: "ignore",
-      detached: true,
-      windowsHide: true,
-    });
-    child.once("error", (err) => resolve({ ok: false, error: err.message }));
-    child.once("spawn", () => {
-      child.unref();
-      resolve({ ok: true, agent });
-    });
-  } catch (err) {
-    resolve({ ok: false, error: err.message });
-  }
-}));
+  const spec = loginSpec(agent, selectedEnvironment, profileHome);
+  if (!spec) return { ok: false, error: "unsupported login agent or missing WSL distro" };
+  return new Promise((resolve) => {
+    try {
+      const child = spawn(spec.command, spec.args, {
+        stdio: "ignore",
+        detached: true,
+        windowsHide: true,
+        ...(spec.env ? { env: spec.env } : {}),
+      });
+      child.once("error", (err) => resolve({ ok: false, error: err.message }));
+      child.once("spawn", () => {
+        child.unref();
+        resolve({ ok: true, agent, account_id: accountId || "default" });
+      });
+    } catch (err) {
+      resolve({ ok: false, error: err.message });
+    }
+  });
+});
 // 切换筛选时清除手动高度状态,让窗口重新贴合内容(避免误触发紧凑折叠)
 ipcMain.on("reset-fit", () => {
   manualHeight = false;

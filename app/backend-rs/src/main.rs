@@ -5,10 +5,12 @@
 //! - `GET /api/health`                     健康检查（含版本号）
 //! - `GET /api/analytics?days=&agent=&aggregate=`  会话用量分析（原生引擎；
 //!   aggregate=1 时合并本机与 WSL 家目录的会话数据）
-//! - `GET /api/usage`                      四家配额全原生（Kimi/Codex OAuth 刷新
-//!   + DeepSeek/GLM 直连；凭证跨本机与 WSL 家目录发现）
+//! - `GET /api/usage`                      四家配额全原生（按可见账号 profile
+//!   读取凭证并并行采集，账户与错误均带账号身份）
 //! - `GET|POST /api/settings`              数据源环境与会员到期配置
-//! - `GET|POST /api/api-keys`              API key 状态查询 / 保存
+//! - `GET|POST /api/api-keys`              API key 状态查询 / 保存（支持账号范围）
+//! - `GET|POST /api/accounts?provider=`    四家账号注册表与 active 管理
+//! - `GET|POST /api/codex-accounts`        Codex 旧账号接口（兼容包装）
 //! - `GET /api/backend-status`             引擎与数据源环境信息
 //!
 //! 任何失败都以 `{"ok": false, "error": ...}` 的 200 响应返回，由渲染层统一
@@ -33,6 +35,7 @@ use axum::{
 use serde_json::Value;
 use tokio::sync::Mutex;
 
+mod accounts;
 mod analytics;
 mod apply_update;
 mod quota;
@@ -181,7 +184,10 @@ fn kimi_homes(aggregate: bool, wsl_distro: Option<&str>) -> Vec<PathBuf> {
         }
         return homes;
     }
-    let mut homes = vec![kimi_home()];
+    let mut homes: Vec<PathBuf> = accounts::profiles(accounts::Provider::Kimi)
+        .into_iter()
+        .map(|account| account.home)
+        .collect();
     if aggregate {
         for home in settings::wsl_homes() {
             homes.push(home.join(".kimi-code"));
@@ -209,7 +215,10 @@ fn codex_homes(aggregate: bool, wsl_distro: Option<&str>) -> Vec<PathBuf> {
             .map(|home| home.join(".codex"))
             .collect();
     }
-    let mut homes = vec![codex_home()];
+    let mut homes: Vec<PathBuf> = settings::codex_accounts()
+        .into_iter()
+        .map(|account| account.home)
+        .collect();
     if aggregate {
         for home in settings::wsl_homes() {
             homes.push(home.join(".codex"));
@@ -241,20 +250,6 @@ fn omp_home() -> PathBuf {
         return PathBuf::from(home);
     }
     default_home(".omp")
-}
-
-fn kimi_home() -> PathBuf {
-    if let Some(home) = std::env::var_os("KIMI_CODE_HOME") {
-        return PathBuf::from(home);
-    }
-    default_home(".kimi-code")
-}
-
-fn codex_home() -> PathBuf {
-    if let Some(home) = std::env::var_os("CODEX_HOME") {
-        return PathBuf::from(home);
-    }
-    default_home(".codex")
 }
 
 fn default_home(dot_dir: &str) -> PathBuf {
@@ -443,19 +438,26 @@ async fn invalidate_usage_cache(state: &AppState) {
     state.cache.entries.lock().await.remove("usage");
 }
 
-/// GLM Coding Plan：使用一张 5h/7d 重置卡（body {"reset_type":"FIVE_HOUR"|"WEEK"}）
+/// GLM Coding Plan：使用指定账号的一张 5h/7d 重置卡。
 async fn quota_reset_glm(
     axum::extract::State(state): axum::extract::State<AppState>,
     Json(payload): Json<Value>,
 ) -> Json<Value> {
+    let account_id = payload
+        .get("account_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("default")
+        .to_string();
     let reset_type = payload
         .get("reset_type")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let result = tokio::task::spawn_blocking(move || quota::use_glm_reset_card(&reset_type))
-        .await
-        .unwrap_or_else(|err| Err(format!("reset worker failed: {err}")));
+    let result = tokio::task::spawn_blocking(move || {
+        quota::use_glm_reset_card(&account_id, &reset_type)
+    })
+    .await
+    .unwrap_or_else(|err| Err(format!("reset worker failed: {err}")));
     match result {
         Ok(data) => {
             invalidate_usage_cache(&state).await;
@@ -465,11 +467,17 @@ async fn quota_reset_glm(
     }
 }
 
-/// OpenAI Codex：消耗一个速率限制重置额度（wham rate-limit-reset-credits/consume）
+/// OpenAI Codex：消耗指定账号的速率限制重置额度。
 async fn quota_reset_codex(
     axum::extract::State(state): axum::extract::State<AppState>,
+    Json(payload): Json<Value>,
 ) -> Json<Value> {
-    let result = tokio::task::spawn_blocking(quota::consume_codex_reset_credit)
+    let account_id = payload
+        .get("account_id")
+        .and_then(|value| value.as_str())
+        .unwrap_or("default")
+        .to_string();
+    let result = tokio::task::spawn_blocking(move || quota::consume_codex_reset_credit(&account_id))
         .await
         .unwrap_or_else(|err| Err(format!("reset worker failed: {err}")));
     match result {
@@ -507,12 +515,92 @@ async fn update_settings(
     Json(result.unwrap_or_else(|err| error_payload(err)))
 }
 
-async fn api_key_status() -> Json<Value> {
-    Json(settings::api_key_status())
+async fn api_key_status(Query(params): Query<HashMap<String, String>>) -> Json<Value> {
+    match (params.get("provider"), params.get("account_id")) {
+        (None, None) => Json(settings::api_key_status()),
+        (Some(provider), Some(account_id)) => Json(
+            settings::scoped_api_key_status(provider, account_id)
+                .unwrap_or_else(|err| error_payload(err)),
+        ),
+        _ => Json(error_payload(
+            "provider and account_id are required together".into(),
+        )),
+    }
 }
 
-async fn save_api_keys(Json(payload): Json<Value>) -> Json<Value> {
-    Json(settings::save_api_keys(&payload).unwrap_or_else(|err| error_payload(err)))
+async fn save_api_keys(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    Json(payload): Json<Value>,
+) -> Json<Value> {
+    let result = settings::save_api_keys(&payload);
+    if result
+        .as_ref()
+        .map(|value| value.get("ok").and_then(Value::as_bool).unwrap_or(false))
+        .unwrap_or(false)
+    {
+        invalidate_usage_cache(&state).await;
+    }
+    Json(result.unwrap_or_else(|err| error_payload(err)))
+}
+
+fn requested_provider(params: &HashMap<String, String>) -> Result<accounts::Provider, String> {
+    let value = params
+        .get("provider")
+        .map(String::as_str)
+        .unwrap_or("");
+    accounts::Provider::parse(value)
+        .ok_or_else(|| format!("Unsupported account provider: {value}"))
+}
+
+async fn get_accounts(Query(params): Query<HashMap<String, String>>) -> Json<Value> {
+    match requested_provider(&params) {
+        Ok(provider) => Json(settings::accounts_payload(provider)),
+        Err(err) => Json(error_payload(err)),
+    }
+}
+
+async fn update_account_provider(
+    state: AppState,
+    provider: accounts::Provider,
+    payload: Value,
+) -> Json<Value> {
+    let result = if provider == accounts::Provider::Codex {
+        settings::update_codex_accounts(&payload)
+    } else {
+        settings::update_accounts(provider, &payload)
+    };
+    let changed = payload.get("action").and_then(Value::as_str) != Some("set-active");
+    if changed
+        && result
+            .as_ref()
+            .map(|value| value.get("ok").and_then(Value::as_bool).unwrap_or(false))
+            .unwrap_or(false)
+    {
+        invalidate_usage_cache(&state).await;
+    }
+    Json(result.unwrap_or_else(|err| error_payload(err)))
+}
+
+async fn update_accounts(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
+    Json(payload): Json<Value>,
+) -> Json<Value> {
+    match requested_provider(&params) {
+        Ok(provider) => update_account_provider(state, provider, payload).await,
+        Err(err) => Json(error_payload(err)),
+    }
+}
+
+async fn get_codex_accounts() -> Json<Value> {
+    Json(settings::codex_accounts_payload())
+}
+
+async fn update_codex_accounts(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    Json(payload): Json<Value>,
+) -> Json<Value> {
+    update_account_provider(state, accounts::Provider::Codex, payload).await
 }
 
 #[tokio::main]
@@ -587,6 +675,8 @@ async fn main() {
         .route("/api/backend-status", get(backend_status))
         .route("/api/settings", get(get_settings).post(update_settings))
         .route("/api/api-keys", get(api_key_status).post(save_api_keys))
+        .route("/api/accounts", get(get_accounts).post(update_accounts))
+        .route("/api/codex-accounts", get(get_codex_accounts).post(update_codex_accounts))
         .route("/api/cache-clear", post(cache_clear))
         .route("/api/quota/reset/glm", post(quota_reset_glm))
         .route("/api/quota/reset/codex", post(quota_reset_codex))

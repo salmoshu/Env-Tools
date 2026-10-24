@@ -4,24 +4,11 @@ use serde_json::Value;
 
 use super::http::get_json;
 use super::util::{env_timeout, fetched_now, num};
-use crate::settings::{env_enabled, env_value, local_home};
+use crate::accounts::AccountProfile;
+use crate::settings::{env_enabled, env_value};
 
 const DEEPSEEK_BALANCE_URL: &str = "https://api.deepseek.com/user/balance";
 const DEEPSEEK_MONTHLY_LIMIT: f64 = 50.0;
-
-/// 凭证：DEEPSEEK_API_KEY 环境变量优先，其次 credentials 文件。
-fn api_key() -> Result<String, String> {
-    if let Some(key) = env_value("DEEPSEEK_API_KEY") {
-        return Ok(key);
-    }
-    let path = env_value("DEEPSEEK_CREDENTIALS_PATH")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| local_home().join(".deepseek").join("credentials.json"));
-    if path.is_file() {
-        return super::api_key_from_file(&path, "DeepSeek", &["api_key", "DEEPSEEK_API_KEY"]);
-    }
-    Err("DEEPSEEK_API_KEY not set; export it, write it to ~/.deepseek/credentials.json, or pass --deepseek-key".into())
-}
 
 pub fn normalize_deepseek(data: &Value) -> Value {
     let infos = data.get("balance_infos").and_then(|v| v.as_array()).cloned().unwrap_or_default();
@@ -79,8 +66,8 @@ pub fn normalize_deepseek(data: &Value) -> Value {
     })
 }
 
-pub fn collect() -> Result<Value, String> {
-    let key = api_key()?;
+pub fn collect(profile: &AccountProfile) -> Result<Value, String> {
+    let key = crate::accounts::api_key(profile)?;
     let url = env_value("DEEPSEEK_BALANCE_URL").unwrap_or_else(|| DEEPSEEK_BALANCE_URL.into());
     let data = get_json(
         &url,
@@ -89,7 +76,8 @@ pub fn collect() -> Result<Value, String> {
         env_timeout("DEEPSEEK_TIMEOUT", 30),
     )?;
     let mut account = normalize_deepseek(&data);
-    // DeepSeek 无订阅接口，会员到期只有手动配置一个来源
-    super::membership::attach_manual_membership(&mut account, "deepseek");
+    account["account_id"] = Value::String(profile.id.clone());
+    account["account_label"] = Value::String(profile.label.clone());
+    super::membership::attach_manual_membership(&mut account, &profile.membership_key());
     Ok(account)
 }

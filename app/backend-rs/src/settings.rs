@@ -10,7 +10,9 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-pub const MEMBERSHIP_PROVIDERS: &[&str] = &["kimi", "openai", "glm", "deepseek"];
+#[cfg(test)]
+pub(crate) static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 const VERSION_CHECK_INTERVAL: u64 = 3600;
 const KIMI_LATEST_VERSION_URL: &str = "https://code.kimi.com/kimi-code/latest";
 const NPM_LATEST_VERSION_URL: &str = "https://registry.npmjs.org/{package}/latest";
@@ -34,6 +36,42 @@ pub fn local_home() -> PathBuf {
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
+}
+
+pub use crate::accounts::{AccountProfile, Provider};
+
+pub fn codex_accounts() -> Vec<AccountProfile> {
+    crate::accounts::profiles(Provider::Codex)
+}
+
+pub fn codex_account(id: &str) -> Option<AccountProfile> {
+    crate::accounts::account(Provider::Codex, id)
+}
+
+pub fn codex_membership_key(account_id: &str) -> String {
+    crate::accounts::membership_key(Provider::Codex, account_id)
+}
+
+pub fn codex_accounts_payload() -> Value {
+    crate::accounts::accounts_payload(Provider::Codex)
+}
+
+pub fn accounts_payload(provider: Provider) -> Value {
+    crate::accounts::accounts_payload(provider)
+}
+
+pub fn update_accounts(provider: Provider, payload: &Value) -> Result<Value, String> {
+    let result = crate::accounts::update_accounts(provider, payload)?;
+    if provider == Provider::Codex
+        && payload.get("action").and_then(Value::as_str) != Some("set-active")
+    {
+        crate::quota::invalidate_codex_retry_state();
+    }
+    Ok(result)
+}
+
+pub fn update_codex_accounts(payload: &Value) -> Result<Value, String> {
+    update_accounts(Provider::Codex, payload)
 }
 
 /// WSL 发行版的用户家目录（Windows 侧经 9P UNC 访问）。
@@ -314,18 +352,20 @@ pub fn load_membership_config() -> Value {
     read_json(&membership_config_path()).unwrap_or_else(|_| serde_json::json!({}))
 }
 
-/// 设置页的会员配置概览（仅 kimi/openai/glm/deepseek 小节）。
-/// 返回归一化形状（purchased_at/duration_months/ends_at/end_after_seconds/source），
-/// 与配额账户上的 membership 同源（quota::membership::normalized_manual_entry），
-/// 前端按 entry.purchased_at 等字段回填；无配置的 provider 不出现在 map 里。
+/// 设置页只展开当前可见账号；被移除账号的配置仍原样保留在 config.json。
 pub fn membership_settings() -> Value {
     let mut sections = serde_json::Map::new();
-    for provider in MEMBERSHIP_PROVIDERS {
-        if let Some(entry) = crate::quota::membership::normalized_manual_entry(provider) {
-            sections.insert(provider.to_string(), entry);
+    for profile in crate::accounts::all_profiles() {
+        let key = profile.membership_key();
+        if let Some(entry) = crate::quota::membership::normalized_manual_entry(&key) {
+            sections.insert(key, entry);
         }
     }
     Value::Object(sections)
+}
+
+fn membership_provider_supported(provider: &str) -> bool {
+    crate::accounts::profile_for_membership_key(provider).is_some()
 }
 
 pub fn update_membership_config(payload: &Value) -> Result<Value, String> {
@@ -335,7 +375,7 @@ pub fn update_membership_config(payload: &Value) -> Result<Value, String> {
     let mut config = load_membership_config();
     let obj = config.as_object_mut().unwrap();
     for (provider, section) in payload {
-        if !MEMBERSHIP_PROVIDERS.contains(&provider.as_str()) {
+        if !membership_provider_supported(provider) {
             return Err(format!("Unsupported membership provider: {provider}"));
         }
         let Some(section) = section.as_object() else {
@@ -406,86 +446,116 @@ pub fn membership_section(provider: &str) -> Option<Value> {
 
 // --- API keys ---------------------------------------------------------------
 
-fn deepseek_credentials_path() -> PathBuf {
-    env_value("DEEPSEEK_CREDENTIALS_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| local_home().join(".deepseek").join("credentials.json"))
-}
-
-fn glm_credentials_path() -> PathBuf {
-    env_value("GLM_CREDENTIALS_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| local_home().join(".glm").join("credentials.json"))
-}
-
-fn key_configured(path: &Path, env_names: &[&str], fields: &[&str]) -> Value {
-    if env_names.iter().any(|name| env_value(name).is_some()) {
-        return serde_json::json!({ "configured": true, "source": "environment" });
-    }
-    if !path.is_file() {
-        return serde_json::json!({ "configured": false, "source": "missing" });
-    }
-    match read_json(path) {
-        Ok(data) => {
-            let configured = fields.iter().any(|field| {
-                data.get(*field)
-                    .and_then(|v| v.as_str())
-                    .map(|v| !v.trim().is_empty())
-                    .unwrap_or(false)
-            });
-            serde_json::json!({ "configured": configured, "source": if configured { "file" } else { "missing" } })
-        }
-        Err(err) => serde_json::json!({ "configured": false, "source": "invalid", "error": err }),
+fn api_key_provider(value: &str) -> Result<Provider, String> {
+    match Provider::parse(value) {
+        Some(provider @ (Provider::Glm | Provider::Deepseek)) => Ok(provider),
+        _ => Err(format!("Unsupported API key provider: {value}")),
     }
 }
 
-/// GET /api/api-key-status：绝不返回密钥内容。
+fn scoped_api_key_profile(provider: &str, account_id: &str) -> Result<AccountProfile, String> {
+    let provider = api_key_provider(provider)?;
+    if account_id.trim().is_empty() {
+        return Err("account_id cannot be empty".into());
+    }
+    crate::accounts::account(provider, account_id)
+        .ok_or_else(|| format!("{} account not found: {account_id}", provider.display_name()))
+}
+
+/// 旧版 GET：始终报告两家默认账号，响应形状保持不变。
 pub fn api_key_status() -> Value {
     serde_json::json!({
         "ok": true,
         "status": {
-            "deepseek": key_configured(
-                &deepseek_credentials_path(),
-                &["DEEPSEEK_API_KEY"],
-                &["api_key", "DEEPSEEK_API_KEY"],
+            "deepseek": crate::accounts::credential_status(
+                &crate::accounts::default_profile(Provider::Deepseek),
             ),
-            "glm": key_configured(
-                &glm_credentials_path(),
-                &["GLM_API_KEY", "ZHIPU_API_KEY", "ZHIPUAI_API_KEY"],
-                &["api_key", "GLM_API_KEY", "ZHIPU_API_KEY", "ZHIPUAI_API_KEY"],
+            "glm": crate::accounts::credential_status(
+                &crate::accounts::default_profile(Provider::Glm),
             ),
         },
     })
 }
 
+pub fn scoped_api_key_status(provider: &str, account_id: &str) -> Result<Value, String> {
+    let profile = scoped_api_key_profile(provider, account_id)?;
+    Ok(serde_json::json!({
+        "ok": true,
+        "provider": profile.provider.id(),
+        "account_id": profile.id,
+        "status": crate::accounts::credential_status(&profile),
+    }))
+}
+
+fn write_api_key(profile: &AccountProfile, value: &str) -> Result<(), String> {
+    let path = crate::accounts::credentials_write_path(profile);
+    let mut data = if path.is_file() {
+        read_json(&path).unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+    data["api_key"] = Value::String(value.to_string());
+    write_private_json(&path, &data)
+}
+
+fn save_scoped_api_key(payload: &Value) -> Result<Value, String> {
+    let provider = payload
+        .get("provider")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "provider is required for scoped API key settings".to_string())?;
+    let account_id = payload
+        .get("account_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "account_id is required for scoped API key settings".to_string())?;
+    let profile = scoped_api_key_profile(provider, account_id)?;
+    let value = payload
+        .get("api_key")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("{} API key cannot be empty", profile.provider.id()))?;
+    write_api_key(&profile, value)?;
+    Ok(serde_json::json!({
+        "ok": true,
+        "provider": profile.provider.id(),
+        "account_id": profile.id,
+        "saved": true,
+        "status": crate::accounts::credential_status(&profile),
+    }))
+}
+
 pub fn save_api_keys(payload: &Value) -> Result<Value, String> {
-    let Some(payload) = payload.as_object() else {
+    let Some(object) = payload.as_object() else {
         return Err("API key settings must be a JSON object".into());
     };
-    let mut saved = Vec::new();
-    for (provider, value) in payload {
-        let value = value.as_str().unwrap_or("").trim().to_string();
-        if value.is_empty() {
-            return Err(format!("{provider} API key cannot be empty"));
-        }
-        let path = match provider.as_str() {
-            "deepseek" => deepseek_credentials_path(),
-            "glm" => glm_credentials_path(),
-            other => return Err(format!("Unsupported API key provider: {other}")),
-        };
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let mut data = if path.is_file() {
-            read_json(&path).unwrap_or_else(|_| serde_json::json!({}))
-        } else {
-            serde_json::json!({})
-        };
-        data["api_key"] = Value::String(value);
-        write_private_json(&path, &data)?;
-        saved.push(provider.clone());
+    if object.contains_key("provider")
+        || object.contains_key("account_id")
+        || object.contains_key("api_key")
+    {
+        return save_scoped_api_key(payload);
     }
-    Ok(serde_json::json!({ "ok": true, "saved": saved, "status": api_key_status()["status"] }))
+
+    let mut plans = Vec::new();
+    for (provider, value) in object {
+        let provider = api_key_provider(provider)?;
+        let value = value
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| format!("{} API key cannot be empty", provider.id()))?
+            .to_string();
+        plans.push((provider, value));
+    }
+    let mut saved = Vec::new();
+    for (provider, value) in plans {
+        write_api_key(&crate::accounts::default_profile(provider), &value)?;
+        saved.push(provider.id().to_string());
+    }
+    Ok(serde_json::json!({
+        "ok": true,
+        "saved": saved,
+        "status": api_key_status()["status"],
+    }))
 }
 
 // --- CLI 版本探测（当前版本实时，最新版本 1h 缓存） ---------------------------
@@ -681,6 +751,86 @@ pub fn backend_status_payload() -> Value {
 mod tests {
     use super::*;
 
+    struct TestEnv {
+        dir: PathBuf,
+        saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    }
+
+    impl TestEnv {
+        fn new(label: &str) -> Self {
+            const NAMES: &[&str] = &[
+                "HOME",
+                "USERPROFILE",
+                "PATH",
+                "AI_USAGE_CONFIG_PATH",
+                "AI_USAGE_SETTINGS_PATH",
+                "CODEX_ACCOUNTS_PATH",
+                "CODEX_HOME",
+                "CODEX_AUTH_PATH",
+                "KIMI_CODE_HOME",
+                "KIMI_CREDENTIALS_PATH",
+                "KIMI_WEB_CREDENTIALS_PATH",
+                "KIMI_USAGE_URL",
+                "KIMI_USE_PROXY",
+                "KIMI_TIMEOUT",
+                "KIMI_WEB_STATS_URL",
+                "KIMI_WEB_SUBSCRIPTION_URL",
+                "GLM_CREDENTIALS_PATH",
+                "GLM_API_KEY",
+                "ZHIPU_API_KEY",
+                "ZHIPUAI_API_KEY",
+                "DEEPSEEK_CREDENTIALS_PATH",
+                "DEEPSEEK_API_KEY",
+                "ZCODE_CREDENTIALS_PATH",
+                "ZCODE_CREDENTIAL_SECRET",
+                "GLM_RESET_CARDS",
+            ];
+            let dir = std::env::temp_dir().join(format!(
+                "env-tools-{label}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let saved = NAMES
+                .iter()
+                .map(|name| (*name, std::env::var_os(name)))
+                .collect::<Vec<_>>();
+            for name in NAMES {
+                std::env::remove_var(name);
+            }
+            let empty_path = dir.join("empty-path");
+            std::fs::create_dir_all(&empty_path).unwrap();
+            std::env::set_var("HOME", &dir);
+            std::env::set_var("USERPROFILE", &dir);
+            std::env::set_var("PATH", &empty_path);
+            std::env::set_var("KIMI_USE_PROXY", "0");
+            std::env::set_var("GLM_RESET_CARDS", "1");
+            Self { dir, saved }
+        }
+    }
+
+    impl Drop for TestEnv {
+        fn drop(&mut self) {
+            for (name, value) in &self.saved {
+                if let Some(value) = value {
+                    std::env::set_var(name, value);
+                } else {
+                    std::env::remove_var(name);
+                }
+            }
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     #[test]
     fn semver_in_extracts_triplet() {
         assert_eq!(semver_in("kimi 1.2.3 (build 7)").as_deref(), Some("1.2.3"));
@@ -692,5 +842,299 @@ mod tests {
     fn semver_key_orders() {
         assert!(semver_key("0.10.0") > semver_key("0.9.9"));
         assert!(semver_key("1.0.0") > semver_key("0.99.99"));
+    }
+
+    #[test]
+    fn scoped_api_keys_validate_accounts_and_batch_before_writing() {
+        let _lock = env_lock();
+        let env = TestEnv::new("scoped-keys");
+        assert!(scoped_api_key_status("glm", "unknown").is_err());
+        crate::accounts::update_accounts(
+            Provider::Glm,
+            &serde_json::json!({"action": "add", "id": "work", "label": "Work"}),
+        )
+        .unwrap();
+
+        std::env::set_var("GLM_API_KEY", "default-test-key");
+        let work = crate::accounts::account(Provider::Glm, "work").unwrap();
+        assert_eq!(
+            crate::accounts::credential_status(&work)["configured"],
+            false,
+            "extra profiles must not inherit the default environment key"
+        );
+        assert!(crate::accounts::api_key(&work).is_err());
+
+        let zcode = env.dir.join("default-zcode.json");
+        std::fs::write(
+            &zcode,
+            r#"{"zcodejwttoken":"fake-jwt","oauth:bigmodel:access_token":"fake-maas"}"#,
+        )
+        .unwrap();
+        std::env::set_var("ZCODE_CREDENTIALS_PATH", &zcode);
+        assert!(crate::accounts::glm_reset_credentials_path(&work).is_none());
+        let reset = crate::quota::use_glm_reset_card("work", "FIVE_HOUR").unwrap_err();
+        assert!(reset.contains("independently bound"));
+
+        let saved = save_api_keys(&serde_json::json!({
+            "provider": "glm",
+            "account_id": "work",
+            "api_key": "work-test-key",
+        }))
+        .unwrap();
+        assert_eq!(saved["saved"], true);
+        assert_eq!(saved["provider"], "glm");
+        assert_eq!(saved["account_id"], "work");
+        assert_eq!(saved["status"]["configured"], true);
+        assert_eq!(saved["status"]["source"], "file");
+        assert!(!saved.to_string().contains("work-test-key"));
+        assert_eq!(crate::accounts::api_key(&work).as_deref(), Ok("work-test-key"));
+        let work_credentials = crate::accounts::credentials_write_path(&work);
+        assert!(work_credentials.is_file());
+        assert_eq!(
+            scoped_api_key_status("glm", "default").unwrap()["status"]["source"],
+            "environment"
+        );
+        std::env::remove_var("GLM_API_KEY");
+
+        let default_glm = env.dir.join(".glm").join("credentials.json");
+        let rejected = save_api_keys(&serde_json::json!({
+            "glm": "must-not-be-written",
+            "deepseek": 42,
+        }));
+        assert!(rejected.is_err());
+        assert!(
+            !default_glm.exists(),
+            "a later invalid entry must not leave an earlier partial write"
+        );
+
+        let legacy = save_api_keys(&serde_json::json!({
+            "glm": "legacy-glm-key",
+            "deepseek": "legacy-deepseek-key",
+        }))
+        .unwrap();
+        assert!(legacy["saved"].is_array());
+        assert_eq!(legacy["status"]["glm"]["configured"], true);
+        assert_eq!(legacy["status"]["deepseek"]["configured"], true);
+        assert!(!legacy.to_string().contains("legacy-glm-key"));
+        assert!(!legacy.to_string().contains("legacy-deepseek-key"));
+
+        crate::accounts::update_accounts(
+            Provider::Glm,
+            &serde_json::json!({"action": "remove", "id": "work"}),
+        )
+        .unwrap();
+        assert!(work_credentials.is_file(), "registry removal must preserve credentials");
+        assert!(scoped_api_key_status("glm", "work").is_err());
+        assert!(save_api_keys(&serde_json::json!({
+            "provider": "glm",
+            "account_id": "work",
+            "api_key": "removed-account-key",
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn membership_keys_cover_four_providers_and_hidden_entries_survive() {
+        let _lock = env_lock();
+        let _env = TestEnv::new("membership-keys");
+        let mut payload = serde_json::Map::new();
+        for (index, provider) in Provider::ALL.into_iter().enumerate() {
+            crate::accounts::update_accounts(
+                provider,
+                &serde_json::json!({"action": "add", "id": "work", "label": "Work"}),
+            )
+            .unwrap();
+            for account_id in ["default", "work"] {
+                let key = crate::accounts::membership_key(provider, account_id);
+                payload.insert(
+                    key,
+                    serde_json::json!({
+                        "purchased_at": "2026-01-10T09:00",
+                        "duration_months": index + 1,
+                    }),
+                );
+            }
+        }
+        let visible = update_membership_config(&Value::Object(payload)).unwrap();
+        assert_eq!(visible.as_object().unwrap().len(), 8);
+        for provider in Provider::ALL {
+            let prefix = provider.spec().membership_prefix;
+            assert!(visible.get(prefix).is_some());
+            assert!(visible.get(format!("{prefix}:work")).is_some());
+        }
+
+        for provider in Provider::ALL {
+            crate::accounts::update_accounts(
+                provider,
+                &serde_json::json!({"action": "remove", "id": "work"}),
+            )
+            .unwrap();
+        }
+        let visible = membership_settings();
+        assert_eq!(visible.as_object().unwrap().len(), 4);
+        let stored = load_membership_config();
+        assert_eq!(stored.as_object().unwrap().len(), 8);
+        for provider in Provider::ALL {
+            let key = crate::accounts::membership_key(provider, "work");
+            assert!(visible.get(&key).is_none());
+            assert!(stored.get(&key).is_some());
+        }
+    }
+
+    #[test]
+    fn quota_collection_expands_profiles_and_attaches_error_identity() {
+        let _lock = env_lock();
+        let _env = TestEnv::new("quota-profiles");
+        crate::quota::invalidate_codex_retry_state();
+        for provider in Provider::ALL {
+            crate::accounts::update_accounts(
+                provider,
+                &serde_json::json!({"action": "add", "id": "work", "label": "Work"}),
+            )
+            .unwrap();
+        }
+        let (accounts, errors) = crate::quota::collect_all();
+        crate::quota::invalidate_codex_retry_state();
+        assert!(accounts.is_empty());
+        assert_eq!(errors.len(), 8);
+        let mut identities = std::collections::HashSet::new();
+        for error in errors {
+            let id = error["account_id"].as_str().unwrap();
+            assert!(!id.is_empty());
+            assert!(!error["account_label"].as_str().unwrap().is_empty());
+            identities.insert((error["provider"].as_str().unwrap().to_string(), id.to_string()));
+        }
+        assert_eq!(identities.len(), 8);
+        for provider in Provider::ALL {
+            for account_id in ["default", "work"] {
+                assert!(identities.contains(&(
+                    provider.display_name().to_string(),
+                    account_id.to_string(),
+                )));
+            }
+        }
+    }
+
+    #[test]
+    fn quota_collection_suppresses_duplicate_errors_when_account_exists() {
+        let _lock = env_lock();
+        let _env = TestEnv::new("quota-card-error-dedup");
+        crate::quota::invalidate_codex_retry_state();
+        update_membership_config(&serde_json::json!({
+            "openai": {"purchased_at": "2026-01-01T08:00", "duration_months": 12},
+            "kimi": {"purchased_at": "2026-02-01T08:00", "duration_months": 6},
+        }))
+        .unwrap();
+        let (accounts, errors) = crate::quota::collect_all();
+        crate::quota::invalidate_codex_retry_state();
+        assert_eq!(accounts.len(), 2);
+        assert!(accounts.iter().all(|account| {
+            account["account_id"] == "default"
+                && matches!(account["provider"].as_str(), Some("OpenAI Codex" | "Kimi Code"))
+        }));
+        assert_eq!(errors.len(), 2);
+        assert!(errors.iter().all(|error| {
+            matches!(error["provider"].as_str(), Some("GLM" | "DeepSeek"))
+        }));
+    }
+
+    fn collect_kimi_with_mock(profile: &AccountProfile) -> (Option<Value>, Vec<Value>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        std::env::set_var("KIMI_USAGE_URL", format!("http://{address}/usage"));
+        let worker = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 4096];
+            let _ = std::io::Read::read(&mut stream, &mut request);
+            let body = serde_json::json!({
+                "limits": [],
+                "usage": {"used_percent": 0},
+                "user": {"membership": {"level": "allegro"}},
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len(),
+            );
+            let _ = std::io::Write::write_all(&mut stream, response.as_bytes());
+        });
+        let mut errors = Vec::new();
+        let account = crate::quota::collect_kimi_profile(profile, &mut errors);
+        worker.join().unwrap();
+        (account, errors)
+    }
+
+    fn write_kimi_cli_credentials(profile: &AccountProfile) {
+        write_private_json(
+            &profile.home.join("credentials/kimi-code.json"),
+            &serde_json::json!({
+                "access_token": "temporary-test-token",
+                "expires_at": chrono::Utc::now().timestamp() + 3600,
+            }),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn kimi_manual_membership_survives_missing_or_broken_web() {
+        let _lock = env_lock();
+        let env = TestEnv::new("kimi-decoupling");
+        write_private_json(
+            &membership_config_path(),
+            &serde_json::json!({
+                "kimi": {
+                    "membership_purchased_at": "2026-01-10T09:00",
+                    "membership_duration_months": 12,
+                },
+                "kimi:work": {
+                    "membership_purchased_at": "2026-02-10T09:00",
+                    "membership_duration_months": 3,
+                },
+            }),
+        )
+        .unwrap();
+
+        let default = crate::accounts::default_profile(Provider::Kimi);
+        write_kimi_cli_credentials(&default);
+        let (account, errors) = collect_kimi_with_mock(&default);
+        let account = account.expect("CLI result must survive missing web credentials");
+        assert!(errors.is_empty());
+        assert_eq!(account["account_id"], "default");
+        assert_eq!(account["membership"]["source"], "manual");
+        assert_eq!(account["membership"]["duration_months"], 12);
+
+        crate::accounts::update_accounts(
+            Provider::Kimi,
+            &serde_json::json!({"action": "add", "id": "work", "label": "Work"}),
+        )
+        .unwrap();
+        let work = crate::accounts::account(Provider::Kimi, "work").unwrap();
+        write_kimi_cli_credentials(&work);
+        let work_web = work.home.join("credentials/kimi-web.json");
+        std::fs::create_dir_all(work_web.parent().unwrap()).unwrap();
+        std::fs::write(&work_web, "not-json").unwrap();
+
+        let default_web = env.dir.join("default-web.json");
+        std::fs::write(&default_web, "{}").unwrap();
+        std::env::set_var("KIMI_WEB_CREDENTIALS_PATH", &default_web);
+        assert_eq!(
+            crate::accounts::kimi_web_credential_path(&default).as_deref(),
+            Some(default_web.as_path())
+        );
+        let other = AccountProfile {
+            provider: Provider::Kimi,
+            id: "other".into(),
+            label: "Other".into(),
+            home: work.home.with_file_name("other"),
+            is_default: false,
+        };
+        assert!(crate::accounts::kimi_web_credential_path(&other).is_none());
+
+        let (account, errors) = collect_kimi_with_mock(&work);
+        let account = account.expect("CLI result and manual membership must survive broken web JSON");
+        assert!(errors.is_empty());
+        assert_eq!(account["account_id"], "work");
+        assert_eq!(account["membership"]["source"], "manual");
+        assert_eq!(account["membership"]["duration_months"], 3);
     }
 }

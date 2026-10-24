@@ -1,6 +1,6 @@
 //! Kimi Code：CLI OAuth 凭证刷新 + 用量窗口；网页凭证补月总量/会员信息。
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use chrono::{Local, Utc};
 use serde_json::Value;
@@ -11,7 +11,8 @@ use super::util::{
     env_timeout, fetched_now, iso_seconds, monthly_window_seconds, normalize_window, num_of,
     num_opt, parse_timestamp, seconds_until,
 };
-use super::{find_file_across_homes, write_credentials};
+use super::write_credentials;
+use crate::accounts::AccountProfile;
 use crate::settings::{env_enabled, env_value};
 
 const KIMI_CLIENT_ID: &str = "17e5f671-d194-4dfb-9706-5516cb48c098";
@@ -25,24 +26,6 @@ const KIMI_WEB_SUBSCRIPTION_URL: &str =
     "https://www.kimi.com/apiv2/kimi.gateway.membership.v2.MembershipService/GetSubscription";
 /// 与 Python TOKEN_REFRESH_THRESHOLD 一致：剩余寿命低于 5 分钟即刷新
 const TOKEN_REFRESH_THRESHOLD: i64 = 300;
-
-fn kimi_code_credential(homes: &[PathBuf]) -> Option<PathBuf> {
-    if let Some(home) = env_value("KIMI_CODE_HOME") {
-        let explicit = PathBuf::from(home).join("credentials/kimi-code.json");
-        if explicit.is_file() {
-            return Some(explicit);
-        }
-    }
-    find_file_across_homes(
-        homes,
-        &[".kimi-code/credentials/kimi-code.json", ".kimi/credentials/kimi-code.json"],
-        "KIMI_CREDENTIALS_PATH",
-    )
-}
-
-fn kimi_web_credential(homes: &[PathBuf]) -> Option<PathBuf> {
-    find_file_across_homes(homes, &[".kimi-code/credentials/kimi-web.json"], "KIMI_WEB_CREDENTIALS_PATH")
-}
 
 /// 不验签读取 JWT 的 exp（秒）。
 fn jwt_expires_at(token: &str) -> i64 {
@@ -136,48 +119,43 @@ fn refresh_kimi_credentials(path: &Path, credentials: &Value, use_proxy: bool, t
     Ok(updated)
 }
 
-fn fetch_kimi_account(homes: &[PathBuf], errors: &mut Vec<Value>) -> Option<Value> {
-    let path = kimi_code_credential(homes)?;
+fn fetch_kimi_account(profile: &AccountProfile) -> Result<Value, String> {
+    let path = crate::accounts::credential_path(profile).ok_or_else(|| {
+        format!(
+            "Kimi credentials not found for {}; run kimi and log in again",
+            profile.label
+        )
+    })?;
     let use_proxy = env_enabled("KIMI_USE_PROXY", false);
     let timeout = env_timeout("KIMI_TIMEOUT", 30);
-    let credentials = match crate::settings::read_json(&path) {
-        Ok(value) => value,
-        Err(err) => {
-            errors.push(serde_json::json!({ "provider": "Kimi Code", "error": err }));
-            return None;
-        }
-    };
+    let credentials = crate::settings::read_json(&path)?;
     let now_secs = Utc::now().timestamp() as f64;
-    let expires_at = credentials.get("expires_at").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let expires_at = credentials
+        .get("expires_at")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
     let fresh = if expires_at - now_secs < TOKEN_REFRESH_THRESHOLD as f64 {
-        match refresh_kimi_credentials(&path, &credentials, use_proxy, timeout.min(10)) {
-            Ok(value) => value,
-            Err(err) => {
-                errors.push(serde_json::json!({ "provider": "Kimi Code", "error": err }));
-                return None;
-            }
-        }
+        refresh_kimi_credentials(&path, &credentials, use_proxy, timeout.min(10))?
     } else {
         credentials
     };
-    let access_token = fresh.get("access_token").and_then(|v| v.as_str()).unwrap_or("");
+    let access_token = fresh
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     if access_token.is_empty() {
-        errors.push(serde_json::json!({ "provider": "Kimi Code",
-            "error": "access_token missing in Kimi credentials; run kimi and log in again" }));
-        return None;
+        return Err("access_token missing in Kimi credentials; run kimi and log in again".into());
     }
-    match get_json(
+    let data = get_json(
         &env_value("KIMI_USAGE_URL").unwrap_or_else(|| KIMI_USAGE_URL.into()),
         access_token,
         use_proxy,
         timeout,
-    ) {
-        Ok(data) => Some(normalize_kimi(&data)),
-        Err(err) => {
-            errors.push(serde_json::json!({ "provider": "Kimi Code", "error": err }));
-            None
-        }
-    }
+    )?;
+    let mut account = normalize_kimi(&data);
+    account["account_id"] = Value::String(profile.id.clone());
+    account["account_label"] = Value::String(profile.label.clone());
+    Ok(account)
 }
 
 pub fn normalize_kimi(data: &Value) -> Value {
@@ -300,12 +278,15 @@ fn kimi_web_access_token(
     credentials: &Value,
     use_proxy: bool,
     timeout: u64,
-    errors: &mut Vec<Value>,
-) -> Option<String> {
+) -> Result<String, String> {
     let mut credentials = credentials.clone();
-    let access_token = credentials.get("access_token").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let access_token = credentials
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     if jwt_expires_at(&access_token) - Utc::now().timestamp() >= TOKEN_REFRESH_THRESHOLD {
-        return Some(access_token);
+        return Ok(access_token);
     }
     let refresh_token = credentials
         .get("refresh_token")
@@ -313,9 +294,7 @@ fn kimi_web_access_token(
         .unwrap_or("")
         .to_string();
     if refresh_token.is_empty() {
-        errors.push(serde_json::json!({ "provider": "Kimi Monthly Total",
-            "error": "refresh_token missing in Kimi web credentials; copy it again from the browser (see docs/usage-monitor.md)" }));
-        return None;
+        return Err("refresh_token missing in Kimi web credentials; copy it again from the browser (see docs/usage-monitor.md)".into());
     }
     let body = serde_json::json!({ "refresh_token": refresh_token }).to_string();
     let result = post_json(
@@ -324,20 +303,14 @@ fn kimi_web_access_token(
         &body,
         use_proxy,
         timeout,
-    );
-    let result = match result {
-        Ok(result) => result,
-        Err(err) => {
-            // 网络层失败（断网/代理不可达）原样透传，避免前端把断网误判成"登录过期"
-            let msg = if err.starts_with("Network request failed") {
-                err
-            } else {
-                "Failed to refresh Kimi web credentials; copy refresh_token again from the browser (see docs/usage-monitor.md)".to_string()
-            };
-            errors.push(serde_json::json!({ "provider": "Kimi Monthly Total", "error": msg }));
-            return None;
+    )
+    .map_err(|err| {
+        if err.starts_with("Network request failed") {
+            err
+        } else {
+            "Failed to refresh Kimi web credentials; copy refresh_token again from the browser (see docs/usage-monitor.md)".to_string()
         }
-    };
+    })?;
     let access_token = result
         .get("access_token")
         .or_else(|| result.get("accessToken"))
@@ -345,9 +318,7 @@ fn kimi_web_access_token(
         .unwrap_or("")
         .to_string();
     if access_token.is_empty() {
-        errors.push(serde_json::json!({ "provider": "Kimi Monthly Total",
-            "error": "Failed to refresh Kimi web credentials; copy refresh_token again from the browser (see docs/usage-monitor.md)" }));
-        return None;
+        return Err("Failed to refresh Kimi web credentials; copy refresh_token again from the browser (see docs/usage-monitor.md)".into());
     }
     credentials["access_token"] = Value::String(access_token.clone());
     credentials["refresh_token"] = Value::String(
@@ -359,7 +330,7 @@ fn kimi_web_access_token(
             .to_string(),
     );
     write_credentials(path, &credentials);
-    Some(access_token)
+    Ok(access_token)
 }
 
 fn kimi_web_post(url: &str, token: &str, use_proxy: bool, timeout: u64) -> Result<Value, String> {
@@ -369,25 +340,51 @@ fn kimi_web_post(url: &str, token: &str, use_proxy: bool, timeout: u64) -> Resul
     post_json(url, &headers, "{}", use_proxy, timeout)
 }
 
-/// Kimi 卡片：CLI 凭证查窗口（仅本机侧）+ 网页凭证补月总量/会员名/会员到期。
-/// 网页凭证（kimi-web.json）允许跨家目录发现（本机缺失时读 WSL 侧小文件，
-/// 成本极低）——它承载 plan（如 Allegro）与订阅到期，配额窗口本身仍来自
-/// 本机 CLI 凭证，不受跨源影响。
-pub fn collect(homes: &[PathBuf], errors: &mut Vec<Value>) -> Option<Value> {
-    let mut account = fetch_kimi_account(homes, errors)?;
+/// Kimi 卡片：当前 profile 的 CLI 凭证查窗口，网页凭证补月总量/会员名/到期。
+/// 默认账号保留显式路径与 WSL 网页凭证回退；额外账号仅使用自身 profile。
+/// 手动会员先于可选网页增强附加，网页缺失或失败不会将其丢弃。
+pub fn collect(profile: &AccountProfile, errors: &mut Vec<Value>) -> Option<Value> {
+    let mut account = match fetch_kimi_account(profile) {
+        Ok(account) => account,
+        Err(err) => {
+            errors.push(serde_json::json!({
+                "provider": "Kimi Code",
+                "account_id": profile.id,
+                "account_label": profile.label,
+                "error": err,
+            }));
+            let mut minimal = serde_json::json!({
+                "provider": "Kimi Code",
+                "account_id": profile.id,
+                "account_label": profile.label,
+                "plan": "unknown",
+                "windows": [],
+                "fetched_at": fetched_now(),
+            });
+            return attach_manual_membership(&mut minimal, &profile.membership_key())
+                .then_some(minimal);
+        }
+    };
+    let manual_membership = attach_manual_membership(&mut account, &profile.membership_key());
     let use_proxy = env_enabled("KIMI_USE_PROXY", false);
     let timeout = env_timeout("KIMI_TIMEOUT", 30);
-    let mut web_homes = homes.to_vec();
-    web_homes.extend(crate::settings::wsl_homes());
-    // 网页凭证为增强项：缺失/不可读/刷新失败时仍返回 CLI 窗口卡片
-    let Some(web_path) = kimi_web_credential(&web_homes) else {
+    let Some(web_path) = crate::accounts::kimi_web_credential_path(profile) else {
         return Some(account);
     };
     let Ok(credentials) = crate::settings::read_json(&web_path) else {
         return Some(account);
     };
-    let Some(token) = kimi_web_access_token(&web_path, &credentials, use_proxy, timeout, errors) else {
-        return Some(account);
+    let token = match kimi_web_access_token(&web_path, &credentials, use_proxy, timeout) {
+        Ok(token) => token,
+        Err(err) => {
+            errors.push(serde_json::json!({
+                "provider": "Kimi Monthly Total",
+                "account_id": profile.id,
+                "account_label": profile.label,
+                "error": err,
+            }));
+            return Some(account);
+        }
     };
     match kimi_web_post(
         &env_value("KIMI_WEB_STATS_URL").unwrap_or_else(|| KIMI_WEB_STATS_URL.into()),
@@ -409,30 +406,28 @@ pub fn collect(homes: &[PathBuf], errors: &mut Vec<Value>) -> Option<Value> {
                 account["extra_lines"] = Value::Array(lines);
             }
         }
-        Err(err) => {
-            errors.push(serde_json::json!({ "provider": "Kimi Monthly Total", "error": err }));
-        }
+        Err(err) => errors.push(serde_json::json!({
+            "provider": "Kimi Monthly Total",
+            "account_id": profile.id,
+            "account_label": profile.label,
+            "error": err,
+        })),
     }
     let mut subscription_membership = None;
-    match kimi_web_post(
+    if let Ok(payload) = kimi_web_post(
         &env_value("KIMI_WEB_SUBSCRIPTION_URL").unwrap_or_else(|| KIMI_WEB_SUBSCRIPTION_URL.into()),
         &token,
         use_proxy,
         timeout,
     ) {
-        Ok(payload) => {
-            if let Some(subscription) = normalize_kimi_subscription(&payload) {
-                if let Some(plan) = subscription.get("plan").and_then(|v| v.as_str()) {
-                    account["plan"] = Value::String(plan.to_string());
-                }
-                subscription_membership = subscription.get("membership").cloned();
+        if let Some(subscription) = normalize_kimi_subscription(&payload) {
+            if let Some(plan) = subscription.get("plan").and_then(|v| v.as_str()) {
+                account["plan"] = Value::String(plan.to_string());
             }
+            subscription_membership = subscription.get("membership").cloned();
         }
-        // 订阅属增强项：失败保持 plan=unknown 不额外报错（口径同 Python）
-        Err(_) => {}
     }
-    // 手动会员配置无条件优先（订阅接口失败时也不能丢），订阅结果仅作兜底
-    if !attach_manual_membership(&mut account, "kimi") {
+    if !manual_membership {
         if let Some(membership) = subscription_membership {
             account["membership"] = membership;
         }

@@ -1,8 +1,8 @@
 //! GLM Coding Plan 重置卡（ZCode 通道）。
 //!
 //! 重置卡只下发给「登录 ZCode 并连接 Coding Plan」的账号（官方口径），纯 API key
-//! 查询拿不到，因此复用 ZCode 桌面端的本机凭证查询。任何一步失败都静默降级为
-//! None，绝不影响 GLM 主配额采集。
+//! 查询拿不到。默认 GLM 账号沿用 ZCode 本机凭证；额外账号必须有独立绑定，
+//! 绝不回退默认凭证。状态查询失败静默降级，不影响 GLM 主配额采集。
 //!
 //! 接口（逆向自 ZCode 客户端 BigModelUsageQuotaProvider）：
 //!   GET https://zcode.z.ai/api/v1/coding-plan/reset/status
@@ -15,8 +15,6 @@
 //!   密钥 = sha256(ZCODE_CREDENTIAL_SECRET，缺省时
 //!          "zcode-credential-fallback:<Node 平台名>:<家目录>:<用户名>")
 
-use std::path::PathBuf;
-
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use chrono::{DateTime, Local, TimeZone, Utc};
@@ -25,6 +23,7 @@ use sha2::{Digest, Sha256};
 
 use super::http::{get_json_headers, post_json};
 use super::util::{env_timeout, iso_seconds, parse_timestamp};
+use crate::accounts::AccountProfile;
 use crate::settings::{env_enabled, env_value, local_home};
 
 const RESET_STATUS_URL: &str = "https://zcode.z.ai/api/v1/coding-plan/reset/status";
@@ -174,16 +173,8 @@ pub fn normalize_reset_status(data: &Value, now: DateTime<Local>) -> Value {
     })
 }
 
-/// 读取 ZCode 本机凭证（zcode jwt + bigmodel maas token）；任何一步失败返回 None。
-fn load_zcode_credentials() -> Option<(String, String)> {
-    let path = env_value("ZCODE_CREDENTIALS_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            local_home()
-                .join(".zcode")
-                .join("v2")
-                .join("credentials.json")
-        });
+fn load_zcode_credentials(profile: &AccountProfile) -> Option<(String, String)> {
+    let path = crate::accounts::glm_reset_credentials_path(profile)?;
     let creds = crate::settings::read_json(&path).ok()?;
     let key = cipher_key();
     let jwt = credential_value(&creds, "zcodejwttoken", &key)?;
@@ -216,12 +207,12 @@ fn zcode_headers(jwt: &str, maas: &str) -> [(String, String); 4] {
     ]
 }
 
-/// 查询重置卡状态；无 ZCode 凭证 / 解密失败 / 接口异常均返回 None（静默跳过）。
-pub fn collect_reset_cards() -> Option<Value> {
+/// 查询重置卡状态；无独立绑定 / 解密失败 / 接口异常均返回 None（静默跳过）。
+pub fn collect_reset_cards(profile: &AccountProfile) -> Option<Value> {
     if !env_enabled("GLM_RESET_CARDS", true) {
         return None;
     }
-    let (jwt, maas) = load_zcode_credentials()?;
+    let (jwt, maas) = load_zcode_credentials(profile)?;
     let use_proxy = env_enabled("GLM_USE_PROXY", true);
     let timeout = env_timeout("GLM_RESET_TIMEOUT", 8);
     let headers = zcode_headers(&jwt, &maas);
@@ -240,7 +231,9 @@ pub fn collect_reset_cards() -> Option<Value> {
 /// 使用一张重置卡（POST {base}/use，逆向自 ZCode useCodingPlanReset）。
 /// reset_type 仅接受 FIVE_HOUR / WEEK；与状态查询的静默降级不同，这里把
 /// 失败原因透传给前端展示。幂等键一次一换，服务端按 key 去重。
-pub fn use_reset_card(reset_type: &str) -> Result<Value, String> {
+pub fn use_reset_card(account_id: &str, reset_type: &str) -> Result<Value, String> {
+    let profile = crate::accounts::account(crate::accounts::Provider::Glm, account_id)
+        .ok_or_else(|| format!("GLM account not found: {account_id}"))?;
     let reset_type = match reset_type.trim().to_ascii_uppercase().as_str() {
         "FIVE_HOUR" | "5H" => "FIVE_HOUR",
         "WEEK" | "7D" => "WEEK",
@@ -249,8 +242,18 @@ pub fn use_reset_card(reset_type: &str) -> Result<Value, String> {
     if !env_enabled("GLM_RESET_CARDS", true) {
         return Err("GLM reset cards disabled (GLM_RESET_CARDS=0)".into());
     }
-    let (jwt, maas) = load_zcode_credentials()
-        .ok_or_else(|| "ZCode credentials unavailable; open ZCode once and retry".to_string())?;
+    if !profile.is_default && crate::accounts::glm_reset_credentials_path(&profile).is_none() {
+        return Err(format!(
+            "GLM reset cards are not independently bound to account {account_id}; set zcode_credentials_path for this profile"
+        ));
+    }
+    let (jwt, maas) = load_zcode_credentials(&profile).ok_or_else(|| {
+        if profile.is_default {
+            "ZCode credentials unavailable; open ZCode once and retry".to_string()
+        } else {
+            format!("ZCode credentials unavailable for GLM account {account_id}")
+        }
+    })?;
     let use_proxy = env_enabled("GLM_USE_PROXY", true);
     let timeout = env_timeout("GLM_RESET_TIMEOUT", 8);
     let headers = zcode_headers(&jwt, &maas);
@@ -281,7 +284,11 @@ pub fn use_reset_card(reset_type: &str) -> Result<Value, String> {
     if !used {
         return Err("GLM reset not confirmed by server".into());
     }
-    Ok(serde_json::json!({ "used": true, "reset_type": reset_type }))
+    Ok(serde_json::json!({
+        "used": true,
+        "reset_type": reset_type,
+        "account_id": profile.id,
+    }))
 }
 
 #[cfg(test)]

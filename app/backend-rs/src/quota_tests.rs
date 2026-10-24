@@ -280,6 +280,9 @@ fn glm_reset_cards_empty_response() {
 /// 时间闸门：距上一已计数失败 <30s 的失败不推进计数（手动连点不烧额度）
 #[test]
 fn codex_retry_window_serves_last_good_until_third_failure() {
+    let _env = crate::settings::TEST_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     use crate::quota::apply_retry_window_at;
     use crate::quota::WindowOutcome;
     use serde_json::json;
@@ -352,5 +355,11 @@ fn codex_retry_window_serves_last_good_until_third_failure() {
             assert_eq!(account["fetched_at"], "2026-10-11 21:05:00", "沿用恢复后的新数据");
         }
         other => panic!("成功重置后单次失败应 Stale，实际 {other:?}"),
+    }
+
+    crate::quota::invalidate_codex_retry_state();
+    match apply_retry_window_at(Err("HTTP 500: error".into()), t0 + 240_000) {
+        WindowOutcome::Failed(_) => {}
+        other => panic!("账号注册失效后不得复活旧 stale 数据，实际 {other:?}"),
     }
 }

@@ -67,6 +67,20 @@
 - 凭证 `~/.codex/auth.json`（tokens.access_token / account_id）。
 - 额度接口 `GET https://chatgpt.com/backend-api/wham/usage`，头 `ChatGPT-Account-Id`；中国大陆需代理。
 - 升级 `npm install -g @openai/codex@latest`。
+- 多账号配置保存在 `~/.config/ai-usage-monitor/codex-accounts.json`，只含账号
+  ID、显示名、active 与默认账号的编辑/隐藏状态；默认 profile 为 `~/.codex`，
+  额外 profile 为同目录下 `codex-accounts/<id>`。凭证仍由各 profile 的
+  `auth.json` 独立管理。默认账号的移除只写 `default_removed`，不删凭证，
+  可通过恢复操作找回。
+- Codex 组件安装/更新还会在每用户 `~/.local/bin` 安装受管启动器，并将该目录
+  前置到 PATH。启动器每次读取 active、注入对应 `CODEX_HOME`，再执行安装时
+  记录的真实 npm shim，避免 PATH 递归和复制凭证。显式 `CODEX_HOME` 原样优先；
+  配置损坏、active 未注册、默认已隐藏仍选择 default、或 active 为 null 时
+  均应报错，不能静默登录到错误账号。
+- Windows 的真实 shim 为 `<npm prefix -g>\codex.cmd`（CMD/PowerShell）与
+  `<prefix>\codex`（Git Bash）；Linux/WSL 为 `<prefix>/bin/codex`。Windows 和
+  各 WSL 发行版分别保存 active 并安装启动器。切换只影响新进程；首次 prepend
+  PATH 后旧终端/IDE 需重启，正在运行的 Codex 不会被强杀或热切换。
 
 ## 逆向网页接口的通用方法
 

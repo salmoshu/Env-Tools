@@ -12,9 +12,11 @@ import { useInstallState, setInstallRunning, setInstallResult, dismissInstallRes
 import ResetButton from "../components/ResetButton.jsx";
 import BrandIcon from "../components/BrandIcon.jsx";
 import UpgradeOverlay from "../components/UpgradeOverlay.jsx";
+import AgentAccountControl from "../components/AgentAccountControl.jsx";
+import { agentAccountId } from "../components/AgentAccountPicker.jsx";
+import { agentProviderKey, useAgentAccountStates } from "../agentAccounts.js";
 
 const DISPLAY_SELECTION_KEY = "ai-usage-monitor.display-providers";
-
 
 // --- 主组件 ---------------------------------------------------------------------
 
@@ -42,7 +44,7 @@ export default function Board({ lastPayload }) {
   //（跨窗口 localStorage 不实时，这里以 payload 触发的重读兜底）
   useEffect(() => {
     if (!lastPayload || !lastPayload.data) return;
-    const names = (lastPayload.data.accounts || []).map((a) => a.provider);
+    const names = [...new Set((lastPayload.data.accounts || []).map((a) => a.provider))];
     const seen = new Set(names);
     for (const err of (lastPayload.data.errors || [])) {
       const p = err && err.provider;
@@ -133,14 +135,27 @@ export default function Board({ lastPayload }) {
   }, [install.result, install.running]);
 
   const data = lastPayload && lastPayload.data;
-  // 与用量分析配额区同序：设置页"显示"面板的拖拽顺序（v0.7.34）
+  const allAccounts = (data && data.accounts) || [];
+  const accountStates = useAgentAccountStates(allAccounts);
+  const matchesActiveAccount = (item) => {
+    const provider = agentProviderKey(item.provider);
+    if (!provider) return true;
+    const providerAccounts = allAccounts.filter((account) => account.provider === item.provider);
+    const index = providerAccounts.indexOf(item);
+    const id = item.account_id || (index >= 0 ? agentAccountId(item, index) : "default");
+    if (accountStates[provider].defaultRemoved && id === "default") return false;
+    return id === accountStates[provider].activeId;
+  };
+  // 与用量分析配额区同序：每家合并为当前账号的一张卡。
   const accounts = sortByDisplayOrder(
-    ((data && data.accounts) || []).filter((a) => selectedProviders.has(a.provider)),
+    allAccounts.filter((account) => selectedProviders.has(account.provider) && matchesActiveAccount(account)),
     (a) => a.provider,
   );
   const visibleErrors = sortByDisplayOrder(
     ((data && data.errors) || [])
-      .filter((e) => selectedProviders.has(e.provider) && !dismissedErrors[`${e.provider}:${e.error}`]),
+      .filter((error) => selectedProviders.has(error.provider)
+        && matchesActiveAccount(error)
+        && !dismissedErrors[`${error.provider}:${error.account_id || ""}:${error.error}`]),
     (e) => e.provider || "",
   );
   const versions = (data && data.versions) || {};
@@ -148,13 +163,13 @@ export default function Board({ lastPayload }) {
   // 错误卡片自动淡出
   useEffect(() => {
     const timers = visibleErrors.map((err, i) => {
-      const key = `${err.provider}:${err.error}`;
+      const key = `${err.provider}:${err.account_id || ""}:${err.error}`;
       return setTimeout(() => {
         setDismissedErrors((prev) => ({ ...prev, [key]: true }));
       }, 8000 + i * 400);
     });
     return () => timers.forEach(clearTimeout);
-  }, [visibleErrors.map((e) => `${e.provider}:${e.error}`).join("|")]);
+  }, [visibleErrors.map((e) => `${e.provider}:${e.account_id || ""}:${e.error}`).join("|")]);
 
   // 全局错误（如数据抓取超时）同样淡出，避免长期占据看板
   const fatalError = lastPayload && lastPayload.error;
@@ -185,11 +200,13 @@ export default function Board({ lastPayload }) {
             : "";
           const info = versions[account.provider] || {};
           const membership = account.membership;
+          const providerKey = agentProviderKey(account.provider);
           return (
-            <div className="provider" key={account.provider}>
+            <div className="provider" key={account.provider} data-provider-key={providerKey || undefined}>
               <div className="provider-head">
                 <BrandIcon of={account.provider} size={16} />
                 <span className="provider-name">{account.provider}</span>
+                <AgentAccountControl provider={providerKey} state={accountStates[providerKey]} />
                 {info.current && info.latest && isNewerVersion(info.latest, info.current) ? (
                   <span
                     className="ver upgrade"
@@ -279,7 +296,11 @@ export default function Board({ lastPayload }) {
                   <div className="limit-resets">
                     {t("dash.resetChances")}: {parts.join(" · ")}
                     {Number(available) > 0 && !account.stale && nearQuotaLimit(account) ? (
-                      <ResetButton provider="codex" what={t("dash.resetWhatCodex")}>{t("dash.resetNow")}</ResetButton>
+                      <ResetButton
+                        provider="codex"
+                        accountId={account.account_id || "default"}
+                        what={t("dash.resetWhatCodex")}
+                      >{t("dash.resetNow")}</ResetButton>
                     ) : null}
                   </div>
                 );
@@ -307,10 +328,10 @@ export default function Board({ lastPayload }) {
                   <div className="limit-resets">
                     {t("dash.resetChances")}: {parts.join(" · ")}{expiry}
                     {five.length && windowUsagePct(account, "5h") >= QUOTA_RESET_THRESHOLD ? (
-                      <ResetButton provider="glm" resetType="FIVE_HOUR" what={t("dash.resetWhat5h")}>{t("dash.resetUse5h")}</ResetButton>
+                      <ResetButton provider="glm" resetType="FIVE_HOUR" accountId={account.account_id || "default"} what={t("dash.resetWhat5h")}>{t("dash.resetUse5h")}</ResetButton>
                     ) : null}
                     {week.length && windowUsagePct(account, "7d") >= QUOTA_RESET_THRESHOLD ? (
-                      <ResetButton provider="glm" resetType="WEEK" what={t("dash.resetWhat7d")}>{t("dash.resetUse7d")}</ResetButton>
+                      <ResetButton provider="glm" resetType="WEEK" accountId={account.account_id || "default"} what={t("dash.resetWhat7d")}>{t("dash.resetUse7d")}</ResetButton>
                     ) : null}
                   </div>
                 );
@@ -318,11 +339,27 @@ export default function Board({ lastPayload }) {
             </div>
           );
         })}
-        {visibleErrors.map((err) => (
-          <div className="error-card" key={`${err.provider}:${err.error}`}>
-            {err.provider}: {err.error}
-          </div>
-        ))}
+        {visibleErrors.map((err) => {
+          const providerKey = agentProviderKey(err.provider);
+          const accountState = accountStates[providerKey];
+          return (
+            <div
+              className="error-card"
+              data-provider-key={providerKey || undefined}
+              data-account-id={err.account_id || "default"}
+              key={`${err.provider}:${err.account_id || ""}:${err.error}`}
+            >
+              <div className="provider-head error-account-head">
+                <BrandIcon of={err.provider} size={14} />
+                <span className="provider-name">
+                  {err.provider}{accountState && accountState.accounts.length > 1 ? "" : err.account_label ? ` · ${err.account_label}` : ""}
+                </span>
+                <AgentAccountControl provider={providerKey} state={accountState} />
+              </div>
+              <div>{err.error}</div>
+            </div>
+          );
+        })}
         {!lastPayload && <div className="status">{t("state.loading")}</div>}
         {lastPayload && !lastPayload.error && accounts.length === 0
           && knownProviders.length > 0 && selectedProviders.size > 0 && (

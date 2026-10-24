@@ -13,7 +13,7 @@ contextBridge.exposeInMainWorld("api", {
   // 数据与刷新
   onUsageUpdate: (callback) => subscribe("usage-update", callback),
   getUsage: (target) => ipcRenderer.invoke("get-usage", target),
-  quotaReset: (provider, resetType) => ipcRenderer.invoke("quota-reset", provider, resetType),
+  quotaReset: (provider, resetType, accountId) => ipcRenderer.invoke("quota-reset", provider, resetType, accountId),
   updateCheck: () => ipcRenderer.invoke("update-check"),
   updateInstall: () => ipcRenderer.invoke("update-install"),
   onUpdateProgress: (callback) => subscribe("update-progress", (payload) => callback(payload)),
@@ -49,7 +49,13 @@ contextBridge.exposeInMainWorld("api", {
   setSettings: (values) => ipcRenderer.invoke("set-settings", values),
   getApiKeyStatus: () => ipcRenderer.invoke("api-key-status"),
   saveApiKeys: (values) => ipcRenderer.invoke("save-api-keys", values),
-  loginAgent: (agent, environment) => ipcRenderer.invoke("login-agent", agent, environment),
+  getAgentAccounts: (provider) => ipcRenderer.invoke("get-agent-accounts", provider),
+  updateAgentAccounts: (provider, values) => ipcRenderer.invoke("update-agent-accounts", provider, values),
+  onAgentAccountsUpdate: (callback) => subscribe("agent-accounts-update", callback),
+  getCodexAccounts: () => ipcRenderer.invoke("get-codex-accounts"),
+  updateCodexAccounts: (values) => ipcRenderer.invoke("update-codex-accounts", values),
+  onCodexAccountsUpdate: (callback) => subscribe("codex-accounts-update", callback),
+  loginAgent: (agent, environment, accountId) => ipcRenderer.invoke("login-agent", agent, environment, accountId),
   // 安装 / 升级（看板版本徽章升级与 Tools 组件共用运行器）
   upgrade: (targets, environment, windowsSetupScript) =>
     ipcRenderer.invoke("upgrade-agents", targets, environment, windowsSetupScript),

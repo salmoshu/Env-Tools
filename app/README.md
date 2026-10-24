@@ -7,16 +7,21 @@
 - **外壳**：Electron（`electron/main.js` 双窗口、置顶、升级/安装脚本编排）
 - **本地后端**：Rust + axum（`backend-rs/`，监听 127.0.1，提供 `/api/health`、
   `/api/analytics`、`/api/usage`、`/api/settings`、`/api/api-keys`、
-  `/api/backend-status`；带单飞缓存与超时管理）。**v0.7.0 起配额（含
-  Kimi/Codex OAuth 刷新）、会话分析、设置与 API key 全部原生实现，
-  python 引擎不再是应用的依赖**（终端 CLI 保留 python 版）。
+  `/api/accounts`、`/api/codex-accounts`、`/api/backend-status`；带单飞缓存与
+  超时管理）。**v0.7.0 起配额（含 Kimi OAuth 刷新）、会话分析、设置与 API key
+  全部原生实现，python 引擎不再是应用的依赖**（终端 CLI 保留 python 版）。
 
 ## 窗口
 
-v0.7.38：组件管理将 Kimi Code、Codex、Entire CLI 拆为独立组件，按 Agent /
-开发工具 / 系统工具分组并提供分类筛选；Windows 与 WSL 目标分别探测安装状态。
-设置页采用 Kimi Brand 的灰底 16px 卡片、240px 导航、18px SVG 返回图标与
-8px 圆角标准按钮，兼容中英文、深浅色和窄窗口布局。
+当前版本：Kimi Code、OpenAI Codex、GLM / BigModel、DeepSeek 均支持多账号，
+按 provider 分别保存 active 并同步到各窗口。默认与额外账号均可新增、重命名、
+使用和移除；默认账号还可恢复，操作不删除凭证或会员配置。Kimi/Codex 使用独立
+profile 登录，GLM/DeepSeek 使用逐账号 API Key。Codex 受管启动器让后续新启动的
+CLI 使用当前账号，正在运行的进程不受影响。账号菜单收起仅显示名称，展开才显示
+窗口用量；套餐配额标题不再附加“全部来源合并”。设置页的 **Agent / 智能体**
+按厂商分块管理上述功能，并支持逐账号会员购买/续费日期与时长。组件管理按
+Agent / 开发工具 / 系统工具分组并提供分类筛选；Windows 与 WSL 目标分别探测
+安装状态。设置页兼容中英文、深浅色和窄窗口布局。
 
 - **全量窗口 "Env-Tools"**（默认打开）：Usage Analytics（多 agent 会话分析 +
   套餐配额，支持本机/WSL/SSH 目标与跨源汇总）与 Tools（组件管理）、Settings

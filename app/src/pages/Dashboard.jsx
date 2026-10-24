@@ -17,6 +17,9 @@ import { RefreshIcon } from "../components/Titlebar.jsx";
 import ResetButton from "../components/ResetButton.jsx";
 import BrandIcon from "../components/BrandIcon.jsx";
 import UpgradeOverlay from "../components/UpgradeOverlay.jsx";
+import AgentAccountControl from "../components/AgentAccountControl.jsx";
+import { agentAccountId } from "../components/AgentAccountPicker.jsx";
+import { agentProviderKey, useAgentAccountStates } from "../agentAccounts.js";
 import { t, useLang } from "../i18n.js";
 import { useInstallState, setInstallRunning, setInstallResult, dismissInstallResult } from "../installState.js";
 
@@ -117,7 +120,7 @@ function MembershipLine({ account }) {
   );
 }
 
-function QuotaCard({ account, versions, onUpgrade, upgrading }) {
+function QuotaCard({ account, versions, onUpgrade, upgrading, providerKey, accountState }) {
   const updated = account.fetched_at
     ? new Date(account.fetched_at).toLocaleTimeString("en-GB", { hour12: false })
     : "";
@@ -125,10 +128,11 @@ function QuotaCard({ account, versions, onUpgrade, upgrading }) {
   const newer = info.current && info.latest && isNewerVersion(info.latest, info.current);
   const resetCredits = account.rate_limit_reset_credits;
   return (
-    <div className="qcard">
+    <div className="qcard" data-provider-key={providerKey || undefined}>
       <div className="qcard-head">
         <BrandIcon of={account.provider} size={16} />
         <span className="qname">{account.provider}</span>
+        <AgentAccountControl provider={providerKey} state={accountState} />
         {newer && onUpgrade ? (
           <span
             className="qver upgrade"
@@ -194,7 +198,11 @@ function QuotaCard({ account, versions, onUpgrade, upgrading }) {
             {t("dash.resetChances")}: {parts.join(" · ")}
             {/* stale 沿用数据不渲染重置按钮：过期的 ≥95% 读数可能触发不必要的重置 */}
             {Number(available) > 0 && !account.stale && nearQuotaLimit(account) ? (
-              <ResetButton provider="codex" what={t("dash.resetWhatCodex")}>{t("dash.resetNow")}</ResetButton>
+              <ResetButton
+                provider="codex"
+                accountId={account.account_id || "default"}
+                what={t("dash.resetWhatCodex")}
+              >{t("dash.resetNow")}</ResetButton>
             ) : null}
           </div>
         );
@@ -222,10 +230,10 @@ function QuotaCard({ account, versions, onUpgrade, upgrading }) {
           <div className="limit-resets">
             {t("dash.resetChances")}: {parts.join(" · ")}{expiry}
             {five.length && windowUsagePct(account, "5h") >= QUOTA_RESET_THRESHOLD ? (
-              <ResetButton provider="glm" resetType="FIVE_HOUR" what={t("dash.resetWhat5h")}>{t("dash.resetUse5h")}</ResetButton>
+              <ResetButton provider="glm" resetType="FIVE_HOUR" accountId={account.account_id || "default"} what={t("dash.resetWhat5h")}>{t("dash.resetUse5h")}</ResetButton>
             ) : null}
             {week.length && windowUsagePct(account, "7d") >= QUOTA_RESET_THRESHOLD ? (
-              <ResetButton provider="glm" resetType="WEEK" what={t("dash.resetWhat7d")}>{t("dash.resetUse7d")}</ResetButton>
+              <ResetButton provider="glm" resetType="WEEK" accountId={account.account_id || "default"} what={t("dash.resetWhat7d")}>{t("dash.resetUse7d")}</ResetButton>
             ) : null}
           </div>
         );
@@ -235,10 +243,11 @@ function QuotaCard({ account, versions, onUpgrade, upgrading }) {
 }
 
 /** 配额异常占位卡片：按 provider 类型分级引导，API 型绝不引导"去登录" */
-function QuotaErrorCard({ err, onFix }) {
+function QuotaErrorCard({ err, onFix, providerKey, accountState }) {
   const [expanded, setExpanded] = useState(false);
   const message = String((err && err.error) || t("state.unknownError"));
   const provider = String((err && err.provider) || "");
+  const accountLabel = err && err.account_label ? ` · ${err.account_label}` : "";
   const lower = message.toLowerCase();
   const isApiProvider = provider === "DeepSeek" || provider === "GLM";
   // 网络类错误优先归类：断网/代理不可达时不能误导用户去登录或加 key
@@ -255,10 +264,15 @@ function QuotaErrorCard({ err, onFix }) {
           : "retry";
   const hints = { login: t("err.loginHint"), keys: t("err.keysHint"), retry: t("err.retryHint"), network: t("err.networkHint") };
   return (
-    <div className="qcard qcard-error">
+    <div
+      className="qcard qcard-error"
+      data-provider-key={providerKey || agentProviderKey(provider) || undefined}
+      data-account-id={(err && err.account_id) || "default"}
+    >
       <div className="qcard-head">
         <BrandIcon of={provider} size={16} />
-        <span className="qname">{provider}</span>
+        <span className="qname">{provider}{accountState && accountState.accounts.length > 1 ? "" : accountLabel}</span>
+        <AgentAccountControl provider={providerKey} state={accountState} />
         <span className="plan">{t("dash.unavailable")}</span>
       </div>
       <div className="qerror-hint">{hints[kind]}</div>
@@ -585,6 +599,16 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
   const errors = (data && data.errors) || [];
   const versions = (data && data.versions) || {};
   const allAccounts = (data && data.accounts) || [];
+  const accountStates = useAgentAccountStates(allAccounts, target === "local" || target === "aggregate");
+  const matchesActiveAccount = (item) => {
+    const provider = agentProviderKey(item.provider);
+    if (!provider) return true;
+    const providerAccounts = allAccounts.filter((account) => account.provider === item.provider);
+    const index = providerAccounts.indexOf(item);
+    const id = item.account_id || (index >= 0 ? agentAccountId(item, index) : "default");
+    if (accountStates[provider].defaultRemoved && id === "default") return false;
+    return id === accountStates[provider].activeId;
+  };
   // agent 筛选联动配额：只看 kimi 时配额区只显示 Kimi
   const agentAccounts = filterByAgent(allAccounts, agent);
   const agentErrors = filterByAgent(errors, agent);
@@ -602,9 +626,9 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
       shownErrors = agentErrors;
     }
   }
-  // 设置页"显示"面板的拖拽顺序作用于配额区卡片（v0.7.34）
-  accounts = sortByDisplayOrder(accounts, (a) => a.provider);
-  shownErrors = sortByDisplayOrder(shownErrors, (e) => e.provider || "");
+  // 每家只显示当前账号；账号菜单仍合并完整注册表与 usage 选项。
+  accounts = sortByDisplayOrder(accounts.filter(matchesActiveAccount), (a) => a.provider);
+  shownErrors = sortByDisplayOrder(shownErrors.filter(matchesActiveAccount), (e) => e.provider || "");
 
   // --- 分析数据派生 ---
   const dayList = (analytics && analytics.day_list) || [];
@@ -1084,7 +1108,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
       </div>
 
       <section className="block">
-        <h2>{target === "aggregate" ? t("dash.quotasMerged") : t("dash.quotas")}{agent !== "all" ? ` · ${AGENT_LABELS[agent]}` : ""}</h2>
+        <h2>{t("dash.quotas")}{agent !== "all" ? ` · ${AGENT_LABELS[agent]}` : ""}</h2>
         {usagePayload && usagePayload.error ? (
           <div className="quota-unavailable">
             {t("dash.quotaUnavailable")} — {usagePayload.error}
@@ -1094,17 +1118,21 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
         <div className="quota-grid" style={{ marginTop: (usagePayload && usagePayload.error) ? 10 : 0 }}>
           {accounts.map((account) => (
             <QuotaCard
-              key={account.provider}
+              key={`${account.provider}:${account.account_id || "default"}`}
               account={account}
               versions={versions}
               onUpgrade={setUpgradeProvider}
               upgrading={upgrading}
+              providerKey={agentProviderKey(account.provider)}
+              accountState={accountStates[agentProviderKey(account.provider)]}
             />
           ))}
           {(usagePayload && !usagePayload.error ? shownErrors : []).map((err) => (
             <QuotaErrorCard
-              key={`${err.provider}:${err.error}`}
+              key={`${err.provider}:${err.account_id || "default"}:${err.error}`}
               err={err}
+              providerKey={agentProviderKey(err.provider)}
+              accountState={accountStates[agentProviderKey(err.provider)]}
               onFix={(action) => {
                 if (action === "refresh") {
                   if (onRefresh) onRefresh();
