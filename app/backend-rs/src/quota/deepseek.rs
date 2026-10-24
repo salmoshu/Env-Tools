@@ -155,9 +155,10 @@ pub fn collect(profile: &AccountProfile) -> Result<Value, String> {
     }
     // 累计消费入第四张统计卡
     if let Some(stats) = account.get_mut("stats").and_then(|v| v.as_array_mut()) {
+        // since 起始日跟在 Spent 标签右侧，金额保持纯净
         stats.push(serde_json::json!({
-            "label": "Spent",
-            "value": format!("{symbol}{spent:.2} (since {since})"),
+            "label": format!("Spent (since {since})"),
+            "value": format!("{symbol}{spent:.2}"),
         }));
     }
     super::membership::attach_manual_membership(&mut account, &profile.membership_key());
