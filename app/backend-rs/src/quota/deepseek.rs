@@ -17,9 +17,10 @@ use crate::settings::{env_enabled, env_value, read_json, write_private_json};
 const DEEPSEEK_BALANCE_URL: &str = "https://api.deepseek.com/user/balance";
 
 /// 官方口径归一化：不产生伪用量窗口，仅数字行（充值/赠送/总余额）。
+/// 官方字段全覆盖：币种（CNY→¥ / USD→$）与 is_available 一并透出。
 pub fn normalize_deepseek(data: &Value) -> Value {
     let infos = data.get("balance_infos").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-    let (total, granted, topped_up) = if !infos.is_empty() {
+    let (total, granted, topped_up, currency) = if !infos.is_empty() {
         let balance = infos
             .iter()
             .find(|b| b.get("currency").and_then(|v| v.as_str()).unwrap_or("").to_uppercase() == "CNY")
@@ -28,6 +29,11 @@ pub fn normalize_deepseek(data: &Value) -> Value {
             num(balance.get("total_balance")),
             num(balance.get("granted_balance")),
             num(balance.get("topped_up_balance")),
+            balance
+                .get("currency")
+                .and_then(|v| v.as_str())
+                .unwrap_or("CNY")
+                .to_uppercase(),
         )
     } else {
         // 兼容旧抓包格式（report data 字段）
@@ -35,26 +41,34 @@ pub fn normalize_deepseek(data: &Value) -> Value {
             num(data.get("data").and_then(|d| d.get("balance"))),
             num(data.get("data").and_then(|d| d.get("giveAmount"))),
             num(data.get("data").and_then(|d| d.get("rechargeAmount"))),
+            "CNY".to_string(),
         )
     };
+    let symbol = if currency == "USD" { "$" } else { "¥" };
+    let available = data
+        .get("is_available")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
     let mut extra_lines = vec![
-        format!("Topped-up: ¥{topped_up:.2}   Granted: ¥{granted:.2}"),
-        format!("Total balance: ¥{total:.2}"),
+        format!("Topped-up: {symbol}{topped_up:.2}   Granted: {symbol}{granted:.2}"),
+        format!("Total balance: {symbol}{total:.2}"),
     ];
-    if !data.get("is_available").and_then(|v| v.as_bool()).unwrap_or(true) {
+    if !available {
         extra_lines.push("Account unavailable".to_string());
     }
-    // 官方控制台口径的 2×2 统计卡片（前端优先渲染，extra_lines 作兼容兜底）
+    // 官方控制台口径的统计卡片（前端优先渲染，extra_lines 作兼容兜底）
     let stats = serde_json::json!([
-        {"label": "Topped-up", "value": format!("¥{topped_up:.2}")},
-        {"label": "Granted", "value": format!("¥{granted:.2}")},
-        {"label": "Total", "value": format!("¥{total:.2}")},
+        {"label": "Topped-up", "value": format!("{symbol}{topped_up:.2}")},
+        {"label": "Granted", "value": format!("{symbol}{granted:.2}")},
+        {"label": "Total", "value": format!("{symbol}{total:.2}"), "sub": currency},
     ]);
     serde_json::json!({
         "provider": "DeepSeek",
         "plan": "API",
         "windows": [],
         "stats": stats,
+        // 官方 is_available：当前账户是否有余额可供 API 调用
+        "available": available,
         "extra_lines": extra_lines,
         "fetched_at": fetched_now(),
         // 消费跟踪快照字段：collect 在此基础上补 spent 追踪
@@ -62,6 +76,7 @@ pub fn normalize_deepseek(data: &Value) -> Value {
             "total": total,
             "granted": granted,
             "topped_up": topped_up,
+            "currency": currency,
         },
     })
 }
@@ -128,16 +143,21 @@ pub fn collect(profile: &AccountProfile) -> Result<Value, String> {
         .and_then(|obj| obj.remove("_balance_snapshot"))
         .unwrap_or_else(|| serde_json::json!({}));
     let (spent, since) = track_spend(&profile.id, &snapshot);
+    let symbol = snapshot
+        .get("currency")
+        .and_then(|v| v.as_str())
+        .map(|c| if c == "USD" { "$" } else { "¥" })
+        .unwrap_or("¥");
     if let Some(lines) = account.get_mut("extra_lines").and_then(|v| v.as_array_mut()) {
         lines.push(Value::String(format!(
-            "Spent: ¥{spent:.2} (tracked since {since})"
+            "Spent: {symbol}{spent:.2} (tracked since {since})"
         )));
     }
     // 累计消费入第四张统计卡
     if let Some(stats) = account.get_mut("stats").and_then(|v| v.as_array_mut()) {
         stats.push(serde_json::json!({
             "label": "Spent",
-            "value": format!("¥{spent:.2}"),
+            "value": format!("{symbol}{spent:.2}"),
             "sub": format!("since {since}"),
         }));
     }

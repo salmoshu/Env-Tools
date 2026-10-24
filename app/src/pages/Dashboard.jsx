@@ -172,6 +172,9 @@ function QuotaCard({ account, versions, onUpgrade, upgrading, providerKey, accou
         <span className="plan">{activeChannel === "start"
           ? (startPlanName || "Start Plan")
           : (account.plan || "unknown")}</span>
+        {account.available === false ? (
+          <span className="stale-tag" title={t("dash.dsUnavailableHint")}>{t("dash.dsUnavailable")}</span>
+        ) : null}
         {dualChannel ? (
           <select
             className="plan-switch"
