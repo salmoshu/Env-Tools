@@ -691,16 +691,45 @@ pub fn update_accounts(provider: Provider, payload: &Value) -> Result<Value, Str
     Ok(payload_from_config(provider, &config))
 }
 
+fn ensure_active_profile(provider: Provider, target: &mut Value, source: &Value, id: &str) -> Result<(), String> {
+    if account_from_config(provider, target, id).is_some() {
+        return Ok(());
+    }
+    if id == "default" {
+        let source_has_default = !source
+            .get("default_removed")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if source_has_default {
+            target["default_removed"] = Value::Bool(false);
+            return Ok(());
+        }
+    } else if let Some(entry) = source
+        .get("accounts")
+        .and_then(Value::as_array)
+        .and_then(|entries| entries.iter().find(|entry| entry.get("id").and_then(Value::as_str) == Some(id)))
+        .cloned()
+    {
+        if !target.get("accounts").map(Value::is_array).unwrap_or(false) {
+            target["accounts"] = Value::Array(Vec::new());
+        }
+        target["accounts"].as_array_mut().unwrap().push(entry);
+        return Ok(());
+    }
+    Err(format!("{} account not found: {id}", provider.display_name()))
+}
+
 /// 更新当前机器所有可访问的账号注册表。
 ///
-/// 账号切换只需要同步 active 字段：账号的名称、凭证和 profile 仍由各环境
-/// 自己管理。Windows 原生后端可以通过 `\\wsl.localhost` 访问 WSL 用户目录，
-/// 因此这里同时写入本机注册表和所有已发现的 WSL 用户注册表，并返回每个
+/// 账号切换同步 active 字段；如果目标环境缺少所选账号，则补齐其 ID 与名称，
+/// 账号凭证和 profile 仍由各环境自己管理。Windows 原生后端可以通过
+/// `\\wsl.localhost` 访问 WSL 用户目录，因此这里同时写入本机注册表和所有已发现的 WSL 用户注册表，并返回每个
 /// scope 的结果供前端提示；其它账号管理动作保持单环境语义。
 pub fn update_active_all_scopes(provider: Provider, payload: &Value) -> Result<Value, String> {
     if payload.get("action").and_then(Value::as_str) != Some("set-active") {
         return update_accounts(provider, payload);
     }
+    let id = payload.get("id").and_then(Value::as_str).unwrap_or("");
 
     let config = apply_action(provider, &load_registry(provider), payload)?;
     write_private_json(&registry_path(provider), &config)?;
@@ -713,7 +742,11 @@ pub fn update_active_all_scopes(provider: Provider, payload: &Value) -> Result<V
             .join(".config")
             .join("ai-usage-monitor")
             .join(provider.spec().registry_file);
-        let existing = read_json(&path).unwrap_or_else(|_| serde_json::json!({}));
+        let mut existing = read_json(&path).unwrap_or_else(|_| serde_json::json!({}));
+        if let Err(error) = ensure_active_profile(provider, &mut existing, &config, id) {
+            failed.push(serde_json::json!({ "scope": scope, "error": error }));
+            continue;
+        }
         match apply_action(provider, &existing, payload)
             .and_then(|next| write_private_json(&path, &next).map(|_| next))
         {
