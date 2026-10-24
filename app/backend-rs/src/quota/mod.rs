@@ -25,6 +25,7 @@ mod kimi;
 // settings::membership_settings 也复用归一化逻辑，需对 crate 可见
 pub(crate) mod membership;
 mod util;
+mod zcode_plan;
 
 pub use http::build_agent;
 // 重置触发接口：/api/quota/reset/* 路由调用（失败原因透传前端）
@@ -47,6 +48,8 @@ pub use glm::{normalize_glm, normalize_glm_subscription};
 pub use glm_reset::normalize_reset_status;
 #[cfg(test)]
 pub use kimi::{collect as collect_kimi_profile, normalize_kimi};
+#[cfg(test)]
+pub use zcode_plan::normalize_start_plan;
 
 /// 刷新后的凭证回写失败不阻断本次查询，仅记录。
 fn write_credentials(path: &Path, value: &Value) {

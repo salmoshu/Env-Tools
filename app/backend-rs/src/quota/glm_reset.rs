@@ -173,7 +173,7 @@ pub fn normalize_reset_status(data: &Value, now: DateTime<Local>) -> Value {
     })
 }
 
-fn load_zcode_credentials(profile: &AccountProfile) -> Option<(String, String)> {
+pub(crate) fn load_zcode_credentials(profile: &AccountProfile) -> Option<(String, String)> {
     let path = crate::accounts::glm_reset_credentials_path(profile)?;
     let creds = crate::settings::read_json(&path).ok()?;
     let key = cipher_key();
@@ -198,7 +198,7 @@ fn reset_use_url() -> String {
 }
 
 /// ZCode 重置接口的公共请求头（status / use 一致，逆向自 ZCode 客户端）。
-fn zcode_headers(jwt: &str, maas: &str) -> [(String, String); 4] {
+pub(crate) fn zcode_headers(jwt: &str, maas: &str) -> [(String, String); 4] {
     [
         ("Authorization".to_string(), format!("Bearer {jwt}")),
         ("X-Bigmodel-Authorization".to_string(), maas.to_string()),

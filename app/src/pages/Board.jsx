@@ -257,6 +257,9 @@ export default function Board({ lastPayload }) {
                   );
                 })()
               ) : null}
+              {(account.extra_lines || []).map((line, index) => (
+                <div className="qextra" key={`extra-${index}`}>{line}</div>
+              ))}
               {(account.windows || []).map((w, index) => {
                 const pct = w.used_percent == null ? 0 : Math.max(0, Math.min(100, w.used_percent));
                 const fraction = timeFractionOf(w);

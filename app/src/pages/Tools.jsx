@@ -44,6 +44,16 @@ const COMPONENTS = [
     actions: [{ key: "entire", detect: "entire" }],
   },
   {
+    key: "zcode",
+    name: "ZCode",
+    category: "agents",
+    payloadKey: "ZCode",
+    detect: "zcode",
+    platforms: ["windows"],
+    descKey: "tools.descZcode",
+    actions: [{ key: "zcode", detect: "zcode" }],
+  },
+  {
     key: "nodejs",
     name: "Node.js",
     category: "development",

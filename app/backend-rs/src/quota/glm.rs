@@ -309,5 +309,25 @@ pub fn collect(profile: &AccountProfile) -> Result<Value, String> {
     if let Some(cards) = super::glm_reset::collect_reset_cards(profile) {
         account["reset_cards"] = cards;
     }
+    // Start Plan（ZCode 通道）token 余额桶：并入窗口区展示
+    if let Some(start) = super::zcode_plan::collect_start_plan(profile) {
+        if let Some(windows) = account
+            .get_mut("windows")
+            .and_then(|v| v.as_array_mut())
+        {
+            if let Some(start_windows) = start.get("windows").and_then(|v| v.as_array()) {
+                windows.extend(start_windows.iter().cloned());
+            }
+        }
+        if let Some(lines) = account.get_mut("extra_lines").and_then(|v| v.as_array_mut()) {
+            lines.push(Value::String(format!(
+                "Start plan: {}",
+                start.get("plan_name").and_then(|v| v.as_str()).unwrap_or("-")
+            )));
+            if let Some(start_lines) = start.get("lines").and_then(|v| v.as_array()) {
+                lines.extend(start_lines.iter().cloned());
+            }
+        }
+    }
     Ok(account)
 }

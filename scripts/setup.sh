@@ -53,8 +53,8 @@ case "$(uname -s)" in
         if ((${#tool_args[@]} > 0)); then
             for name in "${components[@]}"; do
                 case "$name" in
-                    kimi|codex|entire)
-                        echo 'ERROR: kimi / codex / entire 是独立组件，不接受额外的工具开关；批量安装请指定多个组件名。'
+                    kimi|codex|entire|zcode)
+                        echo 'ERROR: kimi / codex / entire / zcode 是独立组件，不接受额外的工具开关；批量安装请指定多个组件名。'
                         exit 1
                         ;;
                 esac
@@ -100,8 +100,11 @@ case "$(uname -s)" in
                 kdesk)
                     echo 'kdesk 仅支持 Windows，Linux 下跳过。'
                     ;;
+                zcode)
+                    echo 'zcode 仅支持 Windows（ZCode 桌面版），Linux 下跳过。'
+                    ;;
                 *)
-                    echo "无效组件: $name（可选: all / nodejs / kimi / codex / entire / openssh；兼容入口: ai-tools）"
+                    echo "无效组件: $name（可选: all / nodejs / kimi / codex / entire / zcode / openssh；兼容入口: ai-tools）"
                     exit 1
                     ;;
             esac

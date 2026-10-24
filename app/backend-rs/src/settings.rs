@@ -16,6 +16,7 @@ pub(crate) static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(()
 const VERSION_CHECK_INTERVAL: u64 = 3600;
 const KIMI_LATEST_VERSION_URL: &str = "https://code.kimi.com/kimi-code/latest";
 const NPM_LATEST_VERSION_URL: &str = "https://registry.npmjs.org/{package}/latest";
+const ZCODE_LATEST_PAGE_URL: &str = "https://zcode.z.ai/cn";
 
 pub fn env_value(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.trim().is_empty())
@@ -646,8 +647,74 @@ fn fetch_latest_version(provider: &str) -> Option<String> {
             let value: Value = serde_json::from_str(&text).ok()?;
             semver_in(value.get("version")?.as_str()?)
         }
+        // ZCode 桌面版无独立 latest 端点：官网首页解析 windows-x64 安装包链接，
+        // 取 semver 最大者
+        "ZCode" => {
+            let html = request_text(ZCODE_LATEST_PAGE_URL, true)?;
+            let mut best: Option<(Vec<u64>, String)> = None;
+            let mut rest = html.as_str();
+            while let Some(pos) = rest.find("ZCode-") {
+                rest = &rest[pos + "ZCode-".len()..];
+                let mut parts: Vec<u64> = Vec::new();
+                let mut consumed = 0;
+                let bytes = rest.as_bytes();
+                let mut ok = true;
+                for expected in 0..3 {
+                    let mut num_end = consumed;
+                    while num_end < bytes.len() && bytes[num_end].is_ascii_digit() {
+                        num_end += 1;
+                    }
+                    if num_end == consumed {
+                        ok = false;
+                        break;
+                    }
+                    let part: u64 = rest[consumed..num_end].parse().ok()?;
+                    parts.push(part);
+                    consumed = num_end;
+                    if expected < 2 {
+                        if bytes.get(consumed) == Some(&b'.') {
+                            consumed += 1;
+                        } else {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+                if ok && rest[consumed..].starts_with("-win-x64.exe") {
+                    let version = rest[..consumed].to_string();
+                    if best.as_ref().map(|(b, _)| parts > *b).unwrap_or(true) {
+                        best = Some((parts, version));
+                    }
+                }
+            }
+            best.map(|(_, version)| version)
+        }
         _ => None,
     }
+}
+
+/// ZCode 桌面版已装版本：卸载注册表（HKCU 优先，回退 HKLM 64/32）。
+/// 与 electron 侧 component-detect 同口径（DisplayName = "ZCode x.y.z"）。
+fn detect_zcode_version() -> Option<String> {
+    if !cfg!(windows) {
+        return None;
+    }
+    const PS: &str = concat!(
+        "$v=$null;",
+        "foreach($root in 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall',",
+        "'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall',",
+        "'HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall'){",
+        "if($v){break};",
+        "foreach($k in Get-ChildItem $root -ErrorAction SilentlyContinue){",
+        "$p=Get-ItemProperty $k.PSPath -ErrorAction SilentlyContinue;",
+        "if($p.DisplayName -match '^ZCode\\s+\\d' -and $p.DisplayVersion){$v=$p.DisplayVersion.Trim();break}}}",
+        "Write-Output $v",
+    );
+    let output = std::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-Command", PS])
+        .output()
+        .ok()?;
+    semver_in(&String::from_utf8_lossy(&output.stdout))
 }
 
 /// `cmd --version`：Windows 上 npm 安装的是 .cmd 垫片，必须经 cmd.exe 解析。
@@ -668,7 +735,7 @@ fn detect_cli_version(command: &str) -> Option<String> {
 
 /// GET /api/usage 里的 versions 字段：Kimi/Codex 当前与最新版本。
 pub fn collect_versions() -> Value {
-    let providers = ["Kimi Code", "OpenAI Codex"];
+    let providers = ["Kimi Code", "OpenAI Codex", "ZCode"];
     let cache_path = version_cache_path();
     let mut cache = read_json(&cache_path).unwrap_or_else(|_| serde_json::json!({}));
     // checked_at 落盘为 Unix 秒：跨进程可比（Instant 基准仅在当前进程有意义）
@@ -677,6 +744,9 @@ pub fn collect_versions() -> Value {
     for provider in providers {
         let tool_command = if provider == "Kimi Code" {
             "kimi"
+        } else if provider == "ZCode" {
+            // ZCode 是桌面应用不在 PATH，版本读卸载注册表
+            "zcode"
         } else {
             "codex"
         };
@@ -684,7 +754,12 @@ pub fn collect_versions() -> Value {
             .get(provider)
             .cloned()
             .unwrap_or_else(|| serde_json::json!({}));
-        let current = detect_cli_version(tool_command).or_else(|| {
+        let current = if provider == "ZCode" {
+            detect_zcode_version()
+        } else {
+            detect_cli_version(tool_command)
+        }
+        .or_else(|| {
             entry
                 .get("current")
                 .and_then(|v| v.as_str())

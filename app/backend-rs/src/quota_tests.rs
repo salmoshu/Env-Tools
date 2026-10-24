@@ -3,43 +3,133 @@
 
 use crate::quota::{
     normalize_deepseek, normalize_glm, normalize_glm_subscription, normalize_reset_status,
+    normalize_start_plan,
 };
 use chrono::TimeZone;
 
 #[test]
-fn deepseek_balance_becomes_usage_window() {
+fn deepseek_balance_official_style_lines() {
+    // v0.7.41 官方口径：不再伪造 ¥50/月用量窗口，只给数字行
     let result = normalize_deepseek(&serde_json::json!({
         "is_available": true,
         "balance_infos": [
             {"currency": "CNY", "total_balance": "20.00", "granted_balance": "5.00", "topped_up_balance": "15.00"}
         ],
     }));
-    let window = &result["windows"][0];
-    // 余额 20 → 使用量 30 / 上限 50 = 60%
-    assert!((window["used_percent"].as_f64().unwrap() - 60.0).abs() < 1e-9);
-    assert_eq!(window["usage"], "¥30.00");
+    assert_eq!(result["windows"].as_array().unwrap().len(), 0);
     let extra = result["extra_lines"].as_array().unwrap();
-    assert!(extra.iter().any(|l| l == "Balance: ¥20.00 / ¥50.00"));
-    assert!(extra.iter().any(|l| l == "Usage: ¥30.00 / ¥50.00"));
-    assert!(extra
-        .iter()
-        .any(|l| l == "Granted: ¥5.00   Topped-up: ¥15.00"));
+    assert!(extra.iter().any(|l| l == "Topped-up: ¥15.00   Granted: ¥5.00"));
+    assert!(extra.iter().any(|l| l == "Total balance: ¥20.00"));
+    assert!(!extra.iter().any(|l| l.as_str().unwrap().contains("unavailable")));
+    // 快照字段供 collect 的本地累计消费跟踪使用
+    assert_eq!(result["_balance_snapshot"]["total"], 20.0);
+    assert_eq!(result["_balance_snapshot"]["granted"], 5.0);
+    assert_eq!(result["_balance_snapshot"]["topped_up"], 15.0);
 }
 
 #[test]
-fn deepseek_unavailable_clamps_to_full() {
+fn deepseek_unavailable_flags_line() {
     let result = normalize_deepseek(&serde_json::json!({
         "is_available": false,
         "balance_infos": [
             {"currency": "CNY", "total_balance": "0.00", "granted_balance": "0.00", "topped_up_balance": "0.00"}
         ],
     }));
-    // 余额 0 → 使用量 50 / 50 = 100%
-    assert!((result["windows"][0]["used_percent"].as_f64().unwrap() - 100.0).abs() < 1e-9);
+    assert_eq!(result["windows"].as_array().unwrap().len(), 0);
     let extra = result["extra_lines"].as_array().unwrap();
     assert!(extra
         .iter()
         .any(|l| l.as_str().unwrap().contains("Account unavailable")));
+}
+
+#[test]
+fn zcode_start_plan_current_grants_lines() {
+    // /billing/current 形态：entitlements 授予量 → 数字行（无用量桶，不出窗口）
+    let now = chrono::Local
+        .with_ymd_and_hms(2026, 10, 24, 12, 0, 0)
+        .unwrap();
+    let ends = now.timestamp() + 3 * 86400;
+    let result = normalize_start_plan(
+        &serde_json::json!({
+            "code": 0,
+            "data": {
+                "plans": [
+                    {"name": "ZCode 1024 Dev Day", "status": "active", "priority": 101,
+                     "starts_at": now.timestamp() - 60, "ends_at": ends,
+                     "entitlements": [
+                        {"show_name": "GLM-5.3-Flash", "grant_units": 300_000_000, "period": "one_time"},
+                        {"show_name": "GLM-5.3", "grant_units": 200_000_000, "period": "one_time"},
+                     ]},
+                ],
+            },
+        }),
+        now,
+    )
+    .expect("active start plan should normalize");
+    assert_eq!(result["plan_name"], "ZCode 1024 Dev Day");
+    assert_eq!(result["windows"].as_array().unwrap().len(), 0);
+    let lines = result["lines"].as_array().unwrap();
+    assert!(lines.iter().any(|l| l == "Start GLM-5.3-Flash: 300M granted"));
+    assert!(lines.iter().any(|l| l == "Start GLM-5.3: 200M granted"));
+    assert!(lines.iter().any(|l| l == "Start plan ends in 3d"));
+}
+
+#[test]
+fn zcode_start_plan_balance_buckets_become_windows() {
+    // /billing/balance 形态（日后打通自动点亮）：用量桶 → 进度窗口 + 剩余行
+    let now = chrono::Local
+        .with_ymd_and_hms(2026, 10, 24, 12, 0, 0)
+        .unwrap();
+    let expires = now.timestamp() + 3 * 86400;
+    let result = normalize_start_plan(
+        &serde_json::json!({
+            "code": 0,
+            "data": {
+                "plans": [
+                    {"name": "ZCode 1024 Dev Day", "status": "active",
+                     "starts_at": now.timestamp() - 60, "ends_at": expires},
+                ],
+                "balances": [
+                    {"show_name": "GLM-5.3-Flash", "total_units": 300_000_000,
+                     "used_units": 75_000_000, "remaining_units": 225_000_000,
+                     "expires_at": expires},
+                    {"show_name": "GLM-5.3", "total_units": 200_000_000,
+                     "used_units": 0, "remaining_units": 200_000_000,
+                     "expires_at": expires},
+                ],
+            },
+        }),
+        now,
+    )
+    .expect("balance shape should normalize");
+    let windows = result["windows"].as_array().unwrap();
+    assert_eq!(windows.len(), 2);
+    assert_eq!(windows[0]["label"], "Start · GLM-5.3-Flash");
+    assert!((windows[0]["used_percent"].as_f64().unwrap() - 25.0).abs() < 1e-9);
+    assert_eq!(windows[0]["usage"], "75M/300M");
+    let reset = windows[0]["reset_after_seconds"].as_i64().unwrap();
+    assert!((reset - 3 * 86400).abs() <= 5);
+    let lines = result["lines"].as_array().unwrap();
+    assert!(lines.iter().any(|l| l == "Start GLM-5.3-Flash: 225M / 300M left"));
+    assert!(lines.iter().any(|l| l == "Start GLM-5.3: 200M / 200M left"));
+}
+
+#[test]
+fn zcode_start_plan_empty_plans_skipped() {
+    // plans 空 / 无 active 套餐 → None（GLM 卡静默跳过，不报错）
+    let now = chrono::Local::now();
+    let result = normalize_start_plan(
+        &serde_json::json!({"code": 0, "data": {"plans": [], "balances": []}}),
+        now,
+    );
+    assert!(result.is_none());
+    let inactive = normalize_start_plan(
+        &serde_json::json!({"code": 0, "data": {"plans": [
+            {"name": "old", "status": "expired", "entitlements": []}
+        ]}}),
+        now,
+    );
+    assert!(inactive.is_none());
 }
 
 #[test]

@@ -1521,12 +1521,26 @@ ipcMain.handle("component-detect", async (_event, environment, distro) => {
       exec(command, { timeout: 15000, windowsHide: true },
         (err, stdout) => resolve(!err && String(stdout || "").trim().length > 0));
     });
-    const [kimi, codex, entire, node, openssh, kdesk] = await Promise.all([
+    // ZCode 桌面版不在 PATH：从卸载注册表读已装版本（HKCU 优先，回退 HKLM）
+    const winZcodeVersion = () => new Promise((resolve) => {
+      exec(
+        'powershell.exe -NoProfile -Command "' +
+        "$v=$null;foreach($root in 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall'," +
+        "'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall'," +
+        "'HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall'){" +
+        "if($v){break};foreach($k in Get-ChildItem $root -ErrorAction SilentlyContinue){" +
+        "$p=Get-ItemProperty $k.PSPath -ErrorAction SilentlyContinue;" +
+        "if($p.DisplayName -match '^ZCode\\s+\\d' -and $p.DisplayVersion){$v=$p.DisplayVersion.Trim();break}}}Write-Output $v\"",
+        { timeout: 20000, windowsHide: true },
+        (err, stdout) => resolve(err ? null : semver(stdout)));
+    });
+    const [kimi, codex, entire, node, openssh, kdesk, zcode] = await Promise.all([
       winProbe("kimi"), winProbe("codex"), winProbe("entire"), winProbe("node"),
       winHas("where sshd"),
       winHas("schtasks /query /tn KdeskAutoDeploy"),
+      winZcodeVersion(),
     ]);
-    return { ok: true, components: { kimi, codex, entire, node, openssh, kdesk } };
+    return { ok: true, components: { kimi, codex, entire, node, openssh, kdesk, zcode } };
   }
   const target = (typeof distro === "string" && distro.trim())
     ? distro.trim()
@@ -1540,7 +1554,7 @@ ipcMain.handle("component-detect", async (_event, environment, distro) => {
   const [kimi, codex, entire, node, openssh] = await Promise.all([
     probe("kimi"), probe("codex"), probe("entire"), probe("node"), hasSshd,
   ]);
-  return { ok: true, components: { kimi, codex, entire, node, openssh, kdesk: false } };
+  return { ok: true, components: { kimi, codex, entire, node, openssh, kdesk: false, zcode: null } };
 });
 
 // WSL 发行版清单（Tools 页 WSL Tab）：名称 + 系统版本（/etc/os-release 的

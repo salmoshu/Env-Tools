@@ -96,12 +96,13 @@ export function AnalyticsIcon() {
   );
 }
 
-// 悬浮看板：大窗口右下角嵌一个实心小浮窗（画中画），与最大化的空框拉开差距
+// 悬浮看板：主窗口线框 + 右下角骑跨边框的实心小窗（画中画浮窗），
+// 小窗压在边框角上而不是缩在大框内，读作「浮在上层的迷你窗口」
 export function BoardIcon() {
   return (
     <LineIcon>
       <rect x="3" y="4" width="18" height="16" rx="2" />
-      <rect x="12.5" y="12.5" width="6.5" height="4.5" rx="1" fill="currentColor" stroke="none" />
+      <rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.6" fill="currentColor" stroke="none" />
     </LineIcon>
   );
 }

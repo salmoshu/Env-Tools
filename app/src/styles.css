@@ -480,11 +480,12 @@ td b { font-weight: 600; }
 .provider:last-child { margin-bottom: 0; }
 .provider-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
 .provider-name { font-weight: 650; font-size: 13.5px; letter-spacing: 0.01em; white-space: nowrap; }
+/* v0.7.41 账号下拉框收窄至原宽 3/4：150/190/245 → 112/142/184 */
 .codex-account-select {
-  min-width: 150px; max-width: 245px; height: 25px; min-height: 25px;
+  min-width: 112px; max-width: 184px; height: 25px; min-height: 25px;
   border: 1px solid var(--border); border-radius: var(--r-xs);
   outline: none; background: var(--inset); color: var(--dim);
-  width: 190px; padding: 0 6px; font: 11px var(--font-ui);
+  width: 142px; padding: 0 6px; font: 11px var(--font-ui);
 }
 .codex-account-select:hover { border-color: var(--faint); color: var(--text); }
 .codex-account-select:focus { border-color: var(--accent-border); box-shadow: 0 0 0 3px var(--accent-softer); }
@@ -533,6 +534,11 @@ td b { font-weight: 600; }
 .membership em { margin-left: auto; color: var(--warn); font-style: normal; white-space: nowrap; }
 .membership-end.ended em { color: var(--red); }
 .membership.error { color: var(--red); }
+.qextra {
+  font-size: 11px; color: var(--faint); font-family: var(--font-num);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; margin: 0 0 4px;
+}
 .quota { margin-bottom: 10px; }
 .quota:last-child { margin-bottom: 2px; }
 .quota-row {
@@ -695,7 +701,7 @@ td b { font-weight: 600; }
   .agent-account-add .agent-account-input { width: auto; }
   .agent-api-key-control { flex-wrap: wrap; }
   .agent-api-key-control .key-input-inline { flex: 1 1 150px; width: auto; min-width: 0; }
-  .codex-account-select { max-width: 180px; }
+  .codex-account-select { max-width: 135px; }
   .seg { max-width: 100%; flex-wrap: wrap; }
   .seg button { flex: 1; }
 }
