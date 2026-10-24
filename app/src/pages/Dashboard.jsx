@@ -128,16 +128,24 @@ function QuotaCard({ account, versions, onUpgrade, upgrading, providerKey, accou
   const newer = info.current && info.latest && isNewerVersion(info.latest, info.current);
   const resetCredits = account.rate_limit_reset_credits;
   // GLM 双通道：coding plan（bigmodel）窗口 + Start Plan（ZCode）窗口，
-  // "Start ·" 前缀区分；两路并存时显示通道切换下拉
+  // "Start ·" 前缀区分；两路并存时显示通道切换下拉。边界：
+  // - 仅 StartPlan 有数据（如 API key 配额不可用）→ 单通道直接显示它
+  // - StartPlan 无额度/数据 → 不出现下拉，回落 BigModel（空额度即空显示）
   const allWindows = account.windows || [];
   const isGlm = account.provider === "GLM";
   const bigmodelWindows = allWindows.filter((w) => !String(w.label || "").startsWith("Start"));
   const startWindows = allWindows.filter((w) => String(w.label || "").startsWith("Start"));
   const dualChannel = isGlm && bigmodelWindows.length > 0 && startWindows.length > 0;
+  const singleStart = isGlm && bigmodelWindows.length === 0 && startWindows.length > 0;
   const [channel, setChannel] = useState(() => {
     try { return localStorage.getItem("glm-quota-channel") || "bigmodel"; } catch { return "bigmodel"; }
   });
-  const shownWindows = dualChannel && channel === "start" ? startWindows : bigmodelWindows;
+  const activeChannel = dualChannel
+    ? channel
+    : singleStart ? "start" : "bigmodel";
+  const shownWindows = activeChannel === "start" ? startWindows : bigmodelWindows;
+  const startPlanName = (account.extra_lines || [])
+    .find((l) => String(l).startsWith("Start plan:"))?.slice("Start plan: ".length);
   const stats = Array.isArray(account.stats) && account.stats.length > 0 ? account.stats : null;
   return (
     <div className="qcard" data-provider-key={providerKey || undefined}>
@@ -161,8 +169,8 @@ function QuotaCard({ account, versions, onUpgrade, upgrading, providerKey, accou
         ) : info.current ? (
           <span className="qver">v{info.current}</span>
         ) : null}
-        <span className="plan">{(dualChannel && channel === "start")
-          ? (account.extra_lines || []).find((l) => String(l).startsWith("Start plan:"))?.slice("Start plan: ".length) || "Start Plan"
+        <span className="plan">{activeChannel === "start"
+          ? (startPlanName || "Start Plan")
           : (account.plan || "unknown")}</span>
         {dualChannel ? (
           <select
@@ -197,11 +205,9 @@ function QuotaCard({ account, versions, onUpgrade, upgrading, providerKey, accou
             </div>
           ))}
         </div>
-      ) : (account.extra_lines || [])
-        .filter((line) => !(dualChannel && channel === "start" && String(line).startsWith("Start plan:")))
-        .map((line, index) => (
-          <div className="qextra" key={`extra-${index}`}>{line}</div>
-        ))}
+      ) : (!isGlm ? (account.extra_lines || []).map((line, index) => (
+        <div className="qextra" key={`extra-${index}`}>{line}</div>
+      )) : null)}
       {shownWindows.map((w, index) => {
         const pct = w.used_percent == null ? 0 : Math.max(0, Math.min(100, w.used_percent));
         const fraction = timeFractionOf(w);
@@ -252,6 +258,19 @@ function QuotaCard({ account, versions, onUpgrade, upgrading, providerKey, accou
         );
       })()}
       {(() => {
+        // StartPlan 通道：重置卡属 BigModel 通道，此处只显示套餐到期
+        if (isGlm && activeChannel === "start") {
+          const endsIn = Math.max(
+            0,
+            ...startWindows.map((w) => Number(w.reset_after_seconds) || 0),
+          );
+          if (!endsIn) return null;
+          return (
+            <div className="limit-resets">
+              {t("dash.startPlanEnds").replace("{d}", fmtSpan(endsIn))}
+            </div>
+          );
+        }
         const cards = account.reset_cards;
         if (!cards || typeof cards !== "object") return null;
         const five = Array.isArray(cards.five_hour) ? cards.five_hour : [];
