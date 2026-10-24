@@ -537,12 +537,12 @@ td b { font-weight: 600; }
 /* DeepSeek 官方口径 2×2 统计卡片（充值/赠送/总余额/累计消费） */
 .qstats {
   display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px; margin: 0 0 10px;
+  gap: 6px; margin: 0 0 10px; grid-auto-rows: 1fr;
 }
 .qstat {
   display: flex; flex-direction: column; gap: 2px;
   padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--r-sm);
-  background: var(--inset); min-width: 0;
+  background: var(--inset); min-width: 0; align-items: flex-start; justify-content: center;
 }
 .qstat-label { font-size: 10.5px; color: var(--faint); }
 .qstat-value {
@@ -550,6 +550,12 @@ td b { font-weight: 600; }
   font-variant-numeric: tabular-nums; white-space: nowrap;
 }
 .qstat-sub { font-size: 10px; color: var(--faint); }
+
+/* 窗口条下方的附注行（如 Kimi Code share） */
+.qwin-sub {
+  margin-top: 3px; font-size: 10.5px; color: var(--faint);
+  font-family: var(--font-num); font-variant-numeric: tabular-nums;
+}
 /* GLM 双通道（BigModel / StartPlan）切换下拉，置于 plan 标签右侧 */
 .plan-switch {
   height: 22px; border: 1px solid var(--border); border-radius: var(--r-xs);
@@ -1208,15 +1214,23 @@ td b { font-weight: 600; }
   padding: 0 7px; line-height: 14px; white-space: nowrap; cursor: help;
 }
 /* 手动刷新后 Codex 沿用旧数据的一次性提醒（4s 自动消失，仅手动刷新触发） */
-.quota-toast {
-  position: fixed; top: 52px; right: 16px; z-index: 60;
-  font-size: 12.5px; color: var(--text);
-  background: var(--elevated); border: 1px solid var(--border);
-  border-radius: var(--r-md); padding: 9px 14px; box-shadow: var(--shadow-pop);
-  pointer-events: none; animation: quota-toast-in 0.18s var(--ease);
+/* 全局框提醒（v0.7.42）：顶部正中向下滑出，多条堆叠，4s 自动消失 */
+.app-toasts {
+  position: fixed; top: 46px; left: 0; right: 0; z-index: 300;
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  pointer-events: none;
 }
-@keyframes quota-toast-in {
-  from { opacity: 0; transform: translateY(-6px); }
+.app-toast {
+  font-size: 12.5px; color: var(--text); text-align: center;
+  background: var(--elevated); border: 1px solid var(--border);
+  border-radius: var(--r-md); padding: 9px 16px; box-shadow: var(--shadow-pop);
+  max-width: min(560px, calc(100vw - 48px));
+  animation: app-toast-down 0.26s var(--ease);
+}
+.app-toast.ok { border-color: rgba(52, 199, 89, 0.45); }
+.app-toast.error { border-color: rgba(255, 69, 58, 0.5); }
+@keyframes app-toast-down {
+  from { opacity: 0; transform: translateY(-16px); }
   to { opacity: 1; transform: translateY(0); }
 }
 .spin-dot {

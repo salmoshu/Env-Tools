@@ -939,6 +939,40 @@ function syncWindowsHostActiveAccount(provider, id) {
     return { ok: false, scope: "Windows host", error: `cannot write account registry: ${error.message}` };
   }
 }
+// codex 凭证随账号切换同步到 Windows 宿主（WSL 后端模式的对称路径）：
+// 注册表 active 只改"选了谁"，default/命名账号的 auth.json 两侧独立，
+// 不同步则宿主侧仍是旧登录。经 wsl.exe cat 读取，避免枚举 WSL 用户目录。
+function syncCodexCredentialsFromWsl(id) {
+  const ACCOUNT_ID = /^[A-Za-z0-9_-]{1,64}$/;
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) {
+    return Promise.resolve({ ok: false, scope: "Windows host credentials", error: `invalid account id: ${id}` });
+  }
+  if (!WSL_DISTRO) {
+    return Promise.resolve({ ok: false, scope: "Windows host credentials", error: "no WSL distro configured" });
+  }
+  const rel = id === "default"
+    ? ".codex/auth.json"
+    : `.config/ai-usage-monitor/codex-accounts/${id}/auth.json`;
+  return new Promise((resolve) => {
+    exec(`wsl.exe -d ${WSL_DISTRO} --exec bash -c "cat \"$HOME/${rel}\""`,
+      { timeout: 15000, windowsHide: true, maxBuffer: 1024 * 1024 },
+      (err, stdout) => {
+        if (err || !stdout || stdout.length < 2) {
+          resolve({ ok: false, scope: "Windows host credentials", error: `cannot read WSL ${rel}` });
+          return;
+        }
+        const dst = path.join(os.homedir(), rel);
+        try {
+          fs.mkdirSync(path.dirname(dst), { recursive: true });
+          fs.writeFileSync(dst, stdout, "utf8");
+          resolve({ ok: true, scope: "Windows host credentials" });
+        } catch (error) {
+          resolve({ ok: false, scope: "Windows host credentials", error: String(error.message || error) });
+        }
+      });
+  });
+}
+
 async function refreshAgentAccounts(provider) {
   const result = await backendJson(agentAccountsPath(provider));
   if (result && result.ok) broadcastAgentAccounts(provider, result);
@@ -955,11 +989,17 @@ ipcMain.handle("update-agent-accounts", async (_event, provider, values) => {
   const result = await backendJson(pathname, values || {});
   if (result && result.ok) {
     if (WSL_BACKEND && (values || {}).action === "set-active" && result.account_sync) {
-      const host = syncWindowsHostActiveAccount(provider, values.id || "default");
+      const host = await syncWindowsHostActiveAccount(provider, values.id || "default");
       const sync = result.account_sync;
-      sync.requested = Number(sync.requested || 0) + 1;
-      if (host.ok) sync.succeeded = [...(sync.succeeded || []), host.scope];
-      else sync.failed = [...(sync.failed || []), { scope: host.scope, error: host.error }];
+      const extraScopes = [host];
+      if (host.ok && provider === "codex") {
+        extraScopes.push(await syncCodexCredentialsFromWsl(values.id || "default"));
+      }
+      sync.requested = Number(sync.requested || 0) + extraScopes.length;
+      for (const scope of extraScopes) {
+        if (scope.ok) sync.succeeded = [...(sync.succeeded || []), scope.scope];
+        else sync.failed = [...(sync.failed || []), { scope: scope.scope, error: scope.error }];
+      }
       result.account_sync = sync;
     }
     broadcastAgentAccounts(provider, result);

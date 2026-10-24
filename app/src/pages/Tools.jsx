@@ -10,6 +10,7 @@ import { useInstallState, setInstallRunning, setInstallResult, clearInstallLog }
 import { t, useLang } from "../i18n.js";
 import { isNewerVersion, activateOnKeys } from "../utils.js";
 import BrandIcon from "../components/BrandIcon.jsx";
+import { showToast } from "../toast.jsx";
 
 const CATEGORIES = ["agents", "development", "system"];
 
@@ -188,12 +189,19 @@ export default function Tools({ lastPayload }) {
     setSshNote(t("tools.connectingNote").replace("{host}", host));
     try {
       const result = await window.api.sshConnect(host);
-      setSshNote(result && result.ok
-        ? t("tools.connectedNote").replace("{host}", host)
-        : t("tools.failedNote").replace("{err}", (result && result.error) || t("state.unknownError")));
+      if (result && result.ok) {
+        showToast(t("tools.connectedNote").replace("{host}", host), "ok");
+        setSshNote("");
+      } else {
+        const message = t("tools.failedNote").replace("{err}", (result && result.error) || t("state.unknownError"));
+        setSshNote(message);
+        showToast(message, "error", 6000);
+      }
       await window.api.listTargets();
     } catch (err) {
-      setSshNote(t("tools.failedNote").replace("{err}", String(err.message || err)));
+      const message = t("tools.failedNote").replace("{err}", String(err.message || err));
+      setSshNote(message);
+      showToast(message, "error", 6000);
     } finally {
       setSshBusy("");
     }

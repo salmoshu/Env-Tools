@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
@@ -725,6 +725,49 @@ fn ensure_active_profile(provider: Provider, target: &mut Value, source: &Value,
 /// 账号凭证和 profile 仍由各环境自己管理。Windows 原生后端可以通过
 /// `\\wsl.localhost` 访问 WSL 用户目录，因此这里同时写入本机注册表和所有已发现的 WSL 用户注册表，并返回每个
 /// scope 的结果供前端提示；其它账号管理动作保持单环境语义。
+/// codex 凭证随账号切换同步到 WSL（v0.7.42）：default → ~/.codex/auth.json，
+/// 命名账号 → ~/.config/ai-usage-monitor/codex-accounts/<id>/auth.json。
+/// registry 的 active 镜像只改"选了谁"，两侧 default 登录/命名账号凭证
+/// 各自独立，切换后 WSL 仍用旧登录的根因即在此；这里把当前账号的
+/// auth.json 一并镜像过去。仅 Windows 侧发起（wsl_homes 非空才会被调用）。
+fn sync_codex_credentials_to_wsl(home: &Path, id: &str) -> Result<(), String> {
+    let local = crate::settings::local_home();
+    let (src, dst) = if id == "default" {
+        (
+            local.join(".codex").join("auth.json"),
+            home.join(".codex").join("auth.json"),
+        )
+    } else {
+        (
+            local
+                .join(".config")
+                .join("ai-usage-monitor")
+                .join("codex-accounts")
+                .join(id)
+                .join("auth.json"),
+            home
+                .join(".config")
+                .join("ai-usage-monitor")
+                .join("codex-accounts")
+                .join(id)
+                .join("auth.json"),
+        )
+    };
+    let data = std::fs::read(&src)
+        .map_err(|err| format!("cannot read {}: {err}", src.display()))?;
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|err| format!("cannot create {}: {err}", parent.display()))?;
+    }
+    // 原子替换：同目录临时文件 + rename，避免 9P 半写文件被 codex 读到
+    let tmp = dst.with_extension("json.tmp-sync");
+    std::fs::write(&tmp, &data)
+        .map_err(|err| format!("cannot write {}: {err}", tmp.display()))?;
+    std::fs::rename(&tmp, &dst)
+        .map_err(|err| format!("cannot replace {}: {err}", dst.display()))?;
+    Ok(())
+}
+
 pub fn update_active_all_scopes(provider: Provider, payload: &Value) -> Result<Value, String> {
     if payload.get("action").and_then(Value::as_str) != Some("set-active") {
         return update_accounts(provider, payload);
@@ -750,7 +793,19 @@ pub fn update_active_all_scopes(provider: Provider, payload: &Value) -> Result<V
         match apply_action(provider, &existing, payload)
             .and_then(|next| write_private_json(&path, &next).map(|_| next))
         {
-            Ok(_) => succeeded.push(scope),
+            Ok(_) => {
+                // codex：凭证随切换镜像，否则 WSL 侧 default/命名账号仍是旧登录
+                if provider == Provider::Codex {
+                    if let Err(error) = sync_codex_credentials_to_wsl(&home, id) {
+                        failed.push(serde_json::json!({
+                            "scope": format!("{scope} credentials"),
+                            "error": error,
+                        }));
+                        continue;
+                    }
+                }
+                succeeded.push(scope);
+            }
             Err(error) => failed.push(serde_json::json!({ "scope": scope, "error": error })),
         }
     }

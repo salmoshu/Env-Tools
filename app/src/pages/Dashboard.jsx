@@ -233,6 +233,7 @@ function QuotaCard({ account, versions, onUpgrade, upgrading, providerKey, accou
                 ? <div className="marker" style={{ left: `${(fraction * 100).toFixed(1)}%` }} />
                 : null}
             </div>
+            {w.sub ? <div className="qwin-sub">{w.sub}</div> : null}
           </div>
         );
       })}

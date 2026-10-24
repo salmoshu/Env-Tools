@@ -9,6 +9,7 @@ import {
   readThemePreference, writeThemePreference, applyTheme,
 } from "../utils.js";
 import { t, useLang, setLang, getLang } from "../i18n.js";
+import { showToast } from "../toast.jsx";
 import BrandIcon from "../components/BrandIcon.jsx";
 import {
   AGENT_ACCOUNTS, agentMembershipKey, useAgentAccounts,
@@ -91,10 +92,16 @@ function Seg({ value, options, onChange, disabled = false }) {
   );
 }
 
-// 设置行内反馈文字（保存中/已保存/失败）
+// 设置行反馈：结果性消息（ok/error）改为顶部向下滑出的框提醒；
+// 中性的过程状态（保存中）保留行内文字，避免每次保存弹两条
 function RowNote({ note }) {
   const text = note.key ? `${t(note.key)}${note.detail ? `: ${note.detail}` : ""}` : note.text;
-  if (!text) return null;
+  useEffect(() => {
+    if (!text) return;
+    if (/ok$/.test(note.cls)) showToast(text, "ok");
+    else if (/error$/.test(note.cls)) showToast(text, "error", 6000);
+  }, [text, note.cls]);
+  if (!text || /(ok|error)$/.test(note.cls)) return null;
   return <div className={note.cls} role="status" aria-live="polite">{text}</div>;
 }
 

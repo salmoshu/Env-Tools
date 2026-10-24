@@ -60,7 +60,7 @@ pub fn normalize_deepseek(data: &Value) -> Value {
     let stats = serde_json::json!([
         {"label": "Topped-up", "value": format!("{symbol}{topped_up:.2}")},
         {"label": "Granted", "value": format!("{symbol}{granted:.2}")},
-        {"label": "Total", "value": format!("{symbol}{total:.2}"), "sub": currency},
+        {"label": "Total", "value": format!("{symbol}{total:.2}")},
     ]);
     serde_json::json!({
         "provider": "DeepSeek",
@@ -157,8 +157,7 @@ pub fn collect(profile: &AccountProfile) -> Result<Value, String> {
     if let Some(stats) = account.get_mut("stats").and_then(|v| v.as_array_mut()) {
         stats.push(serde_json::json!({
             "label": "Spent",
-            "value": format!("{symbol}{spent:.2}"),
-            "sub": format!("since {since}"),
+            "value": format!("{symbol}{spent:.2} (since {since})"),
         }));
     }
     super::membership::attach_manual_membership(&mut account, &profile.membership_key());

@@ -12,6 +12,7 @@ import Board from "./pages/Board.jsx";
 import Tools from "./pages/Tools.jsx";
 import SettingsPage from "./pages/SettingsPage.jsx";
 import { t, useLang } from "./i18n.js";
+import { showToast, ToastStack } from "./toast.jsx";
 import {
   activateOnKeys, applyTheme, readThemePreference, resolvedTheme, watchExternalTheme,
 } from "./utils.js";
@@ -31,9 +32,7 @@ export default function App() {
   const [pinned, setPinned] = useState(false);
   const [maximized, setMaximized] = useState(false);
   const [theme, setTheme] = useState(readThemePreference());
-  // 手动刷新后 Codex 处于"沿用旧数据"窗口时的一次性提醒（4s 自动消失；
-  // 仅手动刷新触发，60s 自动轮失败不弹——角标已常驻说明状态）
-  const [quotaNote, setQuotaNote] = useState("");
+  // 手动刷新后 Codex 处于"沿用旧数据"窗口时的一次性提醒（顶部框，自动消失）
   const wasRefreshing = useRef(false);
   // 刷新看门狗：usage-update 广播未到达（后端超时/链路异常）时按钮会被
   // disabled 卡死——65s 强制复位（后端取数超时 60s，广播应在此之前到达），
@@ -63,16 +62,10 @@ export default function App() {
     if (wasRefreshing.current && !refreshing && lastPayload) {
       const codexStale = (((lastPayload.data || {}).accounts) || [])
         .some((a) => a.provider === "OpenAI Codex" && a.stale);
-      if (codexStale) setQuotaNote(t("dash.quotaStaleToast"));
+      if (codexStale) showToast(t("dash.quotaStaleToast"), "info");
     }
     wasRefreshing.current = refreshing;
   }, [refreshing, lastPayload]);
-
-  useEffect(() => {
-    if (!quotaNote) return;
-    const timer = setTimeout(() => setQuotaNote(""), 4000);
-    return () => clearTimeout(timer);
-  }, [quotaNote]);
 
   useEffect(() => {
     const onAccountSync = (event) => {
@@ -80,11 +73,13 @@ export default function App() {
       if (!sync) return;
       const failed = Array.isArray(sync.failed) ? sync.failed : [];
       const succeeded = Array.isArray(sync.succeeded) ? sync.succeeded : [];
-      setQuotaNote(failed.length
-        ? t("settings.accountSyncPartial")
+      if (failed.length) {
+        showToast(t("settings.accountSyncPartial")
           .replace("{n}", String(failed.length))
-          .replace("{scopes}", failed.map((item) => item.scope).join(", "))
-        : t("settings.accountSyncSuccess").replace("{n}", String(succeeded.length)));
+          .replace("{scopes}", failed.map((item) => item.scope).join(", ")), "error", 6000);
+      } else {
+        showToast(t("settings.accountSyncSuccess").replace("{n}", String(succeeded.length)), "ok");
+      }
     };
     window.addEventListener("agent-account-sync", onAccountSync);
     return () => window.removeEventListener("agent-account-sync", onAccountSync);
@@ -135,7 +130,7 @@ export default function App() {
 
   return (
     <div className={isBoard ? "board-frame" : "app-frame"}>
-      {quotaNote ? <div className="quota-toast">{quotaNote}</div> : null}
+      <ToastStack />
       <Titlebar title={isBoard ? "AI Usage Monitor" : "Env-Tools"} version={version} envBadge={envBadge}>
         {isBoard ? (
           <button type="button" className="btn" title={t("tip.expand")} onClick={() => window.api.openFullDashboard()}>
