@@ -23,8 +23,10 @@ export function agentMembershipKey(provider, account) {
   return account.membership_key || (account.id === "default" ? prefix : `${prefix}:${account.id}`);
 }
 
-function announceAccountSync(provider, result) {
-  const sync = result && result.account_sync;
+function announceAccountSync(provider, result, fallback = false) {
+  const sync = (result && result.account_sync) || (fallback
+    ? { requested: 1, succeeded: ["local"], failed: [] }
+    : null);
   if (!sync || typeof window === "undefined") return;
   window.dispatchEvent(new CustomEvent("agent-account-sync", {
     detail: { provider, sync },
@@ -133,7 +135,9 @@ export function useAgentAccounts(provider, quotaAccounts = [], sync = true) {
     if (!sync) {
       setError("");
       commitActive(id);
-      return { ok: true };
+      const result = { ok: true, account_sync: { requested: 1, succeeded: ["local"], failed: [] } };
+      announceAccountSync(provider, result);
+      return result;
     }
     if (switchingRef.current) return false;
     const previous = activeRef.current;
@@ -144,7 +148,7 @@ export function useAgentAccounts(provider, quotaAccounts = [], sync = true) {
     try {
       const result = await window.api.updateAgentAccounts(provider, { action: "set-active", id });
       if (!result || !result.ok) throw new Error((result && result.error) || t("state.unknownError"));
-      announceAccountSync(provider, result);
+      announceAccountSync(provider, result, true);
       applyPayload(result);
       return result;
     } catch (err) {
