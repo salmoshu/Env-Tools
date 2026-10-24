@@ -534,6 +534,30 @@ td b { font-weight: 600; }
 .membership em { margin-left: auto; color: var(--warn); font-style: normal; white-space: nowrap; }
 .membership-end.ended em { color: var(--red); }
 .membership.error { color: var(--red); }
+/* DeepSeek 官方口径 2×2 统计卡片（充值/赠送/总余额/累计消费） */
+.qstats {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px; margin: 0 0 10px;
+}
+.qstat {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--inset); min-width: 0;
+}
+.qstat-label { font-size: 10.5px; color: var(--faint); }
+.qstat-value {
+  font: 600 15px var(--font-num); color: var(--text);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.qstat-sub { font-size: 10px; color: var(--faint); }
+/* GLM 双通道（BigModel / StartPlan）切换下拉，置于 plan 标签右侧 */
+.plan-switch {
+  height: 22px; border: 1px solid var(--border); border-radius: var(--r-xs);
+  background: var(--inset); color: var(--dim);
+  font: 11px var(--font-ui); padding: 0 4px; outline: none; flex: none;
+}
+.plan-switch:hover { border-color: var(--faint); color: var(--text); }
+.plan-switch:focus { border-color: var(--accent-border); }
 .qextra {
   font-size: 11px; color: var(--faint); font-family: var(--font-num);
   font-variant-numeric: tabular-nums; white-space: nowrap;

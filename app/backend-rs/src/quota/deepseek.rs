@@ -44,10 +44,17 @@ pub fn normalize_deepseek(data: &Value) -> Value {
     if !data.get("is_available").and_then(|v| v.as_bool()).unwrap_or(true) {
         extra_lines.push("Account unavailable".to_string());
     }
+    // 官方控制台口径的 2×2 统计卡片（前端优先渲染，extra_lines 作兼容兜底）
+    let stats = serde_json::json!([
+        {"label": "Topped-up", "value": format!("¥{topped_up:.2}")},
+        {"label": "Granted", "value": format!("¥{granted:.2}")},
+        {"label": "Total", "value": format!("¥{total:.2}")},
+    ]);
     serde_json::json!({
         "provider": "DeepSeek",
         "plan": "API",
         "windows": [],
+        "stats": stats,
         "extra_lines": extra_lines,
         "fetched_at": fetched_now(),
         // 消费跟踪快照字段：collect 在此基础上补 spent 追踪
@@ -125,6 +132,14 @@ pub fn collect(profile: &AccountProfile) -> Result<Value, String> {
         lines.push(Value::String(format!(
             "Spent: ¥{spent:.2} (tracked since {since})"
         )));
+    }
+    // 累计消费入第四张统计卡
+    if let Some(stats) = account.get_mut("stats").and_then(|v| v.as_array_mut()) {
+        stats.push(serde_json::json!({
+            "label": "Spent",
+            "value": format!("¥{spent:.2}"),
+            "sub": format!("since {since}"),
+        }));
     }
     super::membership::attach_manual_membership(&mut account, &profile.membership_key());
     Ok(account)

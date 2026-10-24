@@ -257,6 +257,17 @@ export default function Board({ lastPayload }) {
                   );
                 })()
               ) : null}
+              {(account.stats || []).length > 0 ? (
+                <div className="qstats">
+                  {account.stats.map((s, index) => (
+                    <div className="qstat" key={`stat-${index}`}>
+                      <span className="qstat-label">{s.label}</span>
+                      <span className="qstat-value">{s.value}</span>
+                      {s.sub ? <span className="qstat-sub">{s.sub}</span> : null}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
               {(account.extra_lines || []).map((line, index) => (
                 <div className="qextra" key={`extra-${index}`}>{line}</div>
               ))}
@@ -264,7 +275,7 @@ export default function Board({ lastPayload }) {
                 const pct = w.used_percent == null ? 0 : Math.max(0, Math.min(100, w.used_percent));
                 const fraction = timeFractionOf(w);
                 const resetText = fmtReset(w.reset_after_seconds);
-                const showUsage = w.usage && account.provider !== "GLM";
+                const showUsage = w.usage && (account.provider !== "GLM" || String(w.label || "").startsWith("Start"));
                 return (
                   <div className="quota" key={index}>
                     <div className="quota-row">

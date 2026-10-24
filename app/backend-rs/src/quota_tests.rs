@@ -106,12 +106,12 @@ fn zcode_start_plan_balance_buckets_become_windows() {
     assert_eq!(windows.len(), 2);
     assert_eq!(windows[0]["label"], "Start · GLM-5.3-Flash");
     assert!((windows[0]["used_percent"].as_f64().unwrap() - 25.0).abs() < 1e-9);
-    assert_eq!(windows[0]["usage"], "75M/300M");
+    assert_eq!(windows[0]["usage"], "75.0M/300M");
     let reset = windows[0]["reset_after_seconds"].as_i64().unwrap();
     assert!((reset - 3 * 86400).abs() <= 5);
     let lines = result["lines"].as_array().unwrap();
-    assert!(lines.iter().any(|l| l == "Start GLM-5.3-Flash: 225M / 300M left"));
-    assert!(lines.iter().any(|l| l == "Start GLM-5.3: 200M / 200M left"));
+    assert!(lines.iter().any(|l| l == "Start GLM-5.3-Flash: 225.0M / 300M left"));
+    assert!(lines.iter().any(|l| l == "Start GLM-5.3: 200.0M / 200M left"));
 }
 
 #[test]

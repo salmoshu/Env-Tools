@@ -127,6 +127,18 @@ function QuotaCard({ account, versions, onUpgrade, upgrading, providerKey, accou
   const info = versions[account.provider] || {};
   const newer = info.current && info.latest && isNewerVersion(info.latest, info.current);
   const resetCredits = account.rate_limit_reset_credits;
+  // GLM 双通道：coding plan（bigmodel）窗口 + Start Plan（ZCode）窗口，
+  // "Start ·" 前缀区分；两路并存时显示通道切换下拉
+  const allWindows = account.windows || [];
+  const isGlm = account.provider === "GLM";
+  const bigmodelWindows = allWindows.filter((w) => !String(w.label || "").startsWith("Start"));
+  const startWindows = allWindows.filter((w) => String(w.label || "").startsWith("Start"));
+  const dualChannel = isGlm && bigmodelWindows.length > 0 && startWindows.length > 0;
+  const [channel, setChannel] = useState(() => {
+    try { return localStorage.getItem("glm-quota-channel") || "bigmodel"; } catch { return "bigmodel"; }
+  });
+  const shownWindows = dualChannel && channel === "start" ? startWindows : bigmodelWindows;
+  const stats = Array.isArray(account.stats) && account.stats.length > 0 ? account.stats : null;
   return (
     <div className="qcard" data-provider-key={providerKey || undefined}>
       <div className="qcard-head">
@@ -149,7 +161,23 @@ function QuotaCard({ account, versions, onUpgrade, upgrading, providerKey, accou
         ) : info.current ? (
           <span className="qver">v{info.current}</span>
         ) : null}
-        <span className="plan">{account.plan || "unknown"}</span>
+        <span className="plan">{(dualChannel && channel === "start")
+          ? (account.extra_lines || []).find((l) => String(l).startsWith("Start plan:"))?.slice("Start plan: ".length) || "Start Plan"
+          : (account.plan || "unknown")}</span>
+        {dualChannel ? (
+          <select
+            className="plan-switch"
+            value={channel}
+            aria-label="Plan channel"
+            onChange={(e) => {
+              setChannel(e.target.value);
+              try { localStorage.setItem("glm-quota-channel", e.target.value); } catch {}
+            }}
+          >
+            <option value="bigmodel">BigModel</option>
+            <option value="start">StartPlan</option>
+          </select>
+        ) : null}
         {upgrading && Array.isArray(upgrading.targets) && upgrading.targets.includes(account.provider) ? (
           <span className="upgrading-badge"><span className="spin-dot" />{t("upgrade.runningBadge")}</span>
         ) : null}
@@ -159,22 +187,35 @@ function QuotaCard({ account, versions, onUpgrade, upgrading, providerKey, accou
         <span className="qupdated">{updated}</span>
       </div>
       <MembershipLine account={account} />
-      {(account.extra_lines || []).map((line, index) => (
-        <div className="qextra" key={`extra-${index}`}>{line}</div>
-      ))}
-      {(account.windows || []).map((w, index) => {
+      {stats ? (
+        <div className="qstats">
+          {stats.map((s, index) => (
+            <div className="qstat" key={`stat-${index}`}>
+              <span className="qstat-label">{s.label}</span>
+              <span className="qstat-value">{s.value}</span>
+              {s.sub ? <span className="qstat-sub">{s.sub}</span> : null}
+            </div>
+          ))}
+        </div>
+      ) : (account.extra_lines || [])
+        .filter((line) => !(dualChannel && channel === "start" && String(line).startsWith("Start plan:")))
+        .map((line, index) => (
+          <div className="qextra" key={`extra-${index}`}>{line}</div>
+        ))}
+      {shownWindows.map((w, index) => {
         const pct = w.used_percent == null ? 0 : Math.max(0, Math.min(100, w.used_percent));
         const fraction = timeFractionOf(w);
         const reset = fmtReset(w.reset_after_seconds);
+        const showUsage = w.usage && (!isGlm || String(w.label || "").startsWith("Start"));
         const tail = reset
           ? <span className="reset">{reset}</span>
-          : (w.usage && account.provider !== "GLM"
+          : (showUsage
             ? <span className="reset">Usage {w.usage}</span>
             : null);
         return (
           <div className="qquota" key={index}>
             <div className="qrow">
-              <span>{w.label}</span>
+              <span>{String(w.label || "").replace(/^Start · /, "")}</span>
               <span className="pct">{pct.toFixed(1)}%{tail ? " · " : ""}{tail}</span>
             </div>
             <div className="bar">
