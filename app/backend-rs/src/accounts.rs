@@ -730,42 +730,87 @@ fn ensure_active_profile(provider: Provider, target: &mut Value, source: &Value,
 /// registry 的 active 镜像只改"选了谁"，两侧 default 登录/命名账号凭证
 /// 各自独立，切换后 WSL 仍用旧登录的根因即在此；这里把当前账号的
 /// auth.json 一并镜像过去。仅 Windows 侧发起（wsl_homes 非空才会被调用）。
-fn sync_codex_credentials_to_wsl(home: &Path, id: &str) -> Result<(), String> {
-    let local = crate::settings::local_home();
-    let (src, dst) = if id == "default" {
-        (
-            local.join(".codex").join("auth.json"),
-            home.join(".codex").join("auth.json"),
-        )
-    } else {
-        (
-            local
-                .join(".config")
-                .join("ai-usage-monitor")
-                .join("codex-accounts")
-                .join(id)
-                .join("auth.json"),
-            home
-                .join(".config")
-                .join("ai-usage-monitor")
-                .join("codex-accounts")
-                .join(id)
-                .join("auth.json"),
-        )
-    };
-    let data = std::fs::read(&src)
+/// 命名账号还会额外写入 ~/.codex/auth.json：未安装受管 wrapper 的发行版
+/// （或 wrapper 失效时）codex 只读这个默认路径，不同步就会一直用旧账号。
+/// ~/.codex/auth.json 的 default 登录备份目录（首次物化命名账号前保存，
+/// 切回 default 时恢复）。
+fn codex_default_backup(home: &Path) -> PathBuf {
+    home.join(".config")
+        .join("ai-usage-monitor")
+        .join("codex-accounts")
+        .join("_default-original")
+        .join("auth.json")
+}
+
+fn copy_atomic(src: &Path, dst: &Path) -> Result<(), String> {
+    let data = std::fs::read(src)
         .map_err(|err| format!("cannot read {}: {err}", src.display()))?;
     if let Some(parent) = dst.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|err| format!("cannot create {}: {err}", parent.display()))?;
     }
-    // 原子替换：同目录临时文件 + rename，避免 9P 半写文件被 codex 读到
     let tmp = dst.with_extension("json.tmp-sync");
     std::fs::write(&tmp, &data)
         .map_err(|err| format!("cannot write {}: {err}", tmp.display()))?;
     std::fs::rename(&tmp, &dst)
         .map_err(|err| format!("cannot replace {}: {err}", dst.display()))?;
     Ok(())
+}
+
+/// 物化活动账号凭证到 home 的 ~/.codex/auth.json（v0.7.42 补强）。
+/// 背景：Zed 的 codex-acp 直连其内置 codex、绕过 ~/.local/bin 账号包装器，
+/// 只读默认 CODEX_HOME——注册表/包装器对 Zed 会话无效，必须在切换时把
+/// 选中账号的凭证写进 ~/.codex。命名账号激活前首次备份本机 default 登录
+/// （_default-original），切回 default 时恢复。
+fn materialize_codex_active(home: &Path, id: &str) -> Result<(), String> {
+    let dot_codex = home.join(".codex").join("auth.json");
+    let backup = codex_default_backup(home);
+    let named = home
+        .join(".config")
+        .join("ai-usage-monitor")
+        .join("codex-accounts")
+        .join(id)
+        .join("auth.json");
+    if id == "default" {
+        // 恢复本机原 default 登录；无备份说明 ~/.codex 从未被物化覆盖，no-op
+        if backup.is_file() {
+            copy_atomic(&backup, &dot_codex)?;
+        }
+        return Ok(());
+    }
+    if dot_codex.is_file() && !backup.is_file() {
+        copy_atomic(&dot_codex, &backup)?;
+    }
+    copy_atomic(&named, &dot_codex)
+}
+
+fn sync_codex_credentials_to_wsl(home: &Path, id: &str) -> Result<(), String> {
+    let local = crate::settings::local_home();
+    let managed = local
+        .join(".config")
+        .join("ai-usage-monitor")
+        .join("codex-accounts");
+    let src = if id == "default" {
+        local.join(".codex").join("auth.json")
+    } else {
+        managed.join(id).join("auth.json")
+    };
+    if id == "default" {
+        // default：Windows 的 default 登录即权威凭证，直接落到 ~/.codex
+        return copy_atomic(&src, &home.join(".codex").join("auth.json"));
+    }
+    // 命名账号：先落到 codex-accounts/<id>（wrapper 用），再物化到
+    // ~/.codex（Zed 直连用）——物化前由 materialize 首次备份原登录
+    copy_atomic(
+        &src,
+        &home
+            .join(".config")
+            .join("ai-usage-monitor")
+            .join("codex-accounts")
+            .join(id)
+            .join("auth.json"),
+    )?;
+    materialize_codex_active(home, id)
 }
 
 pub fn update_active_all_scopes(provider: Provider, payload: &Value) -> Result<Value, String> {
@@ -776,6 +821,10 @@ pub fn update_active_all_scopes(provider: Provider, payload: &Value) -> Result<V
 
     let config = apply_action(provider, &load_registry(provider), payload)?;
     write_private_json(&registry_path(provider), &config)?;
+    // local 也物化：Windows 本机的 Zed codex-acp 同样绕过账号包装器
+    if provider == Provider::Codex {
+        materialize_codex_active(&crate::settings::local_home(), id)?;
+    }
 
     let mut succeeded = vec!["local".to_string()];
     let mut failed = Vec::new();
@@ -840,6 +889,62 @@ mod tests {
 
     fn action(config: &Value, value: Value) -> Value {
         apply_action(Provider::Codex, config, &value).unwrap()
+    }
+
+    #[test]
+    fn codex_wsl_sync_mirrors_named_account_into_default_home() {
+        let _lock = crate::settings::TEST_ENV_LOCK.lock().unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "env-tools-codex-wsl-sync-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let local = root.join("local");
+        let wsl = root.join("wsl");
+        let default_src = local.join(".codex").join("auth.json");
+        let named_src = local
+            .join(".config")
+            .join("ai-usage-monitor")
+            .join("codex-accounts")
+            .join("work")
+            .join("auth.json");
+        std::fs::create_dir_all(default_src.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(named_src.parent().unwrap()).unwrap();
+        std::fs::write(&default_src, r#"{"account":"default"}"#).unwrap();
+        std::fs::write(&named_src, r#"{"account":"work"}"#).unwrap();
+        let saved_home = std::env::var_os("HOME");
+        let saved_profile = std::env::var_os("USERPROFILE");
+        std::env::set_var("HOME", &local);
+        std::env::set_var("USERPROFILE", &local);
+
+        sync_codex_credentials_to_wsl(&wsl, "default").unwrap();
+        let wsl_default = wsl.join(".codex").join("auth.json");
+        assert_eq!(std::fs::read_to_string(&wsl_default).unwrap(), r#"{"account":"default"}"#);
+
+        sync_codex_credentials_to_wsl(&wsl, "work").unwrap();
+        // 命名账号：profile 与默认路径都必须是当前账号，否则无 wrapper 的
+        // 发行版仍读 ~/.codex 里的旧登录
+        let wsl_named = wsl
+            .join(".config")
+            .join("ai-usage-monitor")
+            .join("codex-accounts")
+            .join("work")
+            .join("auth.json");
+        assert_eq!(std::fs::read_to_string(&wsl_named).unwrap(), r#"{"account":"work"}"#);
+        assert_eq!(std::fs::read_to_string(&wsl_default).unwrap(), r#"{"account":"work"}"#);
+
+        match saved_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+        match saved_profile {
+            Some(value) => std::env::set_var("USERPROFILE", value),
+            None => std::env::remove_var("USERPROFILE"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

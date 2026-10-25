@@ -961,10 +961,23 @@ function syncCodexCredentialsFromWsl(id) {
           resolve({ ok: false, scope: "Windows host credentials", error: `cannot read WSL ${rel}` });
           return;
         }
-        const dst = path.join(os.homedir(), rel);
+        // 除对应 profile 外，也物化到宿主 ~/.codex/auth.json（Zed 的
+        // codex-acp 直连内置 codex，只读默认 CODEX_HOME）；物化前首次
+        // 备份本机 default 登录到 codex-accounts/_default-original/
+        const targets = id === "default" ? [rel] : [rel, ".codex/auth.json"];
         try {
-          fs.mkdirSync(path.dirname(dst), { recursive: true });
-          fs.writeFileSync(dst, stdout, "utf8");
+          const dotCodex = path.join(os.homedir(), ".codex", "auth.json");
+          const backup = path.join(os.homedir(), ".config", "ai-usage-monitor",
+            "codex-accounts", "_default-original", "auth.json");
+          if (id !== "default" && fs.existsSync(dotCodex) && !fs.existsSync(backup)) {
+            fs.mkdirSync(path.dirname(backup), { recursive: true });
+            fs.writeFileSync(backup, fs.readFileSync(dotCodex, "utf8"), "utf8");
+          }
+          for (const target of targets) {
+            const dst = path.join(os.homedir(), target);
+            fs.mkdirSync(path.dirname(dst), { recursive: true });
+            fs.writeFileSync(dst, stdout, "utf8");
+          }
           resolve({ ok: true, scope: "Windows host credentials" });
         } catch (error) {
           resolve({ ok: false, scope: "Windows host credentials", error: String(error.message || error) });
