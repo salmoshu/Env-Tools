@@ -199,8 +199,8 @@ button { font-family: var(--font-ui); }
 ::-webkit-scrollbar-track { background: transparent; }
 
 /* --- 交互反馈：统一时长/缓动、键盘焦点环 --- */
-button, .side-item, .env-option, .display-list-item, .display-list-item .cb,
-.env-option .radio, select.control, .wsl-distro-select, .codex-account-select, .key-input,
+button, .side-item, .env-option, .display-card, .display-card .cb,
+.env-option .radio, select.control, .codex-account-select, .key-input,
 .membership-date, .membership-months, .ver {
   transition: background-color var(--dur) var(--ease),
     border-color var(--dur) var(--ease), color var(--dur) var(--ease),
@@ -292,8 +292,48 @@ select.control {
   height: 30px; border: 1px solid var(--border); border-radius: var(--r-sm); outline: none;
   background: var(--card); color: var(--text); padding: 0 8px; font: 12px var(--font-ui);
 }
-select.control:hover, .wsl-distro-select:hover { border-color: var(--faint); }
-select.control:focus, .wsl-distro-select:focus { border-color: var(--accent-border); box-shadow: 0 0 0 3px var(--accent-softer); }
+select.control:hover { border-color: var(--faint); }
+select.control:focus { border-color: var(--accent-border); box-shadow: 0 0 0 3px var(--accent-softer); }
+
+/* --- 自定义下拉框（Kimi 规范：Brand/12-下拉框与弹出菜单） ------------------ */
+/* 触发器沿用原生 select 形态（30px 高 / 1px 细边 / 8px 圆角 + 16px 灰 caret），
+   浮层按规范：容器 12px 圆角 + 4px 内边距 + 0.5px 细边 + 弥散阴影；菜单项
+   36px 高 / 10px 圆角 / hover Fills-F1；选中项唯一彩色元素是品牌蓝对勾 */
+.kselect { position: relative; display: inline-flex; min-width: 0; }
+.kselect-trigger {
+  display: inline-flex; align-items: center; gap: 4px; min-width: 0;
+  height: 30px; padding: 0 6px 0 10px;
+  border: 1px solid var(--border); border-radius: var(--r-xs);
+  background: var(--card); color: var(--text);
+  font: 12px var(--font-ui); cursor: pointer; outline: none;
+  transition: background-color var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+.kselect-trigger:hover { background: var(--hover); border-color: var(--faint); }
+.kselect-trigger:focus-visible { border-color: var(--accent-border); box-shadow: 0 0 0 3px var(--accent-softer); }
+.kselect.open .kselect-trigger { border-color: var(--accent-border); }
+.kselect-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kselect-caret { flex: none; color: var(--faint); transition: transform var(--dur) var(--ease); }
+.kselect.open .kselect-caret { transform: rotate(180deg); }
+.kselect-menu {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 60;
+  min-width: max(100%, 148px); max-height: 280px; overflow-y: auto;
+  padding: 4px; background: var(--elevated);
+  border: 0.5px solid var(--border); border-radius: var(--r-md);
+  box-shadow: var(--shadow-card);
+}
+.kselect-menu.up { top: auto; bottom: calc(100% + 4px); }
+.kselect-menu.right { left: auto; right: 0; }
+.kselect-item {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  min-height: 36px; padding: 8px; border: 0; border-radius: var(--r-sm);
+  background: transparent; color: var(--text);
+  font-size: 13px; line-height: 20px; text-align: left;
+  transition: background-color .15s; cursor: pointer;
+}
+.kselect-item:hover, .kselect-item.active { background: var(--hover); }
+.kselect-item.selected { background: var(--hover); }
+.kselect-item-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kselect-check { flex: none; margin-left: auto; color: var(--accent); }
 
 .kpi-row {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
@@ -551,19 +591,17 @@ td b { font-weight: 600; }
 }
 .qstat-sub { font-size: 10px; color: var(--faint); }
 
-/* 窗口条下方的附注行（如 Kimi Code share） */
+/* 窗口条下方的附注行（如 Kimi Code share）。间距与 limit-resets 对齐：
+   limit-resets 在条外，qquota 的 9px 下边距与其 1px 上边距折叠为 9px；
+   附注在条内，margin-top 直接取 9px，两者到进度条的视觉间距一致 */
 .qwin-sub {
-  margin-top: 3px; font-size: 10.5px; color: var(--faint);
+  margin-top: 9px; font-size: 10.5px; color: var(--faint);
   font-family: var(--font-num); font-variant-numeric: tabular-nums;
 }
-/* GLM 双通道（BigModel / StartPlan）切换下拉，置于 plan 标签右侧 */
-.plan-switch {
-  height: 22px; border: 1px solid var(--border); border-radius: var(--r-xs);
-  background: var(--inset); color: var(--dim);
-  font: 11px var(--font-ui); padding: 0 4px; outline: none; flex: none;
-}
-.plan-switch:hover { border-color: var(--faint); color: var(--text); }
-.plan-switch:focus { border-color: var(--accent-border); }
+/* GLM 双通道（BigModel / StartPlan）切换下拉，置于 plan 标签右侧——
+   kselect 紧凑触发器（22px），浮层规格与全尺寸一致 */
+.kselect-trigger.plan-switch { height: 22px; font-size: 11px; padding: 0 3px 0 6px; }
+.kselect-trigger.plan-switch .kselect-caret { width: 12px; height: 12px; }
 .qextra {
   font-size: 11px; color: var(--faint); font-family: var(--font-num);
   font-variant-numeric: tabular-nums; white-space: nowrap;
@@ -588,6 +626,10 @@ td b { font-weight: 600; }
 .compact .quota-row { margin-bottom: 0; }
 .compact .bar { display: none; }
 .compact .limit-resets { margin-top: 3px; }
+/* 紧凑模式条隐藏：附注跟随 qrow（margin-bottom 4px，与附注 margin-top 不
+   折叠——qrow 无下边框），5px 凑成与 limit-resets 相同的 9px 视觉间距
+   （qquota 9px 下边距折叠后仍为 9px） */
+.compact .qwin-sub { margin-top: 5px; }
 
 /* --- 浮层（升级 / 安装进度 / 对话） --- */
 .overlay {
@@ -749,32 +791,46 @@ td b { font-weight: 600; }
 .seg button:hover { color: var(--text); }
 .seg button.active { background: var(--elevated); color: var(--text); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.28); }
 .seg.disabled { opacity: 0.55; pointer-events: none; }
-.display-list-item {
-  display: flex; align-items: center; gap: 8px; padding: 6px 11px;
-  border-radius: var(--r-xs); font-size: 12.5px; color: var(--dim); cursor: pointer; white-space: nowrap;
+/* 显示面板 provider 卡片（v0.7.43）：卡片网格替代行列表——
+   手柄悬停浮现，选中卡片品牌蓝描边 + 浅蓝底；拖走半透明、落点虚线框 */
+.display-cards {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 8px;
 }
-.display-list-item:hover { background: var(--hover); color: var(--text); }
-.display-list-item .cb {
+.display-card {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+  padding: 10px 10px 10px 8px; border: 1px solid var(--border); border-radius: var(--r-md);
+  background: var(--card); color: var(--dim); font-size: 12px; cursor: pointer;
+  transition: background-color var(--dur) var(--ease), border-color var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.display-card:hover { background: var(--hover); color: var(--text); }
+.display-card.on { border-color: var(--accent-border); background: var(--accent-softer); color: var(--text); }
+.display-card.dragging { opacity: 0.5; }
+.display-card.drop-target { border-color: var(--accent-border); border-style: dashed; }
+.display-card .cb {
   width: 13px; height: 13px; flex-shrink: 0; border: 1px solid var(--faint);
-  border-radius: 4px; position: relative;
+  border-radius: 4px; position: relative; margin-left: auto;
 }
-.display-list-item:hover .cb { border-color: var(--dim); }
-.display-list-item .cb.on { background: var(--accent); border-color: var(--accent); }
-.display-list-item .cb.on::after {
+.display-card:hover .cb { border-color: var(--dim); }
+.display-card .cb.on { background: var(--accent); border-color: var(--accent); }
+.display-card .cb.on::after {
   content: "\2713"; position: absolute; inset: 0; display: flex;
   align-items: center; justify-content: center; font-size: 10px; font-weight: 700; color: var(--on-accent);
 }
-.display-list-item .cb.partial { border-color: var(--accent); }
-.display-list-item .cb.partial::after {
+.display-card .cb.partial { border-color: var(--accent); }
+.display-card .cb.partial::after {
   content: ""; position: absolute; left: 2px; right: 2px; top: 50%; height: 2px;
   margin-top: -1px; background: var(--accent); border-radius: 1px;
 }
-/* 显示面板拖拽重排（v0.7.34）：手柄 + 拖走/落点反馈；勾选状态由行点击切换 */
+.display-card-name {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* 显示面板拖拽重排（v0.7.34）：手柄悬停浮现 + 拖走/落点反馈；勾选状态由卡片点击切换 */
 .display-drag {
   flex: none; cursor: grab; color: var(--faint); user-select: none;
-  padding: 2px 4px; margin-left: -4px; border-radius: var(--r-xs);
-  font-size: 11px; line-height: 1;
+  padding: 2px 4px; border-radius: var(--r-xs);
+  font-size: 11px; line-height: 1; opacity: 0; transition: opacity var(--dur) var(--ease);
 }
+.display-card:hover .display-drag { opacity: 1; }
 .display-drag:hover { color: var(--dim); background: var(--hover); }
 .display-drag-spacer { width: 15px; flex-shrink: 0; }
 .display-list-item.dragging { opacity: 0.45; }

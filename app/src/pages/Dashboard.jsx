@@ -14,6 +14,7 @@ import {
   SERIES_DEFS, StackedBars, ProjectBars,
 } from "../components/charts.jsx";
 import { RefreshIcon } from "../components/Titlebar.jsx";
+import Select from "../components/Select.jsx";
 import ResetButton from "../components/ResetButton.jsx";
 import BrandIcon from "../components/BrandIcon.jsx";
 import UpgradeOverlay from "../components/UpgradeOverlay.jsx";
@@ -176,18 +177,19 @@ function QuotaCard({ account, versions, onUpgrade, upgrading, providerKey, accou
           <span className="stale-tag" title={t("dash.dsUnavailableHint")}>{t("dash.dsUnavailable")}</span>
         ) : null}
         {dualChannel ? (
-          <select
+          <Select
             className="plan-switch"
             value={channel}
-            aria-label="Plan channel"
-            onChange={(e) => {
-              setChannel(e.target.value);
-              try { localStorage.setItem("glm-quota-channel", e.target.value); } catch {}
+            ariaLabel="Plan channel"
+            onChange={(value) => {
+              setChannel(value);
+              try { localStorage.setItem("glm-quota-channel", value); } catch {}
             }}
-          >
-            <option value="bigmodel">BigModel</option>
-            <option value="start">StartPlan</option>
-          </select>
+            options={[
+              ["bigmodel", "BigModel"],
+              ["start", "StartPlan"],
+            ]}
+          />
         ) : null}
         {upgrading && Array.isArray(upgrading.targets) && upgrading.targets.includes(account.provider) ? (
           <span className="upgrading-badge"><span className="spin-dot" />{t("upgrade.runningBadge")}</span>
@@ -980,33 +982,27 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
         </div>
         <div className="head-controls">
           <label className="days-field">{t("dash.target")}
-            <select
-              className="control"
+            <Select
               value={target}
-              onChange={(event) => {
-                setTarget(event.target.value);
-                try { localStorage.setItem(TARGET_KEY, event.target.value); } catch {}
+              ariaLabel={t("dash.target")}
+              onChange={(value) => {
+                setTarget(value);
+                try { localStorage.setItem(TARGET_KEY, value); } catch {}
               }}
-            >
-              {targets.map((item) => (
-                <option key={item.id} value={item.id}>{targetLabel(item)}</option>
-              ))}
-            </select>
+              options={targets.map((item) => [item.id, targetLabel(item)])}
+            />
           </label>
           <label className="days-field">{t("dash.agent")}
-            <select
-              className="control"
+            <Select
               value={agent}
-              onChange={(event) => {
-                setAgent(event.target.value);
-                try { localStorage.setItem(AGENT_KEY, event.target.value); } catch {}
+              ariaLabel={t("dash.agent")}
+              onChange={(value) => {
+                setAgent(value);
+                try { localStorage.setItem(AGENT_KEY, value); } catch {}
               }}
-            >
-              {Object.entries(AGENT_LABELS).map(([value, label]) => (
-
-                <option key={value} value={value}>{value === "all" ? t("dash.agentAll") : label}</option>
-              ))}
-            </select>
+              options={Object.entries(AGENT_LABELS).map(([value, label]) =>
+                [value, value === "all" ? t("dash.agentAll") : label])}
+            />
           </label>
           <button
             type="button"
@@ -1251,19 +1247,20 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
           <div className="card-head-actions">
             {/* 粒度：按小时=今日 24 时 / 按天=近 30 天 / 按周=90 天 / 按月=365 天；
                 图表支持悬停滚轮缩放 x 轴 */}
-            <select
-              className="control"
+            <Select
               value={trendGran}
-              onChange={(event) => {
-                setTrendGran(event.target.value);
-                try { localStorage.setItem(TREND_KEY, event.target.value); } catch {}
+              ariaLabel={t("dash.dailyTokens")}
+              onChange={(value) => {
+                setTrendGran(value);
+                try { localStorage.setItem(TREND_KEY, value); } catch {}
               }}
-            >
-              <option value="hourly">{t("dash.trendHourly")}</option>
-              <option value="day">{t("dash.trendDaily")}</option>
-              <option value="week">{t("dash.trendWeekly")}</option>
-              <option value="month">{t("dash.trendMonthly")}</option>
-            </select>
+              options={[
+                ["hourly", t("dash.trendHourly")],
+                ["day", t("dash.trendDaily")],
+                ["week", t("dash.trendWeekly")],
+                ["month", t("dash.trendMonthly")],
+              ]}
+            />
             {expandBtn("daily")}
           </div>
         </div>
@@ -1380,18 +1377,16 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
           <h2>{t("dash.sessions")}</h2>
           <div className="card-head-actions">
             <label className="days-field">{t("dash.groupBy")}
-              <select
-                className="control"
+              <Select
                 value={sessionsGroup}
-                onChange={(event) => {
-                  setSessionsGroup(event.target.value);
-                  try { localStorage.setItem(SESSIONS_GROUP_KEY, event.target.value); } catch {}
+                ariaLabel={t("dash.groupBy")}
+                onChange={(value) => {
+                  setSessionsGroup(value);
+                  try { localStorage.setItem(SESSIONS_GROUP_KEY, value); } catch {}
                 }}
-              >
-                {SESSION_GROUP_OPTIONS.map((value) => (
-                  <option key={value} value={value}>{t(`dash.group${value[0].toUpperCase()}${value.slice(1)}`)}</option>
-                ))}
-              </select>
+                options={SESSION_GROUP_OPTIONS.map((value) =>
+                  [value, t(`dash.group${value[0].toUpperCase()}${value.slice(1)}`)])}
+              />
             </label>
             {expandBtn("sessions")}
           </div>

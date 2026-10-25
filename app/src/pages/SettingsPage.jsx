@@ -11,6 +11,7 @@ import {
 import { t, useLang, setLang, getLang } from "../i18n.js";
 import { showToast } from "../toast.jsx";
 import BrandIcon from "../components/BrandIcon.jsx";
+import Select from "../components/Select.jsx";
 import {
   AGENT_ACCOUNTS, agentMembershipKey, useAgentAccounts,
 } from "../agentAccounts.js";
@@ -298,6 +299,12 @@ function DisplayPanel({ lastPayload }) {
   });
   const allSelected = knownProviders.length > 0 && selectedProviders.size === knownProviders.length;
 
+  const toggleAll = () => {
+    const next = allSelected ? new Set() : new Set(knownProviders);
+    setSelectedProviders(next);
+    persist(next);
+  };
+
   return (
     <div className="panel" id="panel-display">
       <GroupLabel>{t("settings.displayTitle")}</GroupLabel>
@@ -307,56 +314,55 @@ function DisplayPanel({ lastPayload }) {
             <div className="set-row-desc">{t("settings.displayHint")} {t("settings.displayOrderHint")}</div>
           </div>
         </div>
-        <div
-          className="display-list-item"
-          role="button"
-          tabIndex={0}
-          onClick={() => {
-            const next = allSelected ? new Set() : new Set(knownProviders);
-            setSelectedProviders(next);
-            persist(next);
-          }}
-          onKeyDown={activateOnKeys(() => {
-            const next = allSelected ? new Set() : new Set(knownProviders);
-            setSelectedProviders(next);
-            persist(next);
-          })}
-        >
-          <span className="display-drag-spacer" />
-          <span className={`cb${allSelected ? " on" : selectedProviders.size > 0 ? " partial" : ""}`} />
-          {t("settings.all")}
-        </div>
-        {order.map((name) => (
+        {/* provider 卡片网格（v0.7.43）：首张「全部」+ 各 provider 卡；
+            勾选状态由卡片点击切换，拖拽手柄悬停浮现 */}
+        <div className="display-cards">
           <div
-            key={name}
-            className={`display-list-item${dragName === name ? " dragging" : ""}${dropName === name && dragName && dragName !== name ? " drop-target" : ""}`}
+            className={`display-card${allSelected ? " on" : ""}`}
             role="button"
             tabIndex={0}
-            draggable={dragName === name}
-            onDragStart={(event) => {
-              event.dataTransfer.setData("text/plain", name);
-              event.dataTransfer.effectAllowed = "move";
-            }}
-            onDragEnd={() => { setDragName(null); setDropName(null); }}
-            onDragOver={(event) => {
-              event.preventDefault();
-              setDropName((prev) => (prev === name ? prev : name));
-            }}
-            onDrop={() => dropRow(name)}
-            onClick={() => toggle(name)}
-            onKeyDown={activateOnKeys(() => toggle(name))}
+            onClick={toggleAll}
+            onKeyDown={activateOnKeys(toggleAll)}
           >
-            <span
-              className="card-drag display-drag"
-              title={t("settings.displayOrderHint")}
-              onMouseDown={() => setDragName(name)}
-              onClick={(event) => event.stopPropagation()}
-            >⠿</span>
-            <span className={`cb${selectedProviders.has(name) ? " on" : ""}`} />
-            <BrandIcon of={name} size={14} />
-            {name}
+            <span className="display-drag-spacer" />
+            <span className="display-card-name">{t("settings.all")}</span>
+            <span className={`cb${allSelected ? " on" : selectedProviders.size > 0 ? " partial" : ""}`} />
           </div>
-        ))}
+          {order.map((name) => {
+            const on = selectedProviders.has(name);
+            return (
+              <div
+                key={name}
+                className={`display-card${on ? " on" : ""}${dragName === name ? " dragging" : ""}${dropName === name && dragName && dragName !== name ? " drop-target" : ""}`}
+                role="button"
+                tabIndex={0}
+                draggable={dragName === name}
+                onDragStart={(event) => {
+                  event.dataTransfer.setData("text/plain", name);
+                  event.dataTransfer.effectAllowed = "move";
+                }}
+                onDragEnd={() => { setDragName(null); setDropName(null); }}
+                onDragOver={(event) => {
+                  event.preventDefault();
+                  setDropName((prev) => (prev === name ? prev : name));
+                }}
+                onDrop={() => dropRow(name)}
+                onClick={() => toggle(name)}
+                onKeyDown={activateOnKeys(() => toggle(name))}
+              >
+                <span
+                  className="card-drag display-drag"
+                  title={t("settings.displayOrderHint")}
+                  onMouseDown={() => setDragName(name)}
+                  onClick={(event) => event.stopPropagation()}
+                >⠿</span>
+                <BrandIcon of={name} size={14} />
+                <span className="display-card-name">{name}</span>
+                <span className={`cb${on ? " on" : ""}`} />
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
@@ -891,15 +897,15 @@ function EnvironmentPanel({ settings, onSaved }) {
         </SetRow>
         {current === "wsl" && wslDistros.length ? (
           <SetRow title={t("settings.wslDistro")}>
-            <select
-              id="wsl-distro" className="wsl-distro-select" value={distro}
-              onChange={(event) => {
-                setDistro(event.target.value);
-                if (event.target.value) save({ wsl_distro: event.target.value });
+            <Select
+              value={distro}
+              ariaLabel={t("settings.wslDistro")}
+              onChange={(value) => {
+                setDistro(value);
+                if (value) save({ wsl_distro: value });
               }}
-            >
-              {wslDistros.map((name) => <option key={name} value={name}>{name}</option>)}
-            </select>
+              options={wslDistros.map((name) => [name, name])}
+            />
           </SetRow>
         ) : null}
         <div className="set-row set-row-foot"><RowNote note={note} /></div>

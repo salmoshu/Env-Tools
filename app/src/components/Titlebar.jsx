@@ -96,13 +96,13 @@ export function AnalyticsIcon() {
   );
 }
 
-// 悬浮看板：主窗口线框 + 右下角骑跨边框的实心小窗（画中画浮窗），
-// 小窗压在边框角上而不是缩在大框内，读作「浮在上层的迷你窗口」
+// 悬浮看板：monitor 语义——屏幕 + 立柱 + 底座（桌面显示器轮廓）
 export function BoardIcon() {
   return (
     <LineIcon>
-      <rect x="3" y="4" width="18" height="16" rx="2" />
-      <rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.6" fill="currentColor" stroke="none" />
+      <rect x="3" y="4" width="18" height="12.5" rx="2" />
+      <path d="M12 16.5V20" />
+      <path d="M8.5 20h7" />
     </LineIcon>
   );
 }
