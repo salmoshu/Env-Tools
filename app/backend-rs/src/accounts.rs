@@ -317,6 +317,16 @@ pub fn credential_path(profile: &AccountProfile) -> Option<PathBuf> {
                     return Some(explicit);
                 }
             }
+            // 物化状态（命名账号激活时）：~/.codex/auth.json 是"当前活动
+            // 账号"的凭证（Zed 直连 codex 只读默认 CODEX_HOME），default
+            // 账号的真实登录在 _default-original 备份里——配额/重置等
+            // 按账号维度的操作必须用真实凭证，否则所有账号显示同一份额
+            // 注意：codex 的 profile.home 是 ~/.codex（凭证目录本身），
+            // 备份基于用户家目录构造
+            let backup = codex_default_backup(&crate::settings::local_home());
+            if backup.is_file() {
+                return Some(backup);
+            }
             path.is_file().then_some(path)
         }
         Provider::Kimi => {
