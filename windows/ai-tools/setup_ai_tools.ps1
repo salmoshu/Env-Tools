@@ -190,7 +190,8 @@ function Install-CodexProfile($prefix, $installDir) {
     $psReal = $realCmd.Replace("'", "''")
     [IO.File]::WriteAllText($wrapperPs1, $psText.Replace('__CODEX_REAL_SHIM__', $psReal), $utf8Bom)
 
-    $bashText = [IO.File]::ReadAllText((Join-Path $templateDir 'codex'))
+    # bash wrapper 必须 LF：CRLF 会让 shebang 变成 bash\r，Git Bash 下无法执行
+    $bashText = [IO.File]::ReadAllText((Join-Path $templateDir 'codex')) -replace "`r`n", "`n"
     $bashReal = "'" + $realBash.Replace("'", "'\''") + "'"
     [IO.File]::WriteAllText($wrapperBash, $bashText.Replace('__CODEX_REAL_SHIM__', $bashReal), $utf8NoBom)
     Copy-Item -LiteralPath (Join-Path $templateDir 'codex-resolve.cjs') -Destination (Join-Path $installDir 'codex-resolve.cjs') -Force

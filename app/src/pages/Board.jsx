@@ -28,7 +28,8 @@ export default function Board({ lastPayload }) {
   const [fatalErrorDismissed, setFatalErrorDismissed] = useState("");
   const [upgradeProvider, setUpgradeProvider] = useState(null);
   const install = useInstallState();
-  const upgrading = install.running;
+  const upgradingTargets = Object.values(install.runs || {}).flatMap((run) => run.targets || []);
+  const upgrading = upgradingTargets.length ? { targets: upgradingTargets } : null;
   const [compact, setCompact] = useState(false);
   const [pinned, setPinned] = useState(false);
   useLang();
@@ -94,16 +95,18 @@ export default function Board({ lastPayload }) {
 
   // 升级执行（确认后异步进行；卡片显示动态提醒，结果落入升级提示条）
   const beginUpgrade = useCallback(async (targets) => {
-    if (install.running) return;
-    setInstallRunning({ label: targets.join(", "), kind: "upgrade", targets });
+    const duplicate = Object.values(install.runs || {}).some((run) =>
+      (run.targets || []).some((target) => targets.includes(target)));
+    if (duplicate) return;
+    const currentRun = setInstallRunning({ label: targets.join(", "), kind: "upgrade", targets });
     try {
       const data = (lastPayload && lastPayload.data) || {};
       const result = await window.api.upgrade(targets, data.environment, data.windows_setup_script);
-      setInstallResult({ ok: Boolean(result && result.ok), error: result && result.error });
+      setInstallResult({ ok: Boolean(result && result.ok), error: result && result.error }, currentRun);
     } catch (err) {
-      setInstallResult({ ok: false, error: String(err.message || err) });
+      setInstallResult({ ok: false, error: String(err.message || err) }, currentRun);
     }
-  }, [install.running, lastPayload]);
+  }, [install.runs, lastPayload]);
 
   useEffect(() => {
     const onResize = () => {

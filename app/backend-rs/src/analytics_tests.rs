@@ -365,6 +365,44 @@ fn rate_card_shows_latest_requested_model() {
 }
 
 #[test]
+fn rate_card_labels_cli_not_model_vendor_prefix() {
+    let dir = tempfile_dir();
+    let home = dir.join("home");
+    let wire = home
+        .join(".kimi-code")
+        .join("sessions")
+        .join("session_a")
+        .join("wire.jsonl");
+    let ts = chrono::Local
+        .with_ymd_and_hms(2026, 9, 16, 8, 0, 0)
+        .unwrap()
+        .timestamp();
+    // 自定义模型名带 deepseek/ 前缀：计费归因仍是 deepseek，
+    // 但 agent/model 标签必须显示真实 CLI（Kimi Code）
+    write_file(&wire, &[kimi_line(ts, "deepseek/k3.1-pro", 100, 20, 0, 0)]);
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("session_index.jsonl"),
+        "{\"sessionId\":\"session_a\",\"workDir\":\"/w/a/projects/e-wagon\"}\n",
+    )
+    .unwrap();
+
+    let mut state = AnalyticsState::default();
+    state.scan(&[home.join(".kimi-code")], &[], &[], 1_789_100_000);
+    let now = chrono::Local
+        .with_ymd_and_hms(2026, 9, 16, 12, 0, 0)
+        .unwrap();
+    let all = state.aggregate(7, "all", now);
+    let latest = &all["kpi"]["rate"]["latest_sessions"][0];
+    assert_eq!(latest["cli"], "kimi");
+    assert_eq!(latest["agent"], "deepseek");
+    assert_eq!(latest["model"], "deepseek/k3.1-pro");
+    assert_eq!(all["sessions"][0]["cli"], "kimi");
+    let active = &all["kpi"]["rate"]["active_1d"]["projects"][0]["sessions"][0];
+    assert_eq!(active["cli"], "kimi");
+}
+
+#[test]
 fn scan_cache_roundtrip_survives_restart() {
     let dir = tempfile_dir();
     let home = dir.join("home");

@@ -662,6 +662,9 @@ install_codex_profile() {
     local quoted_real quoted_bin template
     printf -v quoted_real '%q' "$real"
     template="$(<"$template_dir/codex")"
+    # 模板可能来自 CRLF 检出的 Windows 目录（9P 挂载原样读取），
+    # 不归一化会让 shebang 变成 bash\r，wrapper 完全无法执行。
+    template="${template//$'\r'/}"
     template="${template//__CODEX_REAL_SHIM__/$quoted_real}"
     if ! printf '%s\n' "$template" >"$wrapper"; then
         log "ERROR: 无法写入 Codex wrapper: $wrapper"

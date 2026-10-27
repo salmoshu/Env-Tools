@@ -62,7 +62,7 @@ contextBridge.exposeInMainWorld("api", {
     ipcRenderer.invoke("upgrade-agents", targets, environment, windowsSetupScript),
   runComponent: (component, environment, windowsSetupScript, distro) =>
     ipcRenderer.invoke("run-component", component, environment, windowsSetupScript, distro),
-  cancelInstall: () => ipcRenderer.invoke("install-cancel"),
+  cancelInstall: (key) => ipcRenderer.invoke("install-cancel", key),
   componentDetect: (environment, distro) => ipcRenderer.invoke("component-detect", environment, distro),
   componentStatus: (component, environment, distro) =>
     ipcRenderer.invoke("component-status", component, environment, distro),

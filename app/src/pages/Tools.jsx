@@ -6,7 +6,7 @@
 // 交互式 bash 以保留 NVM/PATH），输出按行流式滚动；openssh 额外提供状态查看。
 
 import { useEffect, useRef, useState } from "react";
-import { useInstallState, setInstallRunning, setInstallResult, clearInstallLog } from "../installState.js";
+import { useInstallState, setInstallRunning, setInstallResult, clearInstallLog, busyComponents } from "../installState.js";
 import { t, useLang } from "../i18n.js";
 import { isNewerVersion, activateOnKeys } from "../utils.js";
 import BrandIcon from "../components/BrandIcon.jsx";
@@ -135,8 +135,13 @@ export default function Tools({ lastPayload }) {
   // 运行状态与日志来自全局 installState：切页后回来仍在（升级/安装常驻）
   const install = useInstallState();
   const running = install.running;
+  const runs = install.runs || {};
+  const runCount = Object.keys(runs).length;
+  // 只禁用正在安装的那个组件，其余组件可并发操作
+  const busy = busyComponents(install);
   const log = install.log;
   const result = install.result;
+  const [logFilter, setLogFilter] = useState("all");
   const clearTerm = clearInstallLog;
   const [statuses, setStatuses] = useState({});
   // 当前 Tab 的组件探测：{kimi,codex,entire,node:版本|null, openssh,kdesk:bool}
@@ -270,25 +275,44 @@ export default function Tools({ lastPayload }) {
   }, [platformTab, wslDistros]);
 
   const run = async (actionKey, label) => {
-    if (running) return;
+    if (busy.has(actionKey)) return;
     if (actionKey.endsWith(":status")) {
       await refreshSshStatus();
       return;
     }
-    clearInstallLog();
-    setInstallRunning({ label, component: actionKey });
+    // 不再清空日志：并发安装时其它组件的输出要保留，按 runKey 分流
+    const currentRun = setInstallRunning({ label, component: actionKey });
     try {
       const result = await window.api.runComponent(
         actionKey, platformTab, windowsSetupScript, platformTab === "wsl" ? wslTarget : undefined);
-      setInstallResult({ ok: Boolean(result && result.ok), error: result && result.error });
+      setInstallResult({ ok: Boolean(result && result.ok), error: result && result.error }, currentRun);
     } catch (err) {
-      setInstallResult({ ok: false, error: String(err.message || err) });
+      setInstallResult({ ok: false, error: String(err.message || err) }, currentRun);
     }
   };
 
   // Tab 值是 wsl，组件平台清单用 linux（v0.3.0 的映射在 v0.7.11 Tab 改造时丢失）
   const visibleComponents = COMPONENTS.filter((component) =>
     component.platforms.includes(platformTab === "windows" ? "windows" : "linux"));
+
+  // 日志按 runKey 分流：过滤下拉列出出现过日志的组件与仍在运行的组件
+  const logKeys = [];
+  const logLabels = {};
+  for (const entry of log) {
+    if (entry.key && !logLabels[entry.key]) {
+      logLabels[entry.key] = entry.label;
+      logKeys.push(entry.key);
+    }
+  }
+  for (const key of Object.keys(runs)) {
+    if (!logLabels[key]) {
+      logLabels[key] = runs[key].label;
+      logKeys.push(key);
+    }
+  }
+  const logEntries = logFilter === "all" ? log : log.filter((entry) => entry.key === logFilter);
+  const showPrefix = logFilter === "all" && logKeys.length > 1;
+  const cancelKey = logFilter !== "all" && runs[logFilter] ? logFilter : undefined;
 
   return (
     <div className="page">
@@ -307,7 +331,6 @@ export default function Tools({ lastPayload }) {
           role="tab"
           aria-selected={platformTab === "windows"}
           className={`tools-tab${platformTab === "windows" ? " active" : ""}`}
-          disabled={Boolean(running)}
           onClick={() => selectTab("windows")}
         >
           Windows
@@ -317,7 +340,6 @@ export default function Tools({ lastPayload }) {
           role="tab"
           aria-selected={platformTab === "wsl"}
           className={`tools-tab${platformTab === "wsl" ? " active" : ""}`}
-          disabled={Boolean(running)}
           onClick={() => selectTab("wsl")}
         >
           WSL
@@ -405,7 +427,7 @@ export default function Tools({ lastPayload }) {
           <span className="wsl-distros-label">{t("tools.wslDistros")}</span>
           {wslDistros.map((distro) => {
             const selected = distro.name === wslTarget;
-            const clickable = distro.manageable && !selected && !running;
+            const clickable = distro.manageable && !selected;
             const fire = () => {
               if (!clickable) return;
               setWslTarget(distro.name);
@@ -476,7 +498,7 @@ export default function Tools({ lastPayload }) {
                   component={component}
                   versions={versions}
                   detected={detected}
-                  disabled={Boolean(running)}
+                  disabled={busy.has(component.key)}
                   onUpgrade={(key, label) => run(key, label)}
                 />
                 {component.key === "openssh" && statuses.openssh && statuses.openssh.output ? (
@@ -490,10 +512,10 @@ export default function Tools({ lastPayload }) {
                           type="button"
                           key={action.key}
                           className={`tool-btn${action.ghost ? " ghost" : ""}`}
-                          disabled={Boolean(running)}
+                          disabled={busy.has(action.key)}
                           onClick={() => run(action.key, t(action.labelKey))}
                         >
-                          {running && running.component === action.key ? t("tools.running") : t(action.labelKey)}
+                          {busy.has(action.key) ? t("tools.running") : t(action.labelKey)}
                         </button>
                       );
                     }
@@ -504,10 +526,10 @@ export default function Tools({ lastPayload }) {
                         type="button"
                         key={action.key}
                         className={`tool-btn${action.ghost ? " ghost" : ""}`}
-                        disabled={Boolean(running) || detected === null}
+                        disabled={busy.has(action.key) || detected === null}
                         onClick={() => run(action.key, label)}
                       >
-                        {running && running.component === action.key ? t("tools.running") : detected === null ? t("tools.checking") : t(installed ? "tools.update" : "tools.install")}
+                        {busy.has(action.key) ? t("tools.running") : detected === null ? t("tools.checking") : t(installed ? "tools.update" : "tools.install")}
                       </button>
                     );
                   })}
@@ -525,48 +547,64 @@ export default function Tools({ lastPayload }) {
         <div className="about-row"><span>{t("tools.script")}</span><strong className="about-path">{backend && backend.detail ? backend.detail.script : "—"}</strong></div>
       </div>
 
-      {/* 终端风格安装日志面板：不再使用弹框蒙版 */}
+      {/* 终端风格安装日志面板：多场安装并发时按组件过滤，行内带组件标签 */}
       <section className="card tools-terminal">
         <div className="term-head">
           <span className="term-dot" />
           <span className="term-title">{t("tools.installLog")}</span>
-          <span className={`term-status${result && !result.ok ? " err" : ""}${running ? " run" : ""}`}>
-            {running
-              ? `● ${running.label}`
+          <span className={`term-status${result && !result.ok ? " err" : ""}${runCount ? " run" : ""}`}>
+            {runCount
+              ? `● ${runCount > 1 ? `${runCount} · ` : ""}${running.label}`
               : result
                 ? result.ok ? "✓ done" : `✗ failed: ${result.error || "unknown error"}`
                 : log.length ? "— finished" : "idle"}
           </span>
           <span className="term-spacer" />
-          {running && (
+          <select
+            className="term-log-filter"
+            value={logFilter}
+            aria-label={t("tools.installLog")}
+            onChange={(event) => setLogFilter(event.target.value)}
+          >
+            <option value="all">{t("tools.logAll")}</option>
+            {logKeys.map((key) => (
+              <option value={key} key={key}>{logLabels[key] || key}</option>
+            ))}
+          </select>
+          {runCount > 0 && (
             <button
               type="button"
               className="term-btn"
               onClick={async () => {
-                try { await window.api.cancelInstall(); } catch {}
+                try { await window.api.cancelInstall(cancelKey); } catch {}
               }}
             >
               Cancel
             </button>
           )}
-          {!running && log.length > 0 && (
+          {runCount === 0 && log.length > 0 && (
             <button type="button" className="term-btn" onClick={clearTerm}>
               Clear
             </button>
           )}
         </div>
         <div className="term-body" ref={logRef}>
-          {log.length === 0 && !running ? (
+          {logEntries.length === 0 && runCount === 0 ? (
             <div className="term-line dim">ready — pick an install action above, logs stream here.</div>
           ) : (
-            log.map((line, i) => {
+            logEntries.map((entry, i) => {
+              const line = entry.line;
               const lowered = line.toLowerCase();
               const cls = /error|fail|失败|err\]/.test(lowered) ? " err"
                 : /^result\|/.test(line) || /success|done|已是最新|安装完成/.test(lowered) ? " ok" : "";
-              return <div className={`term-line${cls}`} key={i}>{line}</div>;
+              return (
+                <div className={`term-line${cls}`} key={i}>
+                  {showPrefix && entry.label ? `[${entry.label}] ` : ""}{line}
+                </div>
+              );
             })
           )}
-          {running && <div className="term-line dim">▋</div>}
+          {runCount > 0 && <div className="term-line dim">▋</div>}
         </div>
       </section>
     </div>

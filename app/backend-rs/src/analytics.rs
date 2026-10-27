@@ -713,6 +713,18 @@ fn project_name(work_dir: &str) -> String {
         .to_string()
 }
 
+/// 会话所属的 CLI 身份（区别于按模型名的计费归因）：速率卡与会话列表的
+/// "agent/model" 标签以它为准。自定义模型名可能带 deepseek/ 等前缀，
+/// 按模型归因子会把 Kimi Code 的会话显示成别家 agent。
+pub fn cli_of(source: Source) -> &'static str {
+    match source {
+        Source::Kimi => "kimi",
+        Source::Codex => "codex",
+        Source::ZCode => "zcode",
+        Source::Omp => "omp",
+    }
+}
+
 pub fn agent_of(source: Source, model: &str) -> &'static str {
     // omp/zcode 源整体归各自 agent：底层模型可任意（kimi/deepseek/glm...），
     // 按模型归并会把这些 CLI 的用量混进别家统计，且筛选/图标都以 CLI 身份为准
@@ -749,6 +761,8 @@ struct SessionRow {
     sid: String,
     project: String,
     work_dir: String,
+    /// 产生该会话的 CLI（kimi/codex/zcode/omp），用于 agent/model 展示
+    cli: &'static str,
     agent_totals: HashMap<&'static str, i64>,
     /// 会话内各模型的 token 总量：keys 即模型列表，最大值即主力模型
     model_totals: HashMap<String, i64>,
@@ -790,6 +804,7 @@ struct ActiveSessionRow {
     sid: String,
     project: String,
     work_dir: String,
+    cli: &'static str,
     agent_totals: HashMap<&'static str, i64>,
     models: HashMap<String, ActiveModelRow>,
     output: i64,
@@ -1154,6 +1169,7 @@ impl AnalyticsState {
                             sid: record.sid.clone(),
                             project: pname.clone(),
                             work_dir: work_dir.clone(),
+                            cli: cli_of(state.source),
                             first: record.ts,
                             last: record.ts,
                             ..Default::default()
@@ -1239,6 +1255,7 @@ impl AnalyticsState {
                         sid: record.sid.clone(),
                         project: project.clone(),
                         work_dir: work_dir.clone(),
+                        cli: cli_of(state.source),
                         agent_totals: HashMap::new(),
                         model_totals: HashMap::new(),
                         model_stats: HashMap::new(),
@@ -1378,6 +1395,7 @@ impl AnalyticsState {
                     "session_id": s.sid,
                     "model": model,
                     "agent": dominant,
+                    "cli": s.cli,
                     // 输出速率为基础（业界吞吐标准：以输出 token 计量）
                     "rate": rate,
                     "gen_rate": gen_rate,
@@ -1445,6 +1463,7 @@ impl AnalyticsState {
                         serde_json::json!({
                             "session_id": s.sid,
                             "agent": dominant,
+                            "cli": s.cli,
                             "tokens": s.total,
                             "output": s.output,
                             "requests": s.requests,
@@ -1577,6 +1596,7 @@ impl AnalyticsState {
                     "project": session.project,
                     "work_dir": session.work_dir,
                     "agent": dominant,
+                    "cli": session.cli,
                     "models": session.model_totals.keys().cloned().collect::<Vec<_>>(),
                     "input": session.input,
                     "output": session.output,

@@ -119,6 +119,9 @@ v0.7.39 起，Kimi Code、OpenAI Codex、GLM / BigModel、DeepSeek 均支持多�
   让启动器进入 PATH。正在运行的进程不会热切换；显式设置的 `CODEX_HOME`
   始终优先于 Env-Tools 的当前账号。Windows 与每个 WSL 发行版分别保存选择，
   并分别安装启动器；首次修改 PATH 后，旧终端或 IDE 可能需要重启。
+  切换时当前账号的 `auth.json` 会同步到各 WSL 发行版：除对应 profile 外，
+  还镜像到 `~/.codex/auth.json`，因此未安装（或启动器失效）的发行版同样
+  会使用新账号；启动器模板与写出一律 LF，避免 CRLF 破坏 shebang。
 - DeepSeek：使用 API Key（platform.deepseek.com 的 API keys 页面生成，与
   `/usage` 网页看到的余额是同一套账户数据）。三种配置方式（按优先级）：
   1. `--deepseek-key` 命令行参数；
@@ -181,7 +184,9 @@ Windows Electron 看板自 v0.2.0 起默认打开**全量模式**窗口（Usage 
 
 - KPI 卡片：近 7 天 tokens、今日 tokens、总缓存命中率、上周同期（含周环比
   涨跌）、Token 速率（最新 3 个活跃会话的项目 / 模型 / 速率，同名项目以
-  #1/#2 区分，悬浮可查看完整会话 id）。
+  #1/#2 区分，悬浮可查看完整会话 id）。模型标签为 `Agent/模型`，Agent 取
+  实际产生会话的 CLI（如 `Kimi Code/k3.1-pro`）；自定义模型名里的
+  `deepseek/` 等前缀只影响计费归因，不再决定标签上的 Agent。
 - 图表：每日 token 趋势（input/output/cacheRead/cacheCreation 堆叠）、今日按
   小时趋势、模型占比（Top 8 + 其他）、每日 × 模型堆叠、缓存命中率折线、项目
   排行 Top 15（按会话工作目录聚合）、GitHub 风格近一年活动日历。每日 Token
@@ -296,6 +301,11 @@ OpenAI 返回 usage limit reset 机会时，终端和 Electron 看板会额外�
 （直连 ↔ 系统代理，需存在 `http_proxy` 等环境变量）重试一次；整体超过
 20 分钟未完成按超时失败。失败（含停滞/超时/取消）时浮层不自动关闭，
 末尾日志保留在浮层里供排查，完整过程见 `ai-tools/log/setup.log`。
+
+v0.7.44 起组件管理支持多个组件同时安装/升级：只有正在安装的组件按钮
+显示"进行中"并被禁用，其余组件可照常操作；看板发起的升级也会同步显示
+在组件管理页对应组件上。安装日志按组件打标签，日志面板可切换"全部组件 /
+单个组件"过滤，Cancel 只中止当前选中的组件（未选具体组件时中止全部）。
 
 Codex 的登录令牌由 Codex CLI 管理；如果终端提示登录失效，请执行
 `codex login`。可以用 `CODEX_USAGE_URL` 覆盖额度接口地址，以适配后续官方

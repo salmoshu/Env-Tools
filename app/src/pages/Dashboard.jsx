@@ -550,7 +550,9 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
   }, []);
   // 升级状态来自全局 installState：切页后"升级中…"徽章与结果提示都还在
   const install = useInstallState();
-  const upgrading = install.running;
+  // 多场升级并发时，所有在跑 provider 的角标都要亮，而不只是最近一场
+  const upgradingTargets = Object.values(install.runs || {}).flatMap((run) => run.targets || []);
+  const upgrading = upgradingTargets.length ? { targets: upgradingTargets } : null;
   const analyticsBusy = useRef(false);
   // 手动刷新广播 analytics-invalidated 时若在途请求未完结，置位排队补拉
   const analyticsQueued = useRef(false);
@@ -825,19 +827,22 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
 
   // 升级执行（确认后异步进行；卡片显示动态提醒，结果落入升级提示条）
   const beginUpgrade = useCallback(async (targets) => {
-    if (install.running) return;
-    setInstallRunning({ label: targets.join(", "), kind: "upgrade", targets });
+    // 只拦截同目标的重复升级，其它组件可并发安装/升级
+    const duplicate = Object.values(install.runs || {}).some((run) =>
+      (run.targets || []).some((target) => targets.includes(target)));
+    if (duplicate) return;
+    const currentRun = setInstallRunning({ label: targets.join(", "), kind: "upgrade", targets });
     try {
       const data = (usagePayload && usagePayload.data) || {};
       const result = await window.api.upgrade(targets, data.environment, data.windows_setup_script);
-      setInstallResult({ ok: Boolean(result && result.ok), error: result && result.error });
+      setInstallResult({ ok: Boolean(result && result.ok), error: result && result.error }, currentRun);
     } catch (err) {
-      setInstallResult({ ok: false, error: String(err.message || err) });
+      setInstallResult({ ok: false, error: String(err.message || err) }, currentRun);
     } finally {
       // 升级完成后刷新用量数据（版本号变化）
       if (onRefresh) onRefresh();
     }
-  }, [install.running, usagePayload, onRefresh]);
+  }, [install.runs, usagePayload, onRefresh]);
 
   // 速率展示口径：设置页 speedMode = gen 时优先纯生成速率（无逐请求计时回退吞吐）
   const fmtRate = (v) => (v >= 100 ? abbrev(Math.round(v)) : v.toFixed(1));
@@ -847,16 +852,16 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
     const v = pickRate(item);
     return v != null ? `${fmtRate(v)} tok/s` : "—";
   };
-  // agent/模型 展示：模型名自带 provider 前缀（kimi-code/k3、deepseek/v4…）时
-  // 只取末段，避免 kimi/kimi-code/k3-256k、omp/kimi-code/k3-256k 这类双重前缀；
-  // 悬浮提示保留完整模型名
+  // agent/模型 展示：agent 取会话所属 CLI（kimi/codex/zcode/omp），而不是按
+  // 模型名前缀的计费归因——自定义模型名带 deepseek/ 前缀时，Kimi Code 会话
+  // 不再被显示成 DeepSeek。模型名自带的 provider 前缀只取末段，避免
+  // kimi/kimi-code/k3-256k 这类双重前缀；悬浮提示保留完整模型名
   const rateModelLabel = (agent, model) => {
     const agentLabel = AGENT_LABELS[agent] || agent || "—";
     if (!model) return agentLabel;
-    if (!agent) return model.split("/").pop();
     const bare = model.split("/").pop();
-    const vendor = agent === "kimi" ? "kimi" : agent;
-    return `${vendor}/${bare}`;
+    if (!agent) return bare;
+    return `${agentLabel}/${bare}`;
   };
 
   // 排序作用于全集；分组与 200 行渲染上限在排序之后套用。
@@ -934,7 +939,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
         <td className="l mono" title={(session.models || []).join(", ")}>
           {(session.models || []).length > 1
             ? `${session.models.length} models`
-            : rateModelLabel(session.agent, (session.models || [])[0])}
+            : rateModelLabel(session.cli || session.agent, (session.models || [])[0])}
         </td>
         <td
           className="sess-tokens"
@@ -1122,7 +1127,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                             {models.map((m) => (
                               <div className="act-model-row" key={m.model}>
                                 <span className="mono act-model-name" title={`${s.agent}/${m.model}`}>
-                                  {rateModelLabel(s.agent, m.model)}
+                                  {rateModelLabel(s.cli || s.agent, m.model)}
                                 </span>
                                 <span className="act-meta">
                                   {fmt(m.tokens)} {t("dash.tokens")} · {fmt(m.output)} out · {m.requests} req
@@ -1164,8 +1169,8 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                       <span className="rate-name">{item.project}</span>
                       {tag ? <span className="rate-tag">{tag}</span> : null}
                       <span className="rate-model" title={item.model || item.agent || ""}>
-                        <BrandIcon of={item.agent} size={12} />
-                        {rateModelLabel(item.agent, item.model)}
+                        <BrandIcon of={item.cli || item.agent} size={12} />
+                        {rateModelLabel(item.cli || item.agent, item.model)}
                       </span>
                       <span className="rate-val">{rateText(item)}</span>
                     </div>

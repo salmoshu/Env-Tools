@@ -5,3 +5,5 @@ app/dist/** linguist-generated
 # CRLF 会让 bash 把行尾 \r 拼进选项名（set -euo pipefail 报 invalid option
 # name）。eol=lf 覆盖 core.autocrlf，任何平台检出都保持 LF。
 *.sh text eol=lf
+# Codex wrapper 模板没有扩展名，同样需要 LF（shebang 不能被 CRLF 破坏）
+**/codex-profile/codex text eol=lf

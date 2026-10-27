@@ -1207,6 +1207,11 @@ const UPGRADE_FLAGS = {
   "Kimi Code": "--kimi",
   "OpenAI Codex": "--codex",
 };
+// 看板升级目标（provider 名）→ Tools 组件 key，供组件管理页显示同一场升级
+const UPGRADE_COMPONENTS = {
+  "Kimi Code": "kimi",
+  "OpenAI Codex": "codex",
+};
 const COMPONENT_FLAGS = {
   kimi: "--kimi",
   codex: "--codex",
@@ -1216,9 +1221,9 @@ const COMPONENT_FLAGS = {
 // tar 包不完整时会回退下载 152MB 裸二进制，慢速链路全程可达 40 分钟以上，
 // 给足 60min；完全停滞由 setup 脚本自检提前中止，不会真等满超时
 const INSTALL_TIMEOUT_MS = 60 * 60 * 1000;
-// 当前在跑的安装子进程，供"取消"终止；一次只允许一个
-let installChild = null;
-let installCancelled = false;
+// 当前在跑的安装子进程：runKey → { child, cancelled }。
+// 不同组件可并发安装；同一 runKey 重复发起会被拒绝。
+const installRuns = new Map();
 
 // POSIX 下子进程独立进程组（detached），整组 SIGTERM 才能清理到
 // 安装脚本内部的 curl 等孙子进程；Windows/WSL 路径保持杀直接子进程
@@ -1442,11 +1447,17 @@ function installSpec(kind, targets, environment, windowsSetupScript) {
   return componentSpec(String(targets), environment, windowsSetupScript);
 }
 
-// runs 统一入口：spawn 安装脚本，按行推送输出，可取消，超时兜底
-function startInstall(runKey, spec) {
+function sendInstall(payload) {
+  for (const w of liveWindows()) w.webContents.send("install-progress", payload);
+}
+
+// runs 统一入口：spawn 安装脚本，按行推送输出，可取消，超时兜底。
+// start/end 事件广播给所有窗口：升级由看板发起时，组件管理页也能同步
+// 显示"进行中"；日志行始终带 runKey，并发时前端按组件分流。
+function startInstall(runKey, spec, meta = {}) {
   return new Promise((resolve) => {
-    if (installChild) {
-      resolve({ ok: false, error: "another install is already running" });
+    if (installRuns.has(runKey)) {
+      resolve({ ok: false, error: `${meta.label || runKey} is already running` });
       return;
     }
     // 负载缺失（如 kdesk 数百 MB 厂商包不随应用分发）给明确提示，
@@ -1467,18 +1478,23 @@ function startInstall(runKey, spec) {
       });
       return;
     }
-    if (spec.note) {
-      for (const w of liveWindows()) {
-        w.webContents.send("install-progress", { key: runKey, line: spec.note });
-      }
-    }
+    if (spec.note) sendInstall({ key: runKey, line: spec.note });
+    sendInstall({
+      key: runKey,
+      start: {
+        label: meta.label || runKey,
+        kind: meta.kind || "",
+        components: meta.components || [],
+        targets: meta.targets || [],
+      },
+    });
     const child = spawn(spec.command, spec.args, {
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
       detached: process.platform !== "win32",
     });
-    installChild = child;
-    installCancelled = false;
+    const run = { child, cancelled: false };
+    installRuns.set(runKey, run);
     let output = "";
     let lineBuf = "";
     let settled = false;
@@ -1486,7 +1502,8 @@ function startInstall(runKey, spec) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      installChild = null;
+      installRuns.delete(runKey);
+      sendInstall({ key: runKey, end: { ok: Boolean(result.ok), error: result.error || null } });
       resolve(result);
     };
     const timer = setTimeout(() => {
@@ -1502,11 +1519,7 @@ function startInstall(runKey, spec) {
       while ((idx = lineBuf.indexOf("\n")) >= 0) {
         const line = lineBuf.slice(0, idx).replace(/\r$/, "");
         lineBuf = lineBuf.slice(idx + 1);
-        if (line.trim()) {
-          for (const w of liveWindows()) {
-            w.webContents.send("install-progress", { key: runKey, line });
-          }
-        }
+        if (line.trim()) sendInstall({ key: runKey, line });
       }
     };
     child.stdout.on("data", (d) => feedLines(String(d)));
@@ -1514,15 +1527,11 @@ function startInstall(runKey, spec) {
     child.on("error", (err) => finish({ ok: false, error: err.message }));
     child.on("close", async (code) => {
       if (settled) return;
-      if (lineBuf.trim()) {
-        for (const w of liveWindows()) {
-          w.webContents.send("install-progress", { key: runKey, line: lineBuf.trim() });
-        }
-      }
+      if (lineBuf.trim()) sendInstall({ key: runKey, line: lineBuf.trim() });
       if (code !== 0) {
         finish({
           ok: false,
-          error: installCancelled ? "cancelled" : `exit ${code}: ${output.trim().slice(-300)}`,
+          error: run.cancelled ? "cancelled" : `exit ${code}: ${output.trim().slice(-300)}`,
         });
         return;
       }
@@ -1535,9 +1544,15 @@ function startInstall(runKey, spec) {
 }
 
 ipcMain.handle("upgrade-agents", (_event, providers, environment, windowsSetupScript) => {
+  const targets = Array.isArray(providers) ? providers : [];
   const spec = installSpec("upgrade", providers, environment, windowsSetupScript);
   if (!spec) return Promise.resolve({ ok: false, error: "no upgradable target" });
-  return startInstall("upgrade", spec);
+  return startInstall(`upgrade:${targets.join(",")}`, spec, {
+    label: targets.join(", "),
+    kind: "upgrade",
+    targets,
+    components: targets.map((p) => UPGRADE_COMPONENTS[p]).filter(Boolean),
+  });
 });
 ipcMain.handle("run-component", async (_event, component, environment, windowsSetupScript, distro) => {
   // 独立 CLI 组件共用安装引擎；每次只传对应组件的开关，与看板升级同一条链路。
@@ -1552,7 +1567,11 @@ ipcMain.handle("run-component", async (_event, component, environment, windowsSe
     spec = installSpec(kind, component, environment, windowsSetupScript);
   }
   if (!spec) return { ok: false, error: "no installable target for this component" };
-  return startInstall(`component:${component}`, spec);
+  return startInstall(`component:${component}`, spec, {
+    label: component,
+    kind: "component",
+    components: [component],
+  });
 });
 // 组件探测（Tools 页）：kimi/codex/entire/node 返回已装版本（null=未装），
 // openssh/kdesk 返回是否部署。Windows 侧经 cmd.exe（npm .cmd 垫片）+
@@ -1686,11 +1705,22 @@ ipcMain.handle("wsl-distros", async () => {
   return { ok: true, distros };
 });
 
-ipcMain.handle("install-cancel", () => {
-  if (!installChild) return false;
-  installCancelled = true;
-  killInstallTree(installChild);
-  return true;
+ipcMain.handle("install-cancel", (_event, key) => {
+  // 指定 runKey 只取消该组件；未指定则取消全部在跑的安装
+  if (key) {
+    const run = installRuns.get(key);
+    if (!run) return false;
+    run.cancelled = true;
+    killInstallTree(run.child);
+    return true;
+  }
+  let cancelled = 0;
+  for (const run of installRuns.values()) {
+    run.cancelled = true;
+    killInstallTree(run.child);
+    cancelled += 1;
+  }
+  return cancelled > 0;
 });
 ipcMain.handle("component-status", async (_event, component, environment, distro) => {
   // 目前只有 openssh 有 status 子命令；其余组件的“状态”由安装结果体现
