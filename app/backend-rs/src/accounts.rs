@@ -304,6 +304,51 @@ fn credentials_env_name(provider: Provider) -> Option<&'static str> {
     }
 }
 
+/// default 账号 codex 凭证的自愈解析：
+/// - 无备份（从未物化）→ ~/.codex/auth.json；
+/// - 备份存在且 ~/.codex 与备份同 account_id（用户 re-login default，
+///   新凭证落在了 ~/.codex）→ 取 last_refresh 较新者；~/.codex 较新时回写
+///   备份，若当前激活的是命名账号则重新物化（保持 ~/.codex = 活动账号）；
+/// - 备份存在且 id 不同（物化态）→ 备份（default 的真实登录）。
+fn resolve_codex_default_credential(dot_codex: &Path) -> Option<PathBuf> {
+    let backup = codex_default_backup(&crate::settings::local_home());
+    if !backup.is_file() || dot_codex == backup {
+        return dot_codex.is_file().then_some(dot_codex.to_path_buf());
+    }
+    if !dot_codex.is_file() {
+        return Some(backup);
+    }
+    let read_field = |path: &Path| -> (String, String) {
+        let value = crate::settings::read_json(path).unwrap_or_else(|_| serde_json::json!({}));
+        let tokens = value.get("tokens").cloned().unwrap_or_else(|| serde_json::json!({}));
+        (
+            tokens.get("account_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            value.get("last_refresh").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        )
+    };
+    let (backup_id, backup_refresh) = read_field(&backup);
+    let (live_id, live_refresh) = read_field(dot_codex);
+    if backup_id != live_id {
+        // 物化态：~/.codex 是命名账号，default 用备份
+        return Some(backup);
+    }
+    if live_refresh > backup_refresh {
+        // re-login 的新凭证：采纳并回写备份
+        if copy_atomic(dot_codex, &backup).is_ok() {
+            let active = load_registry(Provider::Codex)
+                .get("active")
+                .and_then(|v| v.as_str())
+                .unwrap_or("default")
+                .to_string();
+            if active != "default" {
+                let _ = materialize_codex_active(&crate::settings::local_home(), &active);
+            }
+        }
+        return Some(backup);
+    }
+    Some(backup)
+}
+
 pub fn credential_path(profile: &AccountProfile) -> Option<PathBuf> {
     let path = profile.home.join(profile.provider.spec().credential_relative);
     if !profile.is_default {
@@ -321,13 +366,9 @@ pub fn credential_path(profile: &AccountProfile) -> Option<PathBuf> {
             // 账号"的凭证（Zed 直连 codex 只读默认 CODEX_HOME），default
             // 账号的真实登录在 _default-original 备份里——配额/重置等
             // 按账号维度的操作必须用真实凭证，否则所有账号显示同一份额
-            // 注意：codex 的 profile.home 是 ~/.codex（凭证目录本身），
-            // 备份基于用户家目录构造
-            let backup = codex_default_backup(&crate::settings::local_home());
-            if backup.is_file() {
-                return Some(backup);
-            }
-            path.is_file().then_some(path)
+            // 物化态的 default 真实登录在备份里；同账号 re-login 时
+            // 取较新者并自愈（见 resolve_codex_default_credential）
+            resolve_codex_default_credential(&path)
         }
         Provider::Kimi => {
             if path.is_file() {
