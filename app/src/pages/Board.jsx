@@ -209,7 +209,6 @@ export default function Board({ lastPayload }) {
               <div className="provider-head">
                 <BrandIcon of={account.provider} size={16} />
                 <span className="provider-name">{account.provider}</span>
-                <AgentAccountControl provider={providerKey} state={accountStates[providerKey]} />
                 {info.current && info.latest && isNewerVersion(info.latest, info.current) ? (
                   <span
                     className="ver upgrade"
@@ -224,6 +223,7 @@ export default function Board({ lastPayload }) {
                 ) : info.current ? (
                   <span className="ver">v{info.current}</span>
                 ) : null}
+                <AgentAccountControl provider={providerKey} state={accountStates[providerKey]} />
                 <span className="plan">{account.plan || "unknown"}</span>
                 {upgrading && Array.isArray(upgrading.targets) && upgrading.targets.includes(account.provider) ? (
                   <span className="upgrading-badge"><span className="spin-dot" />{t("upgrade.runningBadge")}</span>

@@ -115,6 +115,12 @@ const TAB_KEY = "tools.platform-tab";
 const WSL_TARGET_KEY = "tools.wsl-target";
 const CATEGORY_KEY = "tools.category";
 
+// 切页回来不重复探测：组件版本/发行版清单在模块级缓存 60s，
+// 避免每次进入组件管理都重新起一批 wsl/cmd 子进程（切页卡顿来源）
+const detectCache = new Map();
+let distroCache = { value: null, at: 0 };
+const DETECT_CACHE_MS = 60 * 1000;
+
 export default function Tools({ lastPayload }) {
   useLang();
   const [platformTab, setPlatformTab] = useState(() => {
@@ -226,13 +232,23 @@ export default function Tools({ lastPayload }) {
 
   const detectComponents = () => {
     const request = ++detectRequest.current;
-    setDetected(null);
+    const cacheKey = `${platformTab}|${wslTarget}`;
+    const cached = detectCache.get(cacheKey);
+    if (cached && Date.now() - cached.at < DETECT_CACHE_MS) {
+      // 有新鲜缓存直接渲染，后台再探一次；没有缓存才显示"检测中"
+      setDetected(cached.components);
+    } else {
+      setDetected(null);
+    }
     setDetectError(false);
     window.api.componentDetect(platformTab, platformTab === "wsl" ? wslTarget : undefined)
       .then((result) => {
         if (request !== detectRequest.current) return;
-        if (result && result.ok) setDetected(result.components || {});
-        else setDetectError(true);
+        if (result && result.ok) {
+          const components = result.components || {};
+          detectCache.set(cacheKey, { components, at: Date.now() });
+          setDetected(components);
+        } else setDetectError(true);
       })
       .catch(() => { if (request === detectRequest.current) setDetectError(true); });
   };
@@ -267,10 +283,20 @@ export default function Tools({ lastPayload }) {
 
   useEffect(() => {
     // 首次切到 WSL Tab 时拉取发行版清单（逐发行版进 distro 读 os-release，
-    // 冷启动要几秒，按需加载且只拉一次；失败置空列表，探测走数据源回退）
-    if (platformTab !== "wsl" || wslDistros) return;
+    // 冷启动要几秒，按需加载且只拉一次；失败置空列表，探测走数据源回退）。
+    // 60s 内切页复用缓存，不再逐发行版重启 wsl 子进程
+    if (platformTab !== "wsl") return;
+    if (wslDistros) return;
+    if (distroCache.value && Date.now() - distroCache.at < DETECT_CACHE_MS) {
+      setWslDistros(distroCache.value);
+      return;
+    }
     window.api.wslDistros()
-      .then((result) => setWslDistros(result && result.ok ? result.distros || [] : []))
+      .then((result) => {
+        const distros = result && result.ok ? result.distros || [] : [];
+        distroCache = { value: distros, at: Date.now() };
+        setWslDistros(distros);
+      })
       .catch(() => setWslDistros([]));
   }, [platformTab, wslDistros]);
 

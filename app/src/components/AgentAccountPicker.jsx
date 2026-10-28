@@ -52,7 +52,8 @@ export default function AgentAccountPicker({ accounts, value, activeId = "", onC
   useEffect(() => {
     if (!open) return undefined;
     const selectedIndex = Math.max(0, options.findIndex((option) => option.id === selectedId));
-    optionRefs.current[selectedIndex]?.focus();
+    // preventScroll：打开下拉时不要触发整页滚动（长页面下会像"卡了一下"）
+    optionRefs.current[selectedIndex]?.focus({ preventScroll: true });
     const closeOutside = (event) => {
       if (rootRef.current && !rootRef.current.contains(event.target)) setOpen(false);
     };

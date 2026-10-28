@@ -186,9 +186,13 @@ fn fetch_account(account: &AccountProfile) -> Result<Value, String> {
     let timeout = env_timeout("CODEX_TIMEOUT", 30).min(20);
     // 优先官方 app-server（account/rateLimits/read）：官方续期与协议兼容；
     // CLI 缺失/版本不支持/查询失败时回退直连 wham/usage
-    let appserver = if account.home.is_dir() && env_enabled("CODEX_APPSERVER", true) {
+    // app-server 的 CODEX_HOME 必须取"实际凭证所在目录"，而不是 profile.home：
+    // default 被物化覆盖时（~/.codex 是当前激活账号），其真实登录在
+    // _default-original 备份里，直接用 profile.home 会把两个账号查成同一个
+    let appserver_home = path.parent().unwrap_or(&account.home).to_path_buf();
+    let appserver = if appserver_home.is_dir() && env_enabled("CODEX_APPSERVER", true) {
         super::codex_appserver::query_rate_limits(
-            &account.home,
+            &appserver_home,
             env_timeout("CODEX_APPSERVER_TIMEOUT", 25).min(25),
         )
         .ok()

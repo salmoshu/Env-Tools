@@ -30,23 +30,19 @@ const ANALYTICS_REFRESH_MS = 5 * 60 * 1000;
 const ANALYTICS_DAYS = "30";
 // 首屏秒开：按 目标|agent|范围 缓存最近一次分析载荷，启动先画旧数据，
 // 新鲜数据到达后无缝替换（meta 行的"更新于"时间戳自然暴露陈旧度）
-const ANALYTICS_CACHE_KEY = "ai-usage-monitor.analytics-cache-v1";
 
+// 组合缓存只存内存：此前每次刷新都把最多 8 份大 JSON 从 localStorage
+// 读出再整体写回（同步主线程 IO，单次数 MB），是周期性卡顿的主要来源。
+// 内存 Map 同样避免切组合白屏，只是不再跨重启保留。
+const analyticsMemoryCache = new Map();
 function readAnalyticsCache() {
-  try { return JSON.parse(localStorage.getItem(ANALYTICS_CACHE_KEY) || "{}"); } catch { return {}; }
+  return Object.fromEntries(analyticsMemoryCache);
 }
 
 function writeAnalyticsCache(combo, payload) {
-  try {
-    const all = readAnalyticsCache();
-    all[combo] = payload;
-    const keys = Object.keys(all);
-    while (keys.length > 8) delete all[keys.shift()];
-    localStorage.setItem(ANALYTICS_CACHE_KEY, JSON.stringify(all));
-  } catch {
-    // 配额超限：退化为只保留当前组合
-    try { localStorage.setItem(ANALYTICS_CACHE_KEY, JSON.stringify({ [combo]: payload })); } catch {}
-  }
+  analyticsMemoryCache.set(combo, payload);
+  const keys = [...analyticsMemoryCache.keys()];
+  while (keys.length > 8) analyticsMemoryCache.delete(keys.shift());
 }
 const AGENT_KEY = "ai-usage-monitor.analytics-agent";
 const TARGET_KEY = "ai-usage-monitor.target";
@@ -69,6 +65,8 @@ const CARD_ORDER_KEY = "ai-usage-monitor.card-order";
 const CARD_DEFAULT_ORDER = ["daily", "yearly", "share", "dailyModel", "cacheRate", "topProjects", "sessions"];
 const SESSION_GROUP_OPTIONS = ["none", "project", "agent"];
 const SESSION_ROW_CAP = 200;
+// 默认只渲染前 100 行（可一键展开全部）：长表是分析页滚动/渲染的主要开销
+const SESSION_ROW_DEFAULT = 100;
 // 设置页"显示"面板的 provider 勾选（与悬浮看板共用同一 localStorage 键）
 const DISPLAY_SELECTION_KEY = "ai-usage-monitor.display-providers";
 
@@ -153,7 +151,6 @@ function QuotaCard({ account, versions, onUpgrade, upgrading, providerKey, accou
       <div className="qcard-head">
         <BrandIcon of={account.provider} size={16} />
         <span className="qname">{account.provider}</span>
-        <AgentAccountControl provider={providerKey} state={accountState} />
         {newer && onUpgrade ? (
           <span
             className="qver upgrade"
@@ -170,6 +167,7 @@ function QuotaCard({ account, versions, onUpgrade, upgrading, providerKey, accou
         ) : info.current ? (
           <span className="qver">v{info.current}</span>
         ) : null}
+        <AgentAccountControl provider={providerKey} state={accountState} />
         <span className="plan">{activeChannel === "start"
           ? (startPlanName || "Start Plan")
           : (account.plan || "unknown")}</span>
@@ -597,8 +595,9 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
     try {
       const result = await window.api.getAnalytics(nextDays, nextAgent, nextTarget);
       if (result && result.ok && result.analytics) {
-        // 内容没变就不 setAnalytics：定时刷新此前每分钟都强制整页重渲染
-        const fingerprint = JSON.stringify(result.analytics);
+        // 内容没变就不 setAnalytics：定时刷新此前每分钟都强制整页重渲染。
+        // 指纹由后端算好，避免在渲染进程对大 JSON 做序列化
+        const fingerprint = result.analytics.content_hash || JSON.stringify(result.analytics);
         if (fingerprint !== analyticsHash.current) {
           analyticsHash.current = fingerprint;
           setAnalytics(result.analytics);
@@ -876,14 +875,35 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
   // 排序作用于全集；分组与 200 行渲染上限在排序之后套用。
   // 列组织（v0.7.25 重组）：Token 三列合一（总量 + 构成迷你条，悬浮看明细）、
   // 起止两列合一（活跃跨度 + 结束于），新增占比列——列数 12 → 9
-  const sessionsAll = (analytics && analytics.sessions) || [];
-  const sessionsGrand = sessionsAll.reduce((sum, s) => sum + (s.total || 0), 0);
-  const nowSec = Math.floor(Date.now() / 1000);
-  const sortedRows = sessionsAll.slice()
-    .sort((a, b) => ((a[sessionsSort.key] || 0) - (b[sessionsSort.key] || 0)) * sessionsSort.dir);
+  const sessionsAll = useMemo(() => (analytics && analytics.sessions) || [], [analytics]);
+  const sessionsGrand = useMemo(
+    () => sessionsAll.reduce((sum, s) => sum + (s.total || 0), 0),
+    [sessionsAll],
+  );
+  // "x 分钟前"按分钟粒度刷新即可：避免 nowSec 每次渲染都让表格子树失效
+  const nowMinute = Math.floor(Date.now() / 60000);
+  const nowSec = nowMinute * 60;
+  // 默认 100 行，点击"显示全部"才展开到 200 行上限
+  const [showAllSessions, setShowAllSessions] = useState(false);
+  const sessionsRowLimit = showAllSessions ? SESSION_ROW_CAP : SESSION_ROW_DEFAULT;
+  // 首屏先画 KPI/图表，重会话表在浏览器空闲时再创建，避免一次性长任务
+  const [sessionsReady, setSessionsReady] = useState(false);
+  useEffect(() => {
+    const idle = window.requestIdleCallback || ((fn) => setTimeout(fn, 120));
+    const handle = idle(() => setSessionsReady(true), { timeout: 400 });
+    return () => {
+      if (window.cancelIdleCallback) window.cancelIdleCallback(handle);
+      else clearTimeout(handle);
+    };
+  }, []);
+  const sortedRows = useMemo(
+    () => sessionsAll.slice()
+      .sort((a, b) => ((a[sessionsSort.key] || 0) - (b[sessionsSort.key] || 0)) * sessionsSort.dir),
+    [sessionsAll, sessionsSort],
+  );
   // 分组：组间按组总 token 降序，组内沿用当前排序键；全局最多渲染 200 行数据
-  let groupPlan = null;
-  if (sessionsGroup !== "none") {
+  const groupPlan = useMemo(() => {
+    if (sessionsGroup === "none") return null;
     const groups = new Map();
     for (const s of sortedRows) {
       const key = sessionsGroup === "project" ? (s.project || "(unknown)") : (s.agent || "?");
@@ -892,15 +912,15 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
       g.rows.push(s);
       g.total += s.total || 0;
     }
-    let left = SESSION_ROW_CAP;
-    groupPlan = [...groups.values()]
+    let left = sessionsRowLimit;
+    return [...groups.values()]
       .sort((a, b) => b.total - a.total || a.key.localeCompare(b.key))
       .map((g) => {
         const shown = g.rows.slice(0, Math.max(0, left));
         left -= shown.length;
         return { ...g, shown };
       });
-  }
+  }, [sortedRows, sessionsGroup, sessionsRowLimit]);
   const header = (key, label, left = false) => {
     const sortable = SESSION_SORTABLE.includes(key);
     const arrow = sessionsSort.key === key ? (sessionsSort.dir < 0 ? " ▼" : " ▲") : "";
@@ -1062,6 +1082,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
           <div className="kpi-label">{t("dash.kpiCacheToday")}</div>
           <div className="kpi-value">{fmtPct(todayCacheRate)}</div>
         </div>
+        {useMemo(() => (
         <div className={cardCls("rate", "kpi-card")}>
           <div className="kpi-label rate-label">
             <span className="rate-label-text">
@@ -1189,6 +1210,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
             );
           })()}
         </div>
+        ), [kpi.rate, expandedCard, speedMode, rateCollapsed, lang, dragCard, dropTarget, nowMinute])}
       </div>
 
       <section className="block">
@@ -1382,6 +1404,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
           })()}
         </section>
 
+      {useMemo(() => sessionsReady ? (
       <section
         {...cardMods("sessions")}
         className={`${cardCls("sessions")} card-w-full${dragCard === "sessions" ? " dragging" : ""}${dropTarget === "sessions" && dragCard && dragCard !== "sessions" ? " drop-target" : ""}`}
@@ -1426,7 +1449,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
             </thead>
             {sessionsGroup === "none" ? (
               <tbody>
-                {sortedRows.slice(0, SESSION_ROW_CAP).map(renderSessionRow)}
+                {sortedRows.slice(0, sessionsRowLimit).map(renderSessionRow)}
               </tbody>
             ) : (
               (groupPlan || []).map((g) => (
@@ -1447,7 +1470,21 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
             )}
           </table>
         </div>
+        {sortedRows.length > SESSION_ROW_DEFAULT ? (
+          <button
+            type="button"
+            className="login-btn sessions-more"
+            onClick={() => setShowAllSessions((value) => !value)}
+          >
+            {showAllSessions
+              ? t("dash.sessionsCollapse")
+              : t("dash.sessionsShowAll").replace("{n}", String(Math.min(sortedRows.length, SESSION_ROW_CAP)))}
+          </button>
+        ) : null}
       </section>
+      ) : (
+        <section className="card-w-full sessions-placeholder"><div className="status">{t("state.loading")}</div></section>
+      ), [sessionsReady, groupPlan, sortedRows, sessionsGrand, sessionsGroup, sessionsSort, speedMode, lang, dragCard, dropTarget, expandedCard, nowMinute, sessionsRowLimit, showAllSessions])}
       </div>
       {upgradeProvider && (
         <UpgradeOverlay

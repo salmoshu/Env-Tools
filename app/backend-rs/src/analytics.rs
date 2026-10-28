@@ -1675,7 +1675,7 @@ impl AnalyticsState {
             .map(|d| d["cache_read"].as_i64().unwrap_or(0))
             .sum();
 
-        serde_json::json!({
+        let payload = serde_json::json!({
             "generated_at": now.format("%Y-%m-%d %H:%M:%S").to_string(),
             "days": days,
             "agent": agent,
@@ -1747,6 +1747,27 @@ impl AnalyticsState {
                     },
                 },
             },
-        })
+        });
+        let hash = content_hash(&payload);
+        let mut payload = payload;
+        payload["content_hash"] = serde_json::Value::String(hash);
+        payload
     }
+}
+
+/// 载荷内容指纹（不含 generated_at）：前端据此判断"数据没变"，
+/// 不必在渲染进程对整份分析 JSON 做序列化比较。
+fn content_hash(payload: &serde_json::Value) -> String {
+    let mut hashed = payload.clone();
+    if let Some(obj) = hashed.as_object_mut() {
+        obj.remove("generated_at");
+        obj.remove("content_hash");
+    }
+    let text = hashed.to_string();
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
 }

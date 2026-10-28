@@ -210,18 +210,18 @@ export default function App() {
               <span className="nav-icon"><ToolsIcon /></span> {t("nav.tools")}
             </div>
           </nav>
-          {route === "tools" && (
-            <div className="page-scroll">
-              <Tools lastPayload={lastPayload} />
-            </div>
-          )}
-          {route === "dashboard" && (
+          {/* 两页常驻、只切显示：此前每次切页都卸载重建 Dashboard，
+              实测切回时有 85–97ms 长任务和帧尖峰（切页卡顿主因） */}
+          <div className="page-scroll" style={{ display: route === "tools" ? undefined : "none" }}>
+            <Tools lastPayload={lastPayload} />
+          </div>
+          <div style={{ display: route === "dashboard" ? undefined : "none" }}>
             <Dashboard
               lastPayload={lastPayload}
               refreshing={refreshing}
               onRefresh={triggerRefresh}
             />
-          )}
+          </div>
         </div>
       )}
     </div>

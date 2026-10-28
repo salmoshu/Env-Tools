@@ -148,6 +148,8 @@ export function useAgentAccounts(provider, quotaAccounts = [], sync = true) {
     try { if (id) localStorage.setItem(viewKey, id); } catch {}
   }, [viewKey]);
 
+  const dismissNotice = useCallback(() => setNotice(""), []);
+
   const selectAccount = useCallback(async (id) => {
     if (!sync) {
       setError("");
@@ -200,6 +202,7 @@ export function useAgentAccounts(provider, quotaAccounts = [], sync = true) {
     reload,
     error,
     notice,
+    dismissNotice,
     switching,
     defaultRemoved: sync && defaultRemoved,
     launcherInstalled,

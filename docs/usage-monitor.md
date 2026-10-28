@@ -89,7 +89,8 @@ v0.7.39 起，Kimi Code、OpenAI Codex、GLM / BigModel、DeepSeek 均支持多�
 账号菜单收起仅显示名称，展开才显示 5h / 7d 等窗口用量。SSH 远端仅切换显示，
 不修改本机 active。v0.7.45 起下拉**只切换查看对象**（看不同账号的额度），
 真正的账号切换由旁边的「使用」按钮触发；切换时若检测到仍在运行的 Codex
-会话（app-server / codex-acp / 桌面版），卡片会提示「需重启会话」。
+会话（app-server / codex-acp / 桌面版），会弹框提醒「需重启会话」（8 秒自动
+消失，也可手动关闭）。
 
 Codex 配额优先通过官方 `codex app-server` 的 `account/rateLimits/read` 查询
 （不创建对话、不做模型推理，官方负责 token 续期），CLI 不可用或查询失败时
