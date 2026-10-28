@@ -87,7 +87,16 @@ v0.7.39 起，Kimi Code、OpenAI Codex、GLM / BigModel、DeepSeek 均支持多�
 不删除凭证或会员配置。删除 active 后会回退到默认或首个账号，允许空账号列表。
 额外账号用同一名称重新添加时可复用原 ID 及保留的凭证。配额与错误按账号隔离，
 账号菜单收起仅显示名称，展开才显示 5h / 7d 等窗口用量。SSH 远端仅切换显示，
-不修改本机 active。
+不修改本机 active。v0.7.45 起下拉**只切换查看对象**（看不同账号的额度），
+真正的账号切换由旁边的「使用」按钮触发；切换时若检测到仍在运行的 Codex
+会话（app-server / codex-acp / 桌面版），卡片会提示「需重启会话」。
+
+Codex 配额优先通过官方 `codex app-server` 的 `account/rateLimits/read` 查询
+（不创建对话、不做模型推理，官方负责 token 续期），CLI 不可用或查询失败时
+回退直连 `wham/usage`。本地 token 的 `chatgpt_plan_type` 与接口 `planType`
+不一致时以 `Local plan:` 并列显示，不做别名转换或回退；API key 登录没有
+ChatGPT 订阅窗口，卡片直接说明，不显示 0% 或无限额度。每次切换前在
+`~/.codex/previous-auth.json` 留一份切换前凭据副本。
 
 - Kimi：默认读取 `~/.kimi-code/credentials/kimi-code.json`，并在即将过期时
   自动刷新。首次使用前请在 Kimi Code CLI 中登录。
@@ -312,6 +321,10 @@ Codex 的登录令牌由 Codex CLI 管理；如果终端提示登录失效，请
 客户端的接口调整。
 
 ## Electron 看板刷新策略
+
+v0.7.45 起为减少周期性卡顿：用量载荷与定时器广播前先做内容比较，未变化
+就不推送；用量分析的定时拉取在内容未变时不再触发整页重渲染，加载指示
+延迟 200ms 才出现。版本号、额度或账号发生变化时仍按原节奏即时更新。
 
 Electron 看板会并行查询 Kimi、Codex、DeepSeek 和 GLM，并按固定顺序展示结果。
 某个服务断网或接口异常时，只显示该服务的错误，不阻塞其他卡片。后台请求采用

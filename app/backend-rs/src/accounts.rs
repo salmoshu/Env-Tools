@@ -815,6 +815,10 @@ fn copy_atomic(src: &Path, dst: &Path) -> Result<(), String> {
 /// （_default-original），切回 default 时恢复。
 fn materialize_codex_active(home: &Path, id: &str) -> Result<(), String> {
     let dot_codex = home.join(".codex").join("auth.json");
+    // 切换前留一份 previous-auth.json，误切/凭据异常时可手工恢复
+    if dot_codex.is_file() {
+        let _ = copy_atomic(&dot_codex, &home.join(".codex").join("previous-auth.json"));
+    }
     let backup = codex_default_backup(home);
     let named = home
         .join(".config")
@@ -862,6 +866,49 @@ fn sync_codex_credentials_to_wsl(home: &Path, id: &str) -> Result<(), String> {
             .join("auth.json"),
     )?;
     materialize_codex_active(home, id)
+}
+
+/// 检测仍在运行的 Codex 客户端（app-server / codex-acp / 桌面版）。
+/// 只提示不阻断：长驻进程不会热切换，用户在切换后需要重启这些会话。
+/// 匹配模式用 [] 打散自身，避免把检测进程本身算进去。
+fn codex_running_clients() -> Vec<Value> {
+    let mut found = Vec::new();
+    #[cfg(windows)]
+    {
+        let script = "(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'codex app-serve[r]|codex-ac[p]|Code[x].exe' } | Measure-Object).Count";
+        if let Ok(out) = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", script])
+            .output()
+        {
+            let text = String::from_utf8_lossy(&out.stdout);
+            if let Ok(count) = text.trim().parse::<u32>() {
+                if count > 0 {
+                    found.push(serde_json::json!({ "scope": "Windows", "count": count }));
+                }
+            }
+        }
+    }
+    for distro in crate::settings::running_wsl_distros() {
+        let output = std::process::Command::new("wsl.exe")
+            .args([
+                "-d",
+                &distro,
+                "--exec",
+                "bash",
+                "-c",
+                "pgrep -fc 'codex app-serve[r]|codex-ac[p]' || true",
+            ])
+            .output();
+        if let Ok(out) = output {
+            let text = String::from_utf8_lossy(&out.stdout);
+            if let Ok(count) = text.trim().parse::<u32>() {
+                if count > 0 {
+                    found.push(serde_json::json!({ "scope": format!("WSL {distro}"), "count": count }));
+                }
+            }
+        }
+    }
+    found
 }
 
 pub fn update_active_all_scopes(provider: Provider, payload: &Value) -> Result<Value, String> {
@@ -916,6 +963,9 @@ pub fn update_active_all_scopes(provider: Provider, payload: &Value) -> Result<V
         "succeeded": succeeded,
         "failed": failed,
     });
+    if provider == Provider::Codex {
+        result["running_clients"] = Value::Array(codex_running_clients());
+    }
     Ok(result)
 }
 

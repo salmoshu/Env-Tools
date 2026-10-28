@@ -147,7 +147,7 @@ export default function Board({ lastPayload }) {
     const index = providerAccounts.indexOf(item);
     const id = item.account_id || (index >= 0 ? agentAccountId(item, index) : "default");
     if (accountStates[provider].defaultRemoved && id === "default") return false;
-    return id === accountStates[provider].activeId;
+    return id === accountStates[provider].viewId;
   };
   // 与用量分析配额区同序：每家合并为当前账号的一张卡。
   const accounts = sortByDisplayOrder(

@@ -17,6 +17,7 @@ use serde_json::Value;
 use crate::accounts::{AccountProfile, Provider};
 
 mod codex;
+mod codex_appserver;
 mod deepseek;
 mod glm;
 mod glm_reset;
@@ -40,6 +41,8 @@ pub use glm_reset::use_reset_card as use_glm_reset_card;
 // 归一化函数供 quota_tests 调用（release 构建中 crate 内未直接引用）
 #[cfg(test)]
 pub use codex::normalize_codex;
+#[cfg(test)]
+pub use codex_appserver::to_wham_shape;
 #[cfg(test)]
 pub use deepseek::normalize_deepseek;
 #[cfg(test)]

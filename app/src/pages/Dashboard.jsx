@@ -558,6 +558,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
   const analyticsQueued = useRef(false);
   // 当前展示的 目标|agent|范围 组合：切换时先画该组合的磁盘缓存载荷
   const analyticsCombo = useRef("");
+  const analyticsHash = useRef("");
   const [lang] = useLang();
 
   // 配额按目标路由：本地/汇总目标吃 60s 广播（lastPayload），远端目标走 get-usage
@@ -585,17 +586,24 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
     // 组合切换（含首次进入）时先画该组合的缓存载荷，冷扫描期间不白屏
     if (analyticsCombo.current !== combo) {
       analyticsCombo.current = combo;
+      analyticsHash.current = "";
       const cached = readAnalyticsCache()[combo];
       if (cached) setAnalytics(cached);
     }
     if (analyticsBusy.current) return;
     analyticsBusy.current = true;
-    setBusy(true);
+    //  spinner 延迟 200ms：快速返回的请求不产生额外整页渲染
+    const busyTimer = setTimeout(() => setBusy(true), 200);
     try {
       const result = await window.api.getAnalytics(nextDays, nextAgent, nextTarget);
       if (result && result.ok && result.analytics) {
-        setAnalytics(result.analytics);
-        writeAnalyticsCache(combo, result.analytics);
+        // 内容没变就不 setAnalytics：定时刷新此前每分钟都强制整页重渲染
+        const fingerprint = JSON.stringify(result.analytics);
+        if (fingerprint !== analyticsHash.current) {
+          analyticsHash.current = fingerprint;
+          setAnalytics(result.analytics);
+          writeAnalyticsCache(combo, result.analytics);
+        }
         setAnalyticsError("");
       } else {
         setAnalyticsError((result && result.error) || t("dash.analyticsFailed"));
@@ -603,6 +611,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
     } catch (error) {
       setAnalyticsError(`Analytics failed: ${error.message || error}`);
     } finally {
+      clearTimeout(busyTimer);
       analyticsBusy.current = false;
       setBusy(false);
       // 手动刷新（analytics-invalidated）撞在途请求时排队，完成后补拉新鲜数据
@@ -682,7 +691,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
     const index = providerAccounts.indexOf(item);
     const id = item.account_id || (index >= 0 ? agentAccountId(item, index) : "default");
     if (accountStates[provider].defaultRemoved && id === "default") return false;
-    return id === accountStates[provider].activeId;
+    return id === accountStates[provider].viewId;
   };
   // agent 筛选联动配额：只看 kimi 时配额区只显示 Kimi
   const agentAccounts = filterByAgent(allAccounts, agent);

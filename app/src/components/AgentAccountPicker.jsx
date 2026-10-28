@@ -34,7 +34,7 @@ function usageItems(account) {
     }));
 }
 
-export default function AgentAccountPicker({ accounts, value, onChange, disabled = false, error = "", errorLabel = "Switch failed", hint = "Account", emptyUsage = "—" }) {
+export default function AgentAccountPicker({ accounts, value, activeId = "", onChange, disabled = false, error = "", errorLabel = "Switch failed", hint = "Account", emptyUsage = "—" }) {
   const options = useMemo(() => (accounts || []).map((account, index) => ({
     account,
     id: agentAccountId(account, index),
@@ -126,7 +126,10 @@ export default function AgentAccountPicker({ accounts, value, onChange, disabled
               className={`agent-account-option${option.id === selectedId ? " selected" : ""}`}
               onClick={() => choose(option.id)}
             >
-              <span className="agent-account-option-label">{option.label}</span>
+              <span className="agent-account-option-label">
+                {option.label}
+                {option.id === activeId ? <span className="agent-account-option-active" title="active">●</span> : null}
+              </span>
               <span className="agent-account-option-usage">
                 {option.usage.length
                   ? option.usage.map((item) => `${item.label} ${item.percent}`).join(" · ")

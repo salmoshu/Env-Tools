@@ -1,4 +1,6 @@
-//! OpenAI Codex：本地 auth.json 的 ChatGPT 后端配额查询（wham/usage）。
+//! OpenAI Codex：本地 auth.json 的 ChatGPT 配额查询。
+//! 优先官方 `codex app-server`（account/rateLimits/read，见 codex_appserver），
+//! CLI 不可用/查询失败时回退直连 wham/usage。
 
 use std::sync::OnceLock;
 
@@ -17,6 +19,38 @@ const CODEX_RESET_CONSUME_URL: &str =
 
 fn codex_credential(account: &AccountProfile) -> Option<std::path::PathBuf> {
     crate::accounts::credential_path(account)
+}
+
+/// 本地 id_token 的 chatgpt_plan_type（不验签，仅展示）：
+/// 与接口 planType 分开原样显示，不做别名转换或回退。
+fn local_plan_type(credentials: &Value) -> Option<String> {
+    let id_token = credentials.get("tokens")?.get("id_token")?.as_str()?;
+    let segment = id_token.split('.').nth(1)?;
+    let decoded = base64url_decode(segment)?;
+    let data = serde_json::from_slice::<Value>(&decoded).ok()?;
+    data.get("chatgpt_plan_type")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+fn base64url_decode(input: &str) -> Option<Vec<u8>> {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut output = Vec::new();
+    let mut buffer: u32 = 0;
+    let mut bits = 0u32;
+    for byte in input.bytes() {
+        if byte == b'=' {
+            break;
+        }
+        let value = TABLE.iter().position(|c| *c == byte)? as u32;
+        buffer = (buffer << 6) | value;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            output.push(((buffer >> bits) & 0xFF) as u8);
+        }
+    }
+    Some(output)
 }
 
 fn window_label(seconds: i64, fallback: &str) -> String {
@@ -107,6 +141,7 @@ fn fetch_account(account: &AccountProfile) -> Result<Value, String> {
         )
     })?;
     let credentials = crate::settings::read_json(&path).map_err(|err| err.to_string())?;
+    let local_plan = local_plan_type(&credentials);
     let tokens = credentials
         .get("tokens")
         .cloned()
@@ -116,6 +151,28 @@ fn fetch_account(account: &AccountProfile) -> Result<Value, String> {
         .and_then(|v| v.as_str())
         .unwrap_or("");
     if access_token.is_empty() {
+        // API key 登录没有 ChatGPT 订阅窗口：明说，不显示 0% 或无限额度
+        let has_api_key = credentials
+            .get("OPENAI_API_KEY")
+            .and_then(|v| v.as_str())
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false);
+        if has_api_key {
+            let mut account_data = serde_json::json!({
+                "provider": "OpenAI Codex",
+                "plan": "API",
+                "windows": [],
+                "extra_lines": ["API key account: no ChatGPT subscription windows"],
+                "fetched_at": fetched_now(),
+                "account_id": account.id.clone(),
+                "account_label": account.label.clone(),
+            });
+            attach_manual_membership(
+                &mut account_data,
+                &crate::settings::codex_membership_key(&account.id),
+            );
+            return Ok(account_data);
+        }
         return Err(
             "access_token missing in Codex credentials; run `codex login`".to_string(),
         );
@@ -127,32 +184,67 @@ fn fetch_account(account: &AccountProfile) -> Result<Value, String> {
     let use_proxy = env_enabled("CODEX_USE_PROXY", true);
     // 该接口经代理偶尔慢，压到 20s 上限避免拖垮整个 /api/usage
     let timeout = env_timeout("CODEX_TIMEOUT", 30).min(20);
-    let agent = build_agent(use_proxy, timeout);
-    let mut request = agent
-        .get(&env_value("CODEX_USAGE_URL").unwrap_or_else(|| CODEX_USAGE_URL.into()))
-        .set("Accept", "application/json")
-        .set("User-Agent", "codex-usage-monitor/1.0")
-        .set("Authorization", &format!("Bearer {access_token}"));
-    if !account_id.is_empty() {
-        request = request.set("ChatGPT-Account-Id", account_id);
-    }
-    let data = match request.call() {
-        Ok(response) => response
-            .into_json()
-            .map_err(|err| format!("Invalid API response: {err}"))?,
-        Err(ureq::Error::Status(401, _)) => {
-            return Err("Codex login expired; run `codex login` and retry".to_string());
-        }
-        Err(ureq::Error::Status(code, response)) => {
-            let reason = response
-                .header("http_status_message")
-                .unwrap_or("error")
-                .to_string();
-            return Err(format!("HTTP {code}: {reason}"));
-        }
-        Err(err) => return Err(format!("Network request failed: {err}")),
+    // 优先官方 app-server（account/rateLimits/read）：官方续期与协议兼容；
+    // CLI 缺失/版本不支持/查询失败时回退直连 wham/usage
+    let appserver = if account.home.is_dir() && env_enabled("CODEX_APPSERVER", true) {
+        super::codex_appserver::query_rate_limits(
+            &account.home,
+            env_timeout("CODEX_APPSERVER_TIMEOUT", 25).min(25),
+        )
+        .ok()
+    } else {
+        None
     };
-    let mut account_data = normalize_codex(&data);
+    let mut account_data = match appserver {
+        Some(result) => normalize_codex(&super::codex_appserver::to_wham_shape(
+            &result,
+            chrono::Utc::now().timestamp(),
+        )),
+        None => {
+            let agent = build_agent(use_proxy, timeout);
+            let mut request = agent
+                .get(&env_value("CODEX_USAGE_URL").unwrap_or_else(|| CODEX_USAGE_URL.into()))
+                .set("Accept", "application/json")
+                .set("User-Agent", "codex-usage-monitor/1.0")
+                .set("Authorization", &format!("Bearer {access_token}"));
+            if !account_id.is_empty() {
+                request = request.set("ChatGPT-Account-Id", account_id);
+            }
+            let data = match request.call() {
+                Ok(response) => response
+                    .into_json()
+                    .map_err(|err| format!("Invalid API response: {err}"))?,
+                Err(ureq::Error::Status(401, _)) => {
+                    return Err("Codex login expired; run `codex login` and retry".to_string());
+                }
+                Err(ureq::Error::Status(code, response)) => {
+                    let reason = response
+                        .header("http_status_message")
+                        .unwrap_or("error")
+                        .to_string();
+                    return Err(format!("HTTP {code}: {reason}"));
+                }
+                Err(err) => return Err(format!("Network request failed: {err}")),
+            };
+            normalize_codex(&data)
+        }
+    };
+    // 本地 token 套餐与接口 planType 不一致时并列展示（典型：接口 unknown）
+    if let Some(local) = local_plan {
+        let api_plan = account_data
+            .get("plan")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if local != api_plan {
+            let line = Value::String(format!("Local plan: {local}"));
+            if let Some(lines) = account_data.get_mut("extra_lines").and_then(|v| v.as_array_mut()) {
+                lines.push(line);
+            } else {
+                account_data["extra_lines"] = Value::Array(vec![line]);
+            }
+        }
+    }
     account_data["account_id"] = Value::String(account.id.clone());
     account_data["account_label"] = Value::String(account.label.clone());
     attach_manual_membership(

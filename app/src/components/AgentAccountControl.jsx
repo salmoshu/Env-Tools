@@ -8,15 +8,28 @@ export default function AgentAccountControl({ provider, state }) {
     ? t("dash.codexAccountHint")
     : t("dash.accountHint").replace("{provider}", AGENT_ACCOUNTS[provider].label);
   return (
-    <AgentAccountPicker
-      accounts={state.accounts}
-      value={state.activeId}
-      onChange={state.selectAccount}
-      disabled={state.switching}
-      error={state.error}
-      errorLabel={t("dash.accountSwitchFailed")}
-      hint={hint}
-      emptyUsage={provider === "codex" ? "5h — · 7d —" : "—"}
-    />
+    <div className="agent-account-control">
+      <AgentAccountPicker
+        accounts={state.accounts}
+        value={state.viewId}
+        activeId={state.activeId}
+        onChange={state.viewAccount}
+        disabled={state.switching}
+        error={state.error}
+        errorLabel={t("dash.accountSwitchFailed")}
+        hint={hint}
+        emptyUsage={provider === "codex" ? "5h — · 7d —" : "—"}
+      />
+      {state.notice ? <span className="stale-tag" title={state.notice}>{t("dash.accountRestartTag")}</span> : null}
+      {state.viewId && (state.accounts || []).length > 1 ? (
+        <button
+          type="button"
+          className="login-btn agent-account-apply"
+          title={t("dash.accountApplyHint")}
+          disabled={state.switching || state.viewId === state.activeId}
+          onClick={() => state.selectAccount(state.viewId)}
+        >{t(state.switching ? "state.saving" : "settings.accountUse")}</button>
+      ) : null}
+    </div>
   );
 }

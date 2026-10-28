@@ -272,6 +272,32 @@ fn codex_windows_map_to_5h_and_7d() {
 }
 
 #[test]
+fn codex_appserver_response_maps_to_wham_shape() {
+    let now = chrono::Utc::now().timestamp();
+    // 真实响应结构：rateLimitsByLimitId.codex 优先于 rateLimits
+    let shaped = crate::quota::to_wham_shape(&serde_json::json!({
+        "rateLimitsByLimitId": {
+            "codex": {
+                "planType": "plus",
+                "primary": {"usedPercent": 12, "windowDurationMins": 300, "resetsAt": now + 3600},
+                "secondary": {"usedPercent": 2, "windowDurationMins": 10080, "resetsAt": now + 86400},
+                "credits": {"hasCredits": false, "balance": "0"},
+            },
+        },
+        "rateLimitResetCredits": {"availableCount": 2},
+    }), now);
+    let result = crate::quota::normalize_codex(&shaped);
+    assert_eq!(result["plan"], "plus");
+    let windows = result["windows"].as_array().unwrap();
+    assert_eq!(windows.len(), 2);
+    assert_eq!(windows[0]["label"], "5h Window");
+    assert_eq!(windows[0]["used_percent"], 12.0);
+    assert!((windows[0]["reset_after_seconds"].as_i64().unwrap() - 3600).abs() <= 5);
+    assert_eq!(windows[1]["label"], "7d Window");
+    assert_eq!(result["rate_limit_reset_credits"]["available_count"], 2);
+}
+
+#[test]
 fn codex_reset_credits_normalize_to_snake_case() {
     let result = crate::quota::normalize_codex(&serde_json::json!({
         "rateLimitResetCredits": {"availableCount": "7", "applicableAvailableCount": 3},

@@ -18,6 +18,10 @@ export function agentAccountSelectionKey(provider) {
   return `ai-usage-monitor.${provider}-account`;
 }
 
+export function agentAccountViewKey(provider) {
+  return `ai-usage-monitor.${provider}-account-view`;
+}
+
 export function agentMembershipKey(provider, account) {
   const prefix = AGENT_ACCOUNTS[provider].membershipPrefix;
   return account.membership_key || (account.id === "default" ? prefix : `${prefix}:${account.id}`);
@@ -40,12 +44,19 @@ function readStoredAccount(selectionKey) {
 export function useAgentAccounts(provider, quotaAccounts = [], sync = true) {
   const definition = AGENT_ACCOUNTS[provider];
   const selectionKey = agentAccountSelectionKey(provider);
+  const viewKey = agentAccountViewKey(provider);
   const [registry, setRegistry] = useState([]);
   const [active, setActive] = useState(() => readStoredAccount(selectionKey));
+  // 查看账号（仅决定卡片显示谁的额度）与生效账号分离：
+  // 下拉只改 view，真正的切换由"使用"按钮触发 set-active
+  const [view, setView] = useState(() => {
+    try { return localStorage.getItem(viewKey) || ""; } catch { return ""; }
+  });
   const [defaultRemoved, setDefaultRemoved] = useState(false);
   const [launcherInstalled, setLauncherInstalled] = useState(false);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [switching, setSwitching] = useState(false);
   const activeRef = useRef(active);
   const switchingRef = useRef(false);
@@ -129,11 +140,18 @@ export function useAgentAccounts(provider, quotaAccounts = [], sync = true) {
   }, [defaultRemoved, definition.quotaProvider, ready, registry, quotaAccounts, sync]);
 
   const accountIds = accounts.map((account, index) => agentAccountId(account, index));
-  const selectedId = accountIds.length === 0 ? null : accountIds.includes(active) ? active : accountIds[0];
+  const activeId = accountIds.length === 0 ? null : accountIds.includes(active) ? active : accountIds[0];
+  const viewId = accountIds.length === 0 ? null : accountIds.includes(view) ? view : activeId;
+
+  const viewAccount = useCallback((id) => {
+    setView(id);
+    try { if (id) localStorage.setItem(viewKey, id); } catch {}
+  }, [viewKey]);
 
   const selectAccount = useCallback(async (id) => {
     if (!sync) {
       setError("");
+      setNotice("");
       commitActive(id);
       const result = { ok: true, account_sync: { requested: 1, succeeded: ["local"], failed: [] } };
       announceAccountSync(provider, result);
@@ -144,12 +162,16 @@ export function useAgentAccounts(provider, quotaAccounts = [], sync = true) {
     switchingRef.current = true;
     setSwitching(true);
     setError("");
+    setNotice("");
     commitActive(id);
     try {
       const result = await window.api.updateAgentAccounts(provider, { action: "set-active", id });
       if (!result || !result.ok) throw new Error((result && result.error) || t("state.unknownError"));
       announceAccountSync(provider, result, true);
       applyPayload(result);
+      // 长驻 Codex 会话不会热切换：检测到时提示用户重启会话
+      const running = Array.isArray(result.running_clients) ? result.running_clients : [];
+      setNotice(running.length ? t("dash.accountRestartClients") : "");
       return result;
     } catch (err) {
       commitActive(previous);
@@ -170,11 +192,14 @@ export function useAgentAccounts(provider, quotaAccounts = [], sync = true) {
   return {
     accounts,
     registry,
-    activeId: selectedId,
+    activeId,
+    viewId,
+    viewAccount,
     selectAccount,
     updateAccounts,
     reload,
     error,
+    notice,
     switching,
     defaultRemoved: sync && defaultRemoved,
     launcherInstalled,

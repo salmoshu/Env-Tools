@@ -532,6 +532,9 @@ td b { font-weight: 600; }
 .qcard-head, .provider-head { flex-wrap: wrap; }
 .qcard, .provider { min-width: 0; }
 .agent-account-picker { position: relative; display: inline-flex; min-width: 0; max-width: 100%; }
+.agent-account-control { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; }
+.agent-account-apply { padding: 1px 8px; font-size: 11px; line-height: 1.6; white-space: nowrap; }
+.agent-account-option-active { color: var(--accent-text); margin-left: 6px; font-size: 10px; }
 .agent-account-trigger { display: inline-flex; align-items: center; justify-content: space-between; gap: 6px; max-width: 100%; cursor: pointer; text-align: left; }
 .agent-account-trigger-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent-account-chevron { flex: none; font-size: 10px; transition: transform var(--dur) var(--ease); }

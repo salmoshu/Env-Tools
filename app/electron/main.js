@@ -318,6 +318,8 @@ async function fetchUsage() {
   return backendJson("/api/usage", null, FETCH_TIMEOUT_MS);
 }
 
+let lastUsageJson = "";
+
 async function pushUsage() {
   if (liveWindows().length === 0) return null;
   // 定时刷新、手动刷新和升级后刷新可能同时到达；复用同一
@@ -325,7 +327,13 @@ async function pushUsage() {
   if (usageFetchPromise) return usageFetchPromise;
   usageFetchPromise = (async () => {
     const result = await fetchUsage();
-    for (const w of liveWindows()) w.webContents.send("usage-update", result);
+    // 载荷没变就不广播：此前每 60s 无论是否变化都全量推送，
+    // 看板/悬浮球整页重渲染，是周期性卡顿的主要来源
+    const serialized = JSON.stringify(result);
+    if (serialized !== lastUsageJson) {
+      lastUsageJson = serialized;
+      for (const w of liveWindows()) w.webContents.send("usage-update", result);
+    }
     return result;
   })();
   try {

@@ -179,38 +179,46 @@ pub fn native_environment() -> &'static str {
     }
 }
 
-pub fn available_wsl_distros() -> Vec<String> {
-    if cfg!(windows) {
-        let output = std::process::Command::new("wsl.exe")
-            .args(["--list", "--quiet"])
-            .stdin(std::process::Stdio::null())
-            .output();
-        let mut names = Vec::new();
-        if let Ok(out) = output {
-            // wsl.exe 输出为 UTF-16；按字节过滤后只保留可打印 ASCII
-            let text: String = out
-                .stdout
-                .iter()
-                .filter(|b| {
-                    b.is_ascii_alphanumeric()
-                        || b.is_ascii_whitespace()
-                        || **b == b'-'
-                        || **b == b'_'
-                        || **b == b'.'
-                })
-                .map(|b| *b as char)
-                .collect();
-            for line in text.lines() {
-                let name = line.trim();
-                if !name.is_empty() && !names.iter().any(|n: &String| n == name) {
-                    names.push(name.to_string());
-                }
+fn wsl_distro_names(args: &[&str]) -> Vec<String> {
+    if !cfg!(windows) {
+        return Vec::new();
+    }
+    let output = std::process::Command::new("wsl.exe")
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .output();
+    let mut names = Vec::new();
+    if let Ok(out) = output {
+        // wsl.exe 输出为 UTF-16；按字节过滤后只保留可打印 ASCII
+        let text: String = out
+            .stdout
+            .iter()
+            .filter(|b| {
+                b.is_ascii_alphanumeric()
+                    || b.is_ascii_whitespace()
+                    || **b == b'-'
+                    || **b == b'_'
+                    || **b == b'.'
+            })
+            .map(|b| *b as char)
+            .collect();
+        for line in text.lines() {
+            let name = line.trim();
+            if !name.is_empty() && !names.iter().any(|n: &String| n == name) {
+                names.push(name.to_string());
             }
         }
-        names
-    } else {
-        Vec::new()
     }
+    names
+}
+
+pub fn available_wsl_distros() -> Vec<String> {
+    wsl_distro_names(&["--list", "--quiet"])
+}
+
+/// 仅当前正在运行的发行版：进程检测等场景不为查询去启动已停止的发行版。
+pub fn running_wsl_distros() -> Vec<String> {
+    wsl_distro_names(&["--list", "--running", "--quiet"])
 }
 
 /// 数据源环境列表：本机原生环境；Windows 上若装有 WSL 则追加 "wsl"。
