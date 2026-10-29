@@ -986,7 +986,7 @@ function UpdateSection() {
         <div className="set-row-control settings-update-btns">
           <button type="button" className="login-btn" disabled={busy} onClick={check}>{t("settings.checkUpdates")}</button>
           {status.available && (
-            <button type="button" className="settings-save" disabled={busy} onClick={install}>
+            <button type="button" className="login-btn" disabled={busy} onClick={install}>
               {busy && progressText ? progressText : t("settings.downloadInstall")}
             </button>
           )}

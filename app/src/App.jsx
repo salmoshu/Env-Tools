@@ -215,7 +215,7 @@ export default function App() {
           <div className="page-scroll" style={{ display: route === "tools" ? undefined : "none" }}>
             <Tools lastPayload={lastPayload} />
           </div>
-          <div style={{ display: route === "dashboard" ? undefined : "none" }}>
+          <div className="dashboard-pane" style={{ display: route === "dashboard" ? undefined : "none" }}>
             <Dashboard
               lastPayload={lastPayload}
               refreshing={refreshing}

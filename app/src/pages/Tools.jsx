@@ -159,7 +159,6 @@ export default function Tools({ lastPayload }) {
   const [wslTarget, setWslTarget] = useState(() => {
     try { return localStorage.getItem(WSL_TARGET_KEY) || ""; } catch { return ""; }
   });
-  const [backend, setBackend] = useState(null);
   const [sshList, setSshList] = useState([]);
   const [sshForm, setSshForm] = useState({ host: "", port: "22", user: "" });
   const [sshBusy, setSshBusy] = useState("");
@@ -175,7 +174,6 @@ export default function Tools({ lastPayload }) {
 
   useEffect(() => {
     (async () => {
-      try { setBackend(await window.api.getBackendStatus()); } catch {}
       try {
         const result = await window.api.sshList();
         if (result && result.connections) setSshList(result.connections);
@@ -565,13 +563,6 @@ export default function Tools({ lastPayload }) {
           </div>
         </section>
       ))}
-
-      <div className="card" style={{ marginTop: 14 }}>
-        <h2>{t("tools.runtime")}</h2>
-        <div className="about-row"><span>{t("tools.dataEngine")}</span><strong>{backend ? backend.engine : t("tools.checking")}</strong></div>
-        <div className="about-row"><span>{t("tools.apiPort")}</span><strong>{backend && backend.port ? `127.0.0.1:${backend.port}` : "—"}</strong></div>
-        <div className="about-row"><span>{t("tools.script")}</span><strong className="about-path">{backend && backend.detail ? backend.detail.script : "—"}</strong></div>
-      </div>
 
       {/* 终端风格安装日志面板：多场安装并发时按组件过滤，行内带组件标签 */}
       <section className="card tools-terminal">
