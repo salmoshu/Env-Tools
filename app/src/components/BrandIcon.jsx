@@ -8,6 +8,7 @@ import zaiIcon from "../assets/brand/zai.png";
 // GLM 与 ZCode 同属智谱，共用 z.ai 的 Z 标
 const AGENT_ICONS = {
   kimi: kimiIcon,
+  "kimi-work": kimiIcon,
   codex: openaiIcon,
   deepseek: deepseekIcon,
   glm: zaiIcon,

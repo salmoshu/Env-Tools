@@ -2,6 +2,15 @@
 
 本文记录 `Env-Tools` 中 AI CLI 安装、升级及额度监控所依赖接口的维护经验。
 
+## Kimi Work
+
+- Windows 桌面版内嵌 Kimi Code 内核，本地 Agent/Work 会话位于
+  `%APPDATA%/kimi-desktop/daimon-share/daimon/runtime/kimi-code/home/`。
+- 会话仍使用 `sessions/**/wire.jsonl` 的 turn 级 `usage.record` 与
+  `session_index.jsonl`；目录名为 `conv-*`（用户会话）和 `ctitle-*`（标题生成），
+  与 CLI 的 `session_*` 不同。分析引擎复用 Kimi 解析器，独立归为 `kimi-work`，
+  可用 `KIMI_WORK_HOME` 覆盖数据根目录。该路径属于应用内部实现，升级后可能变化。
+
 ## Kimi Code
 
 - 凭证 `~/.kimi-code/credentials/kimi-code.json`，临过期用 refresh_token 走

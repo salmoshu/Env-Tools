@@ -13,6 +13,7 @@ import Tools from "./pages/Tools.jsx";
 import SettingsPage from "./pages/SettingsPage.jsx";
 import { t, useLang } from "./i18n.js";
 import { showToast, ToastStack } from "./toast.jsx";
+import { dismissInstallResult, useInstallState } from "./installState.js";
 import {
   activateOnKeys, applyTheme, readThemePreference, resolvedTheme, watchExternalTheme,
 } from "./utils.js";
@@ -32,7 +33,8 @@ export default function App() {
   const [pinned, setPinned] = useState(false);
   const [maximized, setMaximized] = useState(false);
   const [theme, setTheme] = useState(readThemePreference());
-  // 手动刷新后 Codex 处于"沿用旧数据"窗口时的一次性提醒（顶部框，自动消失）
+  const install = useInstallState();
+  // 手动刷新后 Codex 处于"沿用旧数据"窗口时的一次性右下角提醒
   const wasRefreshing = useRef(false);
   // 刷新看门狗：usage-update 广播未到达（后端超时/链路异常）时按钮会被
   // disabled 卡死——65s 强制复位（后端取数超时 60s，广播应在此之前到达），
@@ -66,6 +68,14 @@ export default function App() {
     }
     wasRefreshing.current = refreshing;
   }, [refreshing, lastPayload]);
+
+  useEffect(() => {
+    if (!install.result || install.running) return;
+    const result = install.result;
+    const text = result.ok ? t("upgrade.done") : `${t("upgrade.failed")}: ${result.error || ""}`;
+    showToast(text, result.ok ? "ok" : "error", result.ok ? 4000 : 10000);
+    dismissInstallResult();
+  }, [install.result, install.running]);
 
   useEffect(() => {
     const onAccountSync = (event) => {

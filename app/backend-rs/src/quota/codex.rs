@@ -69,6 +69,52 @@ fn window_label(seconds: i64, fallback: &str) -> String {
     fallback.to_string()
 }
 
+fn timestamp_of(raw: Option<&Value>) -> Option<i64> {
+    let value = raw?;
+    let mut timestamp = if let Some(value) = value.as_i64() {
+        value
+    } else if let Some(text) = value.as_str() {
+        text.parse::<i64>().ok().or_else(|| {
+            chrono::DateTime::parse_from_rfc3339(text)
+                .ok()
+                .map(|date| date.timestamp())
+        })?
+    } else {
+        return None;
+    };
+    if timestamp > 100_000_000_000 {
+        timestamp /= 1000;
+    }
+    (timestamp > 0).then_some(timestamp)
+}
+
+fn next_reset_expiry(reset_credits: &Value) -> Option<i64> {
+    let direct = ["next_expires_at", "nextExpiresAt", "expires_at", "expiresAt"]
+        .iter()
+        .find_map(|key| timestamp_of(reset_credits.get(*key)));
+    let from_credits = reset_credits
+        .get("credits")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|credit| {
+            credit
+                .get("status")
+                .and_then(Value::as_str)
+                .map(|status| status.eq_ignore_ascii_case("available"))
+                .unwrap_or(true)
+        })
+        .filter_map(|credit| {
+            timestamp_of(credit.get("expires_at").or_else(|| credit.get("expiresAt")))
+        });
+    let now = chrono::Utc::now().timestamp();
+    direct
+        .into_iter()
+        .chain(from_credits)
+        .filter(|timestamp| *timestamp > now)
+        .min()
+}
+
 pub fn normalize_codex(data: &Value) -> Value {
     let rate_limit = data
         .get("rate_limit")
@@ -123,6 +169,9 @@ pub fn normalize_codex(data: &Value) -> Value {
                     break;
                 }
             }
+        }
+        if let Some(expiry) = next_reset_expiry(&reset_credits) {
+            normalized.insert("next_expires_at".into(), Value::from(expiry));
         }
         if !normalized.is_empty() {
             result["rate_limit_reset_credits"] = Value::Object(normalized);

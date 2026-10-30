@@ -197,6 +197,30 @@ fn kimi_homes(aggregate: bool, wsl_distro: Option<&str>) -> Vec<PathBuf> {
     homes
 }
 
+fn kimi_work_homes(wsl_distro: Option<&str>) -> Vec<PathBuf> {
+    if wsl_distro.is_some() {
+        return Vec::new();
+    }
+    if let Some(home) = std::env::var_os("KIMI_WORK_HOME") {
+        return vec![PathBuf::from(home)];
+    }
+    if !cfg!(windows) {
+        return Vec::new();
+    }
+    std::env::var_os("APPDATA")
+        .map(|app_data| {
+            PathBuf::from(app_data)
+                .join("kimi-desktop")
+                .join("daimon-share")
+                .join("daimon")
+                .join("runtime")
+                .join("kimi-code")
+                .join("home")
+        })
+        .into_iter()
+        .collect()
+}
+
 fn zcode_homes(aggregate: bool, wsl_distro: Option<&str>) -> Vec<PathBuf> {
     if let Some(distro) = wsl_distro {
         return settings::wsl_distro_homes(distro);
@@ -290,6 +314,7 @@ fn analytics_worker(
             &codex_homes(aggregate, wsl_distro),
             &zcode_homes(aggregate, wsl_distro),
             &omp_homes(aggregate, wsl_distro),
+            &kimi_work_homes(wsl_distro),
             now_sec,
         );
         engine.last_scan_secs = now_sec;

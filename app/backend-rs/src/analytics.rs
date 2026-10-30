@@ -1,7 +1,7 @@
 //! 会话用量分析引擎（v0.4.0 起原生实现，口径与原 Python 实现的
 //! --analytics 完全一致）。
 //!
-//! 扫描 Kimi Code（~/.kimi-code/sessions/**/wire.jsonl 的 turn 级
+//! 扫描 Kimi Code / Kimi Work（sessions/**/wire.jsonl 的 turn 级
 //! usage.record）与 Codex CLI（~/.codex/sessions/**/rollout-*.jsonl 的
 //! token_count 事件，取 last_token_usage 单轮增量），GLM / DeepSeek 以自定义
 //! 模型接入其它 CLI，按模型名归因。与 Python 版的差异只在性能形态：解析
@@ -14,13 +14,17 @@ use chrono::{DateTime, Datelike, Local, TimeZone, Timelike};
 
 pub const RECORD_RETENTION_DAYS: i64 = 400;
 pub const SESSION_CAP: usize = 500;
-pub const AGENTS: [&str; 7] = ["all", "kimi", "codex", "glm", "deepseek", "omp", "zcode"];
+pub const AGENTS: [&str; 8] = [
+    "all", "kimi", "kimi-work", "codex", "glm", "deepseek", "omp", "zcode",
+];
 /// 速率卡全屏"活跃明细"窗口：近 1 天（15m/60m 速率 KPI 仍按各自短窗计算）
 pub const ACTIVE_WINDOW_SECS: i64 = 86_400;
 
 #[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Source {
     Kimi,
+    /// Kimi Work（内嵌 Kimi Code 内核的 sessions/**/wire.jsonl）
+    KimiWork,
     Codex,
     /// ZCode（~/.zcode/cli/db/db.sqlite 的 model_usage，模型经 BigModel/GLM）
     ZCode,
@@ -449,7 +453,7 @@ fn omp_session_id(path: &Path) -> String {
 fn kimi_session_id(path: &Path) -> String {
     for part in path.components().rev() {
         let name = part.as_os_str().to_string_lossy();
-        if name.starts_with("session_") {
+        if name.starts_with("session_") || name.starts_with("conv-") || name.starts_with("ctitle-") {
             return name.to_string();
         }
     }
@@ -459,7 +463,7 @@ fn kimi_session_id(path: &Path) -> String {
 /// 会话"当前模型"只认主代理文件（agents/main/wire.jsonl）：子代理可能携带
 /// 切换前的旧模型继续产出记录。codex/zcode 源无子代理概念，恒算主代理。
 fn is_main_agent_file(path_key: &str, source: Source) -> bool {
-    if source != Source::Kimi {
+    if !matches!(source, Source::Kimi | Source::KimiWork) {
         return true;
     }
     Path::new(path_key)
@@ -719,6 +723,7 @@ fn project_name(work_dir: &str) -> String {
 pub fn cli_of(source: Source) -> &'static str {
     match source {
         Source::Kimi => "kimi",
+        Source::KimiWork => "kimi-work",
         Source::Codex => "codex",
         Source::ZCode => "zcode",
         Source::Omp => "omp",
@@ -726,13 +731,16 @@ pub fn cli_of(source: Source) -> &'static str {
 }
 
 pub fn agent_of(source: Source, model: &str) -> &'static str {
-    // omp/zcode 源整体归各自 agent：底层模型可任意（kimi/deepseek/glm...），
-    // 按模型归并会把这些 CLI 的用量混进别家统计，且筛选/图标都以 CLI 身份为准
+    // omp/zcode/kimi-work 源整体归各自 agent：底层模型可任意，
+    // 按模型归并会把这些客户端的用量混进别家统计，且筛选/图标都以客户端身份为准
     if source == Source::Omp {
         return "omp";
     }
     if source == Source::ZCode {
         return "zcode";
+    }
+    if source == Source::KimiWork {
+        return "kimi-work";
     }
     let lowered = model.to_lowercase();
     if lowered.contains("glm") || lowered.contains("zhipu") || lowered.starts_with("zai/") {
@@ -761,7 +769,7 @@ struct SessionRow {
     sid: String,
     project: String,
     work_dir: String,
-    /// 产生该会话的 CLI（kimi/codex/zcode/omp），用于 agent/model 展示
+    /// 产生该会话的 CLI（kimi/kimi-work/codex/zcode/omp），用于 agent/model 展示
     cli: &'static str,
     agent_totals: HashMap<&'static str, i64>,
     /// 会话内各模型的 token 总量：keys 即模型列表，最大值即主力模型
@@ -827,24 +835,25 @@ impl AnalyticsState {
         zcode_homes: &[PathBuf],
         now: i64,
     ) -> bool {
-        self.scan_all(kimi_homes, codex_homes, zcode_homes, &[], now)
+        self.scan_all(kimi_homes, codex_homes, zcode_homes, &[], &[], now)
     }
 
-    /// scan 的全源版本：v0.7.27 起 omp 家目录一并接收（~/.omp，
-    /// 会话根为 agent/sessions，本机 + WSL UNC 同 kimi 模式）
+    /// scan 的全源版本：omp、Kimi Work 家目录一并接收；Work 仅来自本机，
+    /// 复用 Kimi 的 wire.jsonl 解析，但独立归 kimi-work agent。
     pub fn scan_all(
         &mut self,
         kimi_homes: &[PathBuf],
         codex_homes: &[PathBuf],
         zcode_homes: &[PathBuf],
         omp_homes: &[PathBuf],
+        kimi_work_homes: &[PathBuf],
         now: i64,
     ) -> bool {
         let cutoff = now - RECORD_RETENTION_DAYS * 86400;
         let mut dirty = !self.scanned;
         self.scanned = true;
         self.session_index.clear();
-        for home in kimi_homes {
+        for home in kimi_homes.iter().chain(kimi_work_homes.iter()) {
             for (sid, wd) in load_session_index(home) {
                 self.session_index.insert(sid, wd);
             }
@@ -854,6 +863,14 @@ impl AnalyticsState {
         for home in kimi_homes {
             sources.push((
                 Source::Kimi,
+                home.join("sessions"),
+                kimi_session_id as fn(&Path) -> String,
+                (|name: &str| name == "wire.jsonl") as fn(&str) -> bool,
+            ));
+        }
+        for home in kimi_work_homes {
+            sources.push((
+                Source::KimiWork,
                 home.join("sessions"),
                 kimi_session_id as fn(&Path) -> String,
                 (|name: &str| name == "wire.jsonl") as fn(&str) -> bool,
@@ -925,7 +942,7 @@ impl AnalyticsState {
                 }
                 let session_id = session_id_of(&wire);
                 for line in text.split('\n') {
-                    if source == Source::Kimi {
+                    if matches!(source, Source::Kimi | Source::KimiWork) {
                         // llm.request：记录起始时刻，供下一个 usage.record 配对
                         if line.contains("\"llm.request\"") {
                             if let Ok(req) = serde_json::from_str::<serde_json::Value>(line) {

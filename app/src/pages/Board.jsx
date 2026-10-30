@@ -8,7 +8,7 @@ import {
   sortByDisplayOrder, timeFractionOf, fmtReset, windowUsagePct,
 } from "../utils.js";
 import { t, useLang } from "../i18n.js";
-import { useInstallState, setInstallRunning, setInstallResult, dismissInstallResult } from "../installState.js";
+import { useInstallState, setInstallRunning, setInstallResult } from "../installState.js";
 import ResetButton from "../components/ResetButton.jsx";
 import BrandIcon from "../components/BrandIcon.jsx";
 import UpgradeOverlay from "../components/UpgradeOverlay.jsx";
@@ -93,7 +93,7 @@ export default function Board({ lastPayload }) {
     return () => {};
   }, []);
 
-  // 升级执行（确认后异步进行；卡片显示动态提醒，结果落入升级提示条）
+  // 升级执行（确认后异步进行；卡片显示动态提醒，结果由全局消息提醒展示）
   const beginUpgrade = useCallback(async (targets) => {
     const duplicate = Object.values(install.runs || {}).some((run) =>
       (run.targets || []).some((target) => targets.includes(target)));
@@ -128,14 +128,6 @@ export default function Board({ lastPayload }) {
   useEffect(() => {
     fitWindow();
   });
-
-  // 升级结果提示条自动消失：成功 4s、失败 10s（也可手动 ×）
-  useEffect(() => {
-    if (!install.result || install.running) return;
-    const ms = install.result.ok ? 4000 : 10000;
-    const timer = setTimeout(() => dismissInstallResult(), ms);
-    return () => clearTimeout(timer);
-  }, [install.result, install.running]);
 
   const data = lastPayload && lastPayload.data;
   const allAccounts = (data && data.accounts) || [];
@@ -184,12 +176,6 @@ export default function Board({ lastPayload }) {
 
   return (
     <>
-      {install.result && !install.running ? (
-        <div className={`upgrade-toast${install.result.ok ? "" : " err"}`}>
-          {install.result.ok ? t("upgrade.done") : `${t("upgrade.failed")}: ${install.result.error || ""}`}
-          <button type="button" className="toast-close" onClick={() => dismissInstallResult()}>×</button>
-        </div>
-      ) : null}
       <div className={`content${compact ? " compact" : ""}`}>
         {lastPayload && lastPayload.error && fatalErrorDismissed !== lastPayload.error && (
           <div className="error-card">{lastPayload.error}</div>
@@ -310,9 +296,16 @@ export default function Board({ lastPayload }) {
                 if (applicable != null) {
                   parts.push(Number(applicable) > 0 ? t("dash.resetUsableNow") : t("dash.resetAfterLimit"));
                 }
+                const nextExpiresAt = Number(resetCredits.next_expires_at);
+                let expiry = "";
+                if (Number.isFinite(nextExpiresAt) && nextExpiresAt > 0) {
+                  const d = new Date(nextExpiresAt * 1000);
+                  const pad = (n) => String(n).padStart(2, "0");
+                  expiry = ` · ${t("dash.resetChancesEarliest")} ${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+                }
                 return (
                   <div className="limit-resets">
-                    {t("dash.resetChances")}: {parts.join(" · ")}
+                    {t("dash.resetChances")}: {parts.join(" · ")}{expiry}
                     {Number(available) > 0 && !account.stale && nearQuotaLimit(account) ? (
                       <ResetButton
                         provider="codex"

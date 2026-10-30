@@ -46,6 +46,8 @@ fn agent_attribution_matches_python_rules() {
     assert_eq!(agent_of(Source::ZCode, "GLM-5.3"), "zcode");
     assert_eq!(agent_of(Source::ZCode, "gpt-6.1-sol"), "zcode");
     assert_eq!(agent_of(Source::Omp, "glm-5.3"), "omp");
+    assert_eq!(agent_of(Source::KimiWork, "k3-agent"), "kimi-work");
+    assert_eq!(agent_of(Source::KimiWork, "glm-5.3"), "kimi-work");
 }
 
 #[test]
@@ -677,7 +679,7 @@ fn omp_sessions_ingest_usage_cwd_and_tpot() {
         .with_ymd_and_hms(2026, 10, 11, 14, 0, 0)
         .unwrap();
     let mut state = AnalyticsState::default();
-    state.scan_all(&[], &[], &[], &[omp_home], now.timestamp());
+    state.scan_all(&[], &[], &[], &[omp_home], &[], now.timestamp());
     let all = state.aggregate(7, "all", now);
 
     let sessions = all["sessions"].as_array().unwrap();
@@ -700,6 +702,73 @@ fn omp_sessions_ingest_usage_cwd_and_tpot() {
     let omp_only = state.aggregate(7, "omp", now);
     assert_eq!(omp_only["sessions"].as_array().unwrap().len(), 1);
     assert_eq!(omp_only["kpi"]["today_total"], 7468);
+    let kimi_only = state.aggregate(7, "kimi", now);
+    assert_eq!(kimi_only["sessions"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn kimi_work_sessions_ingest_usage_cwd_and_identity() {
+    let dir = tempfile_dir();
+    let work_home = dir.join("home").join("kimi-work");
+    let now = chrono::Local
+        .with_ymd_and_hms(2026, 10, 29, 14, 0, 0)
+        .unwrap();
+    let ts = now.timestamp() * 1000;
+    let conv_dir = work_home
+        .join("sessions")
+        .join("wd_demo_123")
+        .join("conv-work-1")
+        .join("agents")
+        .join("main");
+    write_file(
+        &conv_dir.join("wire.jsonl"),
+        &[
+            format!(r#"{{"type":"llm.request","time":{}}}"#, ts - 2000),
+            kimi_line(ts, "k3-agent", 100, 50, 20, 0),
+        ],
+    );
+    let title_dir = work_home
+        .join("sessions")
+        .join("wd_demo_123")
+        .join("ctitle-title-1")
+        .join("agents")
+        .join("main");
+    write_file(
+        &title_dir.join("wire.jsonl"),
+        &[kimi_line(ts + 1000, "k2d6-agent", 5, 6, 0, 0)],
+    );
+    write_file(
+        &work_home.join("session_index.jsonl"),
+        &[
+            r#"{"sessionId":"conv-work-1","workDir":"C:/work/demo"}"#.to_string(),
+            r#"{"sessionId":"ctitle-title-1","workDir":"C:/work/demo"}"#.to_string(),
+        ],
+    );
+
+    let mut state = AnalyticsState::default();
+    state.scan_all(&[], &[], &[], &[], &[work_home], now.timestamp());
+    let all = state.aggregate(7, "all", now);
+    let sessions = all["sessions"].as_array().unwrap();
+    assert_eq!(sessions.len(), 2);
+    let conv = sessions
+        .iter()
+        .find(|row| row["session_id"] == "conv-work-1")
+        .unwrap();
+    assert_eq!(conv["agent"], "kimi-work");
+    assert_eq!(conv["project"], "demo");
+    assert_eq!(conv["work_dir"], "C:/work/demo");
+    assert_eq!(conv["input"], 100);
+    assert_eq!(conv["output"], 50);
+    assert_eq!(conv["cache_read"], 20);
+    assert_eq!(conv["total"], 170);
+    assert!((conv["gen_rate"].as_f64().unwrap() - 25.0).abs() < 0.05);
+    assert!(sessions
+        .iter()
+        .any(|row| row["session_id"] == "ctitle-title-1" && row["total"] == 11));
+
+    let work_only = state.aggregate(7, "kimi-work", now);
+    assert_eq!(work_only["sessions"].as_array().unwrap().len(), 2);
+    assert_eq!(work_only["kpi"]["today_total"], 181);
     let kimi_only = state.aggregate(7, "kimi", now);
     assert_eq!(kimi_only["sessions"].as_array().unwrap().len(), 0);
 }

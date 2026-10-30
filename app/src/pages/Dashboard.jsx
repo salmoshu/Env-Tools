@@ -22,7 +22,7 @@ import AgentAccountControl from "../components/AgentAccountControl.jsx";
 import { agentAccountId } from "../components/AgentAccountPicker.jsx";
 import { agentProviderKey, useAgentAccountStates } from "../agentAccounts.js";
 import { t, useLang } from "../i18n.js";
-import { useInstallState, setInstallRunning, setInstallResult, dismissInstallResult } from "../installState.js";
+import { useInstallState, setInstallRunning, setInstallResult } from "../installState.js";
 
 const ANALYTICS_REFRESH_MS = 5 * 60 * 1000;
 // 页面分析口径固定 30 天（v0.7.34 移除范围下拉框后，历史 localStorage 里的
@@ -80,6 +80,7 @@ function readDisplaySelection() {
 
 const AGENT_PROVIDERS = {
   kimi: ["Kimi Code"],
+  "kimi-work": ["Kimi Code"],
   codex: ["OpenAI Codex"],
   glm: ["GLM"],
   deepseek: ["DeepSeek"],
@@ -247,9 +248,16 @@ function QuotaCard({ account, versions, onUpgrade, upgrading, providerKey, accou
         if (applicable != null) {
           parts.push(Number(applicable) > 0 ? t("dash.resetUsableNow") : t("dash.resetAfterLimit"));
         }
+        const nextExpiresAt = Number(resetCredits.next_expires_at);
+        let expiry = "";
+        if (Number.isFinite(nextExpiresAt) && nextExpiresAt > 0) {
+          const d = new Date(nextExpiresAt * 1000);
+          const pad = (n) => String(n).padStart(2, "0");
+          expiry = ` · ${t("dash.resetChancesEarliest")} ${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+        }
         return (
           <div className="limit-resets">
-            {t("dash.resetChances")}: {parts.join(" · ")}
+            {t("dash.resetChances")}: {parts.join(" · ")}{expiry}
             {/* stale 沿用数据不渲染重置按钮：过期的 ≥95% 读数可能触发不必要的重置 */}
             {Number(available) > 0 && !account.stale && nearQuotaLimit(account) ? (
               <ResetButton
@@ -653,14 +661,6 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
     requestAnalytics(days, agent, target);
   }), [days, agent, target, requestAnalytics]);
 
-  // 升级结果提示条自动消失：成功 4s、失败 10s（也可手动 ×）
-  useEffect(() => {
-    if (!install.result || install.running) return;
-    const ms = install.result.ok ? 4000 : 10000;
-    const timer = setTimeout(() => dismissInstallResult(), ms);
-    return () => clearTimeout(timer);
-  }, [install.result, install.running]);
-
   // 按月拉 365 天、按年拉 5 年；agent/target 切换后旧数据作废重拉
   useEffect(() => {
     const need = TREND_EXT_DAYS[trendGran];
@@ -860,7 +860,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
     const v = pickRate(item);
     return v != null ? `${fmtRate(v)} tok/s` : "—";
   };
-  // agent/模型 展示：agent 取会话所属 CLI（kimi/codex/zcode/omp），而不是按
+  // agent/模型 展示：agent 取会话所属 CLI（kimi/kimi-work/codex/zcode/omp），而不是按
   // 模型名前缀的计费归因——自定义模型名带 deepseek/ 前缀时，Kimi Code 会话
   // 不再被显示成 DeepSeek。模型名自带的 provider 前缀只取末段，避免
   // kimi/kimi-code/k3-256k 这类双重前缀；悬浮提示保留完整模型名
@@ -1055,13 +1055,6 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
       <div className={`error-card${analyticsError ? "" : " hidden"}`} style={{ margin: "0 0 12px" }}>
         {analyticsError}
       </div>
-      {install.result && !install.running ? (
-        <div className={`upgrade-toast${install.result.ok ? "" : " err"}`}>
-          {install.result.ok ? t("upgrade.done") : `${t("upgrade.failed")}: ${install.result.error || ""}`}
-          <button type="button" className="toast-close" onClick={() => dismissInstallResult()}>×</button>
-        </div>
-      ) : null}
-
       <div className="kpi-row">
         <div className="kpi-card">
           <div className="kpi-label">{t("dash.kpiWeek")}{agent !== "all" ? ` · ${AGENT_LABELS[agent]}` : ""}</div>

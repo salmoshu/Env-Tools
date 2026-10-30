@@ -299,12 +299,38 @@ fn codex_appserver_response_maps_to_wham_shape() {
 
 #[test]
 fn codex_reset_credits_normalize_to_snake_case() {
+    let expires = chrono::Utc::now().timestamp() + 3600;
     let result = crate::quota::normalize_codex(&serde_json::json!({
-        "rateLimitResetCredits": {"availableCount": "7", "applicableAvailableCount": 3},
+        "rateLimitResetCredits": {
+            "availableCount": "7",
+            "applicableAvailableCount": 3,
+            "nextExpiresAt": expires,
+        },
     }));
     let credits = &result["rate_limit_reset_credits"];
     assert_eq!(credits["available_count"], 7);
     assert_eq!(credits["applicable_available_count"], 3);
+    assert_eq!(credits["next_expires_at"], expires);
+}
+
+#[test]
+fn codex_reset_credits_use_earliest_available_expiry() {
+    let now = chrono::Utc::now().timestamp();
+    let result = crate::quota::normalize_codex(&serde_json::json!({
+        "rateLimitResetCredits": {
+            "availableCount": 2,
+            "credits": [
+                {"status": "available", "expiresAt": now + 7200},
+                {"status": "used", "expiresAt": now + 1800},
+                {"status": "available", "expiresAt": now + 3600},
+                {"status": "available", "expiresAt": now - 60},
+            ],
+        },
+    }));
+    assert_eq!(
+        result["rate_limit_reset_credits"]["next_expires_at"],
+        now + 3600
+    );
 }
 
 #[test]

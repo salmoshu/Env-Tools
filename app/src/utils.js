@@ -94,6 +94,7 @@ export function isNewerVersion(latest, current) {
 export const AGENT_LABELS = {
   all: "All agents",
   kimi: "Kimi Code",
+  "kimi-work": "Kimi Work",
   codex: "Codex",
   glm: "GLM",
   deepseek: "DeepSeek",
@@ -103,6 +104,7 @@ export const AGENT_LABELS = {
 
 export const AGENT_COLORS = {
   kimi: "#5b8def",
+  "kimi-work": "#7c6cf0",
   codex: "#4cc38a",
   glm: "#e5a545",
   deepseek: "#9b7ede",

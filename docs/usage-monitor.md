@@ -9,9 +9,9 @@ Env-Tools 自 v0.3.0 起收敛为统一的 Electron 桌面应用（仓库 `app/`
 Rust 本地后端），包含三块：
 
 - **Usage Analytics**（全量窗口默认页）：多 agent 会话用量分析 + 套餐配额
-  总览。数据来自本地会话日志（Kimi Code 与 Codex CLI 的会话记录；GLM /
-  DeepSeek 以自定义模型接入其它 CLI，按模型名归因），顶部 Agent 下拉可查看
-  整体或单独某个 agent / API（Kimi / Codex / GLM / DeepSeek）的用量。图表、
+  总览。数据来自本地会话日志（Kimi Code、Kimi Work 与 Codex CLI 的会话记录；
+  GLM / DeepSeek 以自定义模型接入其它 CLI，按模型名归因），顶部 Agent 下拉可查看
+  整体或单独某个 agent / API（Kimi Code / Kimi Work / Codex / GLM / DeepSeek）的用量。图表、
   KPI、会话明细的口径与 v0.2.0 一致，另新增按 agent 的占比条与每个模型的
   归属标注。
 - **Board**（用量看板小悬浮窗）：v0.2.0 的全部能力保留——紧凑配额卡、模型
@@ -190,7 +190,12 @@ Windows Electron 看板自 v0.2.0 起默认打开**全量模式**窗口（Usage 
 全量模式参考 [kimi-usage-dashboard](https://github.com/coconilu/kimi-usage-dashboard)
 集成了本地会话用量分析（数据源为 Kimi Code CLI 的会话日志
 `~/.kimi-code/sessions/**/wire.jsonl`，只读取 turn 级 `usage.record`，全程不
-联网）：
+联网）。
+
+v0.7.48 起，Windows 本机还会自动扫描 Kimi Work 内嵌内核的
+`%APPDATA%/kimi-desktop/daimon-share/daimon/runtime/kimi-code/home/`，以独立的
+`Kimi Work` agent 展示；可用 `KIMI_WORK_HOME` 覆盖该数据根目录。统计覆盖写入这些
+本地日志的 Agent/Work 会话，不代表未落本地日志的云端对话。
 
 - KPI 卡片：近 7 天 tokens、今日 tokens、总缓存命中率、上周同期（含周环比
   涨跌）、Token 速率（最新 3 个活跃会话的项目 / 模型 / 速率，同名项目以
@@ -206,7 +211,7 @@ Windows Electron 看板自 v0.2.0 起默认打开**全量模式**窗口（Usage 
 - 顶部 Range 下拉切换统计窗口（7/14/30/90 天）；数据每 5 分钟自动重扫，也可
   点击标题栏刷新按钮立即重扫。解析位置按文件增量缓存在
   `~/.cache/ai-usage-monitor/kimi-usage-cache.json`，重复请求只读取日志新增
-  字节。数据根目录可用 `KIMI_CODE_HOME` 环境变量覆盖。
+  字节。Kimi Code 数据根目录可用 `KIMI_CODE_HOME` 环境变量覆盖。
 - 全量模式同时以紧凑卡片展示各套餐配额（与用量看板同源），含 5h/周/月窗口
   进度、重置倒计时与会员到期时间。
 - 数据源环境（WSL / Windows）跟随设置页 Environment 的选择：扫描的是所选环
