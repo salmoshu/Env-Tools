@@ -73,6 +73,12 @@ function finishRun(key, result) {
   notify();
 }
 
+// 下载进度行（心跳式百分比）折叠为同一行更新，不再逐条追加撑满日志面板
+function isProgressLine(line) {
+  return /下载中|下载进度|download(ing)?\s*[:：]|\b[KMGT]iB\b|KiB\/s|MiB\/s/i.test(line)
+    && /%|进度|progress/i.test(line);
+}
+
 // 主进程广播常驻订阅：模块加载即开始，与组件生命周期无关。
 // start/end 让所有窗口（看板、悬浮小球、组件管理）共享同一份运行状态。
 window.api.onInstallProgress((payload) => {
@@ -88,7 +94,16 @@ window.api.onInstallProgress((payload) => {
   }
   if (!line) return;
   const label = (state.runs[key] && state.runs[key].label) || runLabels[key] || key || "";
-  state = { ...state, log: [...state.log.slice(-299), { key: key || "", label, line }] };
+  const progress = isProgressLine(line);
+  const log = state.log.slice(-299);
+  const last = log[log.length - 1];
+  if (progress && last && last.key === (key || "") && last.progress) {
+    // 同一组件的连续进度行：替换上一行而不是追加
+    log[log.length - 1] = { key: key || "", label, line, progress: true };
+  } else {
+    log.push({ key: key || "", label, line, progress });
+  }
+  state = { ...state, log };
   notify();
 });
 

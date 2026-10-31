@@ -616,7 +616,7 @@ export default function Tools({ lastPayload }) {
                 : /^result\|/.test(line) || /success|done|已是最新|安装完成/.test(lowered) ? " ok" : "";
               return (
                 <div className={`term-line${cls}`} key={i}>
-                  {showPrefix && entry.label ? `[${entry.label}] ` : ""}{line}
+                  {showPrefix && entry.label && !/^\s*\[/.test(entry.line) ? `[${entry.label}] ` : ""}{line}
                 </div>
               );
             })

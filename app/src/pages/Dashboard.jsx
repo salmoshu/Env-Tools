@@ -320,6 +320,17 @@ function QuotaCard({ account, versions, onUpgrade, upgrading, providerKey, accou
 /** 配额异常占位卡片：按 provider 类型分级引导，API 型绝不引导"去登录" */
 function QuotaErrorCard({ err, onFix, providerKey, accountState }) {
   const [expanded, setExpanded] = useState(false);
+  // 重试中的动态反馈：网络重试是异步的，没有状态提示用户会以为没点上
+  const [retrying, setRetrying] = useState(false);
+  const retry = async () => {
+    if (retrying) return;
+    setRetrying(true);
+    try {
+      await Promise.resolve(onFix && onFix("refresh"));
+    } finally {
+      setTimeout(() => setRetrying(false), 1200);
+    }
+  };
   const message = String((err && err.error) || t("state.unknownError"));
   const provider = String((err && err.provider) || "");
   const accountLabel = err && err.account_label ? ` · ${err.account_label}` : "";
@@ -364,8 +375,8 @@ function QuotaErrorCard({ err, onFix, providerKey, accountState }) {
         {kind === "keys" && (
           <button className="qerror-btn" onClick={() => onFix && onFix("settings")}>{t("err.addKey")}</button>
         )}
-        <button className="qerror-btn ghost" onClick={() => onFix && onFix("refresh")}>
-          <RefreshIcon /> {t("state.retry")}
+        <button className="qerror-btn ghost" disabled={retrying} onClick={retry}>
+          {retrying ? <span className="spin-dot" /> : <RefreshIcon />} {t(retrying ? "state.retrying" : "state.retry")}
         </button>
       </div>
       {loginFeedback ? <div className={`qerror-login-feedback${loginFeedback.ok ? " ok" : ""}`}>{loginFeedback.text}</div> : null}

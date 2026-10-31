@@ -55,9 +55,10 @@ export default function Select({ value, onChange, options, className = "", ariaL
   }, [open, highlight]);
 
   const choose = (entry) => {
+    // 选中即关闭（含"全部 Agent"等重复选中当前值的场景），并避免聚焦触发整页滚动
+    if (entry) onChange?.(entry.value);
     setOpen(false);
-    buttonRef.current?.focus();
-    if (entry && entry.value !== value) onChange?.(entry.value);
+    buttonRef.current?.focus({ preventScroll: true });
   };
 
   const onKeyDown = (event) => {

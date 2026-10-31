@@ -10,6 +10,7 @@ import {
 } from "../utils.js";
 import { t, useLang, setLang, getLang } from "../i18n.js";
 import { showToast } from "../toast.jsx";
+import { useUpdateState, setUpdateBusy, setUpdateProgress, setUpdateStatus } from "../updateState.js";
 import BrandIcon from "../components/BrandIcon.jsx";
 import Select from "../components/Select.jsx";
 import {
@@ -916,15 +917,11 @@ function EnvironmentPanel({ settings, onSaved }) {
 
 // --- 关于 ---------------------------------------------------------------------------
 
-// 检查更新：下载阶段显示真实进度条（phase 文案走 i18n），失败保留重试按钮
+// 检查更新：下载阶段显示真实进度条（phase 文案走 i18n），失败保留重试按钮。
+// 状态存全局 updateState：退出设置页再回来，下载中/完成/失败状态都还在。
 function UpdateSection() {
-  const [status, setStatus] = useState({ text: t("settings.notChecked"), available: false });
-  const [progress, setProgress] = useState(null); // { phase, percent|null }
-  const [busy, setBusy] = useState(false);
-
-  useEffect(() => window.api.onUpdateProgress(({ phase, percent }) => {
-    setProgress({ phase, percent: percent == null ? null : percent });
-  }), []);
+  const { busy, progress, status } = useUpdateState();
+  const statusText = status.text || t("settings.notChecked");
 
   const phaseLabel = (phase) => {
     const key = UPDATE_PHASE_KEYS[phase];
@@ -935,44 +932,44 @@ function UpdateSection() {
     : "";
 
   const check = async () => {
-    setBusy(true);
-    setProgress(null);
-    setStatus({ text: t("state.checking"), available: false });
+    setUpdateBusy(true);
+    setUpdateProgress(null);
+    setUpdateStatus({ text: t("state.checking"), available: false });
     try {
       const result = await window.api.updateCheck();
       if (!result || !result.ok) {
-        setStatus({ text: `${t("settings.checkFailed")}: ${(result && result.error) || "unknown"}`, available: false });
+        setUpdateStatus({ text: `${t("settings.checkFailed")}: ${(result && result.error) || "unknown"}`, available: false });
       } else if (result.available) {
-        setStatus({
+        setUpdateStatus({
           text: `${t("settings.updateAvailable")}: v${result.latest} (v${result.current})`,
           available: true,
         });
       } else {
-        setStatus({ text: `${t("settings.upToDate")} (v${result.current})`, available: false });
+        setUpdateStatus({ text: `${t("settings.upToDate")} (v${result.current})`, available: false });
       }
     } catch (err) {
-      setStatus({ text: `${t("settings.checkFailed")}: ${err.message || err}`, available: false });
+      setUpdateStatus({ text: `${t("settings.checkFailed")}: ${err.message || err}`, available: false });
     } finally {
-      setBusy(false);
+      setUpdateBusy(false);
     }
   };
 
   const install = async () => {
-    setBusy(true);
-    setStatus({ text: progressText || t("settings.preparingUpgrade"), available: true });
+    setUpdateBusy(true);
+    setUpdateStatus({ text: progressText || t("settings.preparingUpgrade"), available: true });
     try {
       const result = await window.api.updateInstall();
       if (!result || !result.ok) {
-        setStatus({ text: `${t("settings.upgradeFailed")}: ${(result && result.error) || "unknown"}`, available: true });
-        setProgress(null);
-        setBusy(false);
+        setUpdateStatus({ text: `${t("settings.upgradeFailed")}: ${(result && result.error) || "unknown"}`, available: true });
+        setUpdateProgress(null);
+        setUpdateBusy(false);
       } else {
-        setStatus({ text: t("settings.upgradedRestarting"), available: false });
+        setUpdateStatus({ text: t("settings.upgradedRestarting"), available: false });
       }
     } catch (err) {
-      setStatus({ text: `${t("settings.upgradeFailed")}: ${err.message || err}`, available: true });
-      setProgress(null);
-      setBusy(false);
+      setUpdateStatus({ text: `${t("settings.upgradeFailed")}: ${err.message || err}`, available: true });
+      setUpdateProgress(null);
+      setUpdateBusy(false);
     }
   };
 
@@ -981,7 +978,7 @@ function UpdateSection() {
       <div className="set-row">
         <div className="set-row-text">
           <div className="set-row-title">{t("settings.update")}</div>
-          <div className="set-row-desc">{status.text}</div>
+          <div className="set-row-desc">{statusText}</div>
         </div>
         <div className="set-row-control settings-update-btns">
           <button type="button" className="login-btn" disabled={busy} onClick={check}>{t("settings.checkUpdates")}</button>
