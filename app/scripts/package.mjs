@@ -16,6 +16,27 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+// 版本一致性守卫（v0.7.49 事故预防）：VERSION / app/package.json / Cargo.toml
+// 三处版本必须一致——0.7.49 发布时漏改 package.json，导致已装 0.7.49 的
+// Electron app.getVersion() 仍报 0.7.48，更新横幅永远提示"有可用更新"。
+// 不一致在此处硬失败，发布漏改在打包期即暴露（本地与 CI 共用本脚本）。
+{
+  const readVer = (file) => fs.readFileSync(file, "utf8").trim();
+  const pkgVersion = JSON.parse(fs.readFileSync(path.join(root, "package.json"))).version;
+  const repoVersion = readVer(path.join(root, "..", "VERSION"));
+  const cargoVersion = (readVer(path.join(root, "backend-rs", "Cargo.toml"))
+    .match(/^version\s*=\s*"([^"]+)"/m) || [])[1];
+  const mismatch = [];
+  if (pkgVersion !== repoVersion) mismatch.push(`package.json=${pkgVersion} vs VERSION=${repoVersion}`);
+  if (cargoVersion !== repoVersion) mismatch.push(`Cargo.toml=${cargoVersion} vs VERSION=${repoVersion}`);
+  if (mismatch.length) {
+    console.error(`[package] version mismatch: ${mismatch.join("; ")}`);
+    console.error("[package] 发版需同步更新 VERSION / app/package.json / app/backend-rs/Cargo.toml（含 cargo generate-lockfile）");
+    process.exit(1);
+  }
+}
+
 const args = process.argv.slice(2);
 const platformArg = (() => {
   const index = args.indexOf("--platform");
