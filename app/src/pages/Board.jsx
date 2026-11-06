@@ -8,8 +8,9 @@ import {
   sortByDisplayOrder, timeFractionOf, fmtReset, windowUsagePct,
 } from "../utils.js";
 import { t, useLang } from "../i18n.js";
-import { useInstallState, setInstallRunning, setInstallResult } from "../installState.js";
+import { useInstallState, setInstallResult, upgradingTargets as getUpgradingTargets } from "../installState.js";
 import ResetButton from "../components/ResetButton.jsx";
+import ResetChancesText from "../components/ResetChancesText.jsx";
 import BrandIcon from "../components/BrandIcon.jsx";
 import UpgradeOverlay from "../components/UpgradeOverlay.jsx";
 import AgentAccountControl from "../components/AgentAccountControl.jsx";
@@ -28,7 +29,7 @@ export default function Board({ lastPayload }) {
   const [fatalErrorDismissed, setFatalErrorDismissed] = useState("");
   const [upgradeProvider, setUpgradeProvider] = useState(null);
   const install = useInstallState();
-  const upgradingTargets = Object.values(install.runs || {}).flatMap((run) => run.targets || []);
+  const upgradingTargets = getUpgradingTargets(install, lastPayload?.data);
   const upgrading = upgradingTargets.length ? { targets: upgradingTargets } : null;
   const [compact, setCompact] = useState(false);
   const [pinned, setPinned] = useState(false);
@@ -95,16 +96,14 @@ export default function Board({ lastPayload }) {
 
   // 升级执行（确认后异步进行；卡片显示动态提醒，结果由全局消息提醒展示）
   const beginUpgrade = useCallback(async (targets) => {
-    const duplicate = Object.values(install.runs || {}).some((run) =>
-      (run.targets || []).some((target) => targets.includes(target)));
+    const data = (lastPayload && lastPayload.data) || {};
+    const duplicate = getUpgradingTargets(install, data).some((target) => targets.includes(target));
     if (duplicate) return;
-    const currentRun = setInstallRunning({ label: targets.join(", "), kind: "upgrade", targets });
     try {
-      const data = (lastPayload && lastPayload.data) || {};
       const result = await window.api.upgrade(targets, data.environment, data.windows_setup_script);
-      setInstallResult({ ok: Boolean(result && result.ok), error: result && result.error }, currentRun);
+      setInstallResult({ ok: Boolean(result && result.ok), error: result && result.error });
     } catch (err) {
-      setInstallResult({ ok: false, error: String(err.message || err) }, currentRun);
+      setInstallResult({ ok: false, error: String(err.message || err) });
     }
   }, [install.runs, lastPayload]);
 
@@ -296,16 +295,9 @@ export default function Board({ lastPayload }) {
                 if (applicable != null) {
                   parts.push(Number(applicable) > 0 ? t("dash.resetUsableNow") : t("dash.resetAfterLimit"));
                 }
-                const nextExpiresAt = Number(resetCredits.next_expires_at);
-                let expiry = "";
-                if (Number.isFinite(nextExpiresAt) && nextExpiresAt > 0) {
-                  const d = new Date(nextExpiresAt * 1000);
-                  const pad = (n) => String(n).padStart(2, "0");
-                  expiry = ` · ${t("dash.resetChancesEarliest")} ${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-                }
                 return (
                   <div className="limit-resets">
-                    {t("dash.resetChances")}: {parts.join(" · ")}{expiry}
+                    <ResetChancesText account={account}>{t("dash.resetChances")}: {parts.join(" · ")}</ResetChancesText>
                     {Number(available) > 0 && !account.stale && nearQuotaLimit(account) ? (
                       <ResetButton
                         provider="codex"
@@ -325,19 +317,9 @@ export default function Board({ lastPayload }) {
                 const parts = [];
                 if (five.length) parts.push(`5h ×${five.length}`);
                 if (week.length) parts.push(`7d ×${week.length}`);
-                const soonest = [...five, ...week]
-                  .map((c) => Number(c.expire_after_seconds))
-                  .filter((n) => Number.isFinite(n) && n > 0)
-                  .sort((a, b) => a - b)[0];
-                let expiry = "";
-                if (soonest) {
-                  const d = new Date(Date.now() + soonest * 1000);
-                  const pad = (n) => String(n).padStart(2, "0");
-                  expiry = ` · ${t("dash.resetChancesEarliest")} ${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-                }
                 return (
                   <div className="limit-resets">
-                    {t("dash.resetChances")}: {parts.join(" · ")}{expiry}
+                    <ResetChancesText account={account}>{t("dash.resetChances")}: {parts.join(" · ")}</ResetChancesText>
                     {five.length && windowUsagePct(account, "5h") >= QUOTA_RESET_THRESHOLD ? (
                       <ResetButton provider="glm" resetType="FIVE_HOUR" accountId={account.account_id || "default"} what={t("dash.resetWhat5h")}>{t("dash.resetUse5h")}</ResetButton>
                     ) : null}

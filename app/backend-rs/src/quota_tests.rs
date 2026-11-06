@@ -318,9 +318,10 @@ fn codex_reset_credits_use_earliest_available_expiry() {
     let now = chrono::Utc::now().timestamp();
     let result = crate::quota::normalize_codex(&serde_json::json!({
         "rateLimitResetCredits": {
-            "availableCount": 2,
+            "availableCount": 3,
             "credits": [
                 {"status": "available", "expiresAt": now + 7200},
+                {"status": "AVAILABLE", "expiresAt": (now + 7200) * 1000},
                 {"status": "used", "expiresAt": now + 1800},
                 {"status": "available", "expiresAt": now + 3600},
                 {"status": "available", "expiresAt": now - 60},
@@ -331,6 +332,125 @@ fn codex_reset_credits_use_earliest_available_expiry() {
         result["rate_limit_reset_credits"]["next_expires_at"],
         now + 3600
     );
+    assert_eq!(
+        result["rate_limit_reset_credits"]["expires_at_list"],
+        serde_json::json!([now + 3600, now + 7200, now + 7200])
+    );
+}
+
+#[test]
+fn codex_reset_expiry_survives_fallback_only_while_valid() {
+    let now = chrono::Utc::now().timestamp();
+    let previous = serde_json::json!({
+        "rate_limit_reset_credits": {
+            "available_count": 2,
+            "next_expires_at": now + 3600,
+            "expires_at_list": [now + 3600, now + 7200],
+        },
+    });
+    let mut fallback = serde_json::json!({
+        "rate_limit_reset_credits": {
+            "available_count": 2,
+            "applicable_available_count": 0,
+        },
+    });
+    crate::quota::inherit_reset_expiry(&mut fallback, &previous, now);
+    assert_eq!(fallback["rate_limit_reset_credits"]["next_expires_at"], now + 3600);
+    assert_eq!(fallback["rate_limit_reset_credits"]["expires_at_list"], serde_json::json!([now + 3600, now + 7200]));
+
+    let mut changed = serde_json::json!({
+        "rate_limit_reset_credits": {"available_count": 1},
+    });
+    crate::quota::inherit_reset_expiry(&mut changed, &previous, now);
+    assert!(changed["rate_limit_reset_credits"]["next_expires_at"].is_null());
+    assert!(changed["rate_limit_reset_credits"]["expires_at_list"].is_null());
+
+    let mut fresh = serde_json::json!({
+        "rate_limit_reset_credits": {"available_count": 2, "next_expires_at": now + 1800},
+    });
+    crate::quota::inherit_reset_expiry(&mut fresh, &previous, now);
+    assert_eq!(fresh["rate_limit_reset_credits"]["next_expires_at"], now + 1800);
+    assert!(fresh["rate_limit_reset_credits"]["expires_at_list"].is_null());
+
+    let mut partially_expired = serde_json::json!({
+        "rate_limit_reset_credits": {"available_count": 2},
+    });
+    crate::quota::inherit_reset_expiry(&mut partially_expired, &previous, now + 3600);
+    assert_eq!(partially_expired["rate_limit_reset_credits"]["next_expires_at"], now + 7200);
+    assert_eq!(partially_expired["rate_limit_reset_credits"]["expires_at_list"], serde_json::json!([now + 7200]));
+
+    let expired = serde_json::json!({
+        "rate_limit_reset_credits": {
+            "available_count": 2,
+            "next_expires_at": now - 1,
+        },
+    });
+    let mut expired_fallback = serde_json::json!({
+        "rate_limit_reset_credits": {
+            "available_count": 2,
+            "applicable_available_count": 0,
+        },
+    });
+    crate::quota::inherit_reset_expiry(&mut expired_fallback, &expired, now);
+    assert!(expired_fallback["rate_limit_reset_credits"]["next_expires_at"].is_null());
+}
+
+#[test]
+fn codex_non_expiring_reset_credits_remain_distinct_from_unknown() {
+    let now = chrono::Utc::now().timestamp();
+    let result = crate::quota::normalize_codex(&serde_json::json!({
+        "rateLimitResetCredits": {
+            "availableCount": 4,
+            "credits": [
+                {"status": "available", "expiresAt": null},
+                {"status": "available", "expiresAt": now + 3600},
+                {"status": "available"},
+                {"status": "redeemed", "expiresAt": null},
+            ],
+        },
+    }));
+    assert_eq!(result["rate_limit_reset_credits"]["expires_at_list"], serde_json::json!([now + 3600, null]));
+    let mut fallback = serde_json::json!({"rate_limit_reset_credits": {"available_count": 4}});
+    crate::quota::inherit_reset_expiry(&mut fallback, &result, now + 3600);
+    assert_eq!(fallback["rate_limit_reset_credits"]["expires_at_list"], serde_json::json!([null]));
+    assert!(fallback["rate_limit_reset_credits"]["next_expires_at"].is_null());
+}
+
+#[test]
+fn codex_successful_fallback_keeps_reset_expiry() {
+    let _env = crate::settings::TEST_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    use crate::quota::{apply_retry_window_at, WindowOutcome};
+
+    crate::quota::invalidate_codex_retry_state();
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let expiry = now_ms / 1000 + 3600;
+    let complete = serde_json::json!({
+        "provider": "OpenAI Codex",
+        "rate_limit_reset_credits": {
+            "available_count": 2,
+            "next_expires_at": expiry,
+        },
+    });
+    let fallback = serde_json::json!({
+        "provider": "OpenAI Codex",
+        "rate_limit_reset_credits": {
+            "available_count": 2,
+            "applicable_available_count": 0,
+        },
+    });
+    match apply_retry_window_at(Ok(complete), now_ms) {
+        WindowOutcome::Fresh(_) => {}
+        other => panic!("完整响应应 Fresh，实际 {other:?}"),
+    }
+    match apply_retry_window_at(Ok(fallback), now_ms + 1000) {
+        WindowOutcome::Fresh(account) => {
+            assert_eq!(account["rate_limit_reset_credits"]["next_expires_at"], expiry);
+        }
+        other => panic!("直连回退响应应 Fresh，实际 {other:?}"),
+    }
+    crate::quota::invalidate_codex_retry_state();
 }
 
 #[test]

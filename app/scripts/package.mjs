@@ -68,6 +68,30 @@ function copyTree(src, dest, filter) {
   }
 }
 
+// .gitattributes 只约束检出，不会修复被编辑器重新写成 CRLF 的现有文件。
+// 打包前检查所有随包 Shell 脚本，避免 WSL Bash 到安装后才报 pipefail\r。
+const sourceRoot = path.resolve(root, "..");
+const invalidShellFiles = [];
+function checkShellLineEndings(dir) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const file = path.join(dir, entry.name);
+    const rel = path.relative(sourceRoot, file).replace(/\\/g, "/");
+    if (rel.startsWith("windows/kdesk") || /(^|\/)log(\/|$)/.test(rel)) continue;
+    if (entry.isDirectory()) checkShellLineEndings(file);
+    else if (entry.isFile() && entry.name.endsWith(".sh") && fs.readFileSync(file).includes(13)) {
+      invalidShellFiles.push(rel);
+    }
+  }
+}
+for (const dir of ["scripts", "linux", "windows"]) {
+  checkShellLineEndings(path.join(sourceRoot, dir));
+}
+if (invalidShellFiles.length) {
+  console.error(`[package] Shell 脚本必须使用 LF 换行，以下文件含 CR/CRLF：\n${invalidShellFiles.map((file) => `  - ${file}`).join("\n")}`);
+  console.error("[package] 请先转换为 LF；CRLF 会让 WSL Bash 报 pipefail: invalid option name。");
+  process.exit(1);
+}
+
 if (!fs.existsSync(backendBinary)) {
   console.error(`[package] backend binary missing: ${backendBinary}`);
   console.error("[package] build it first: (cd backend-rs && cargo build --release)");

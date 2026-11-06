@@ -40,6 +40,8 @@ pub(crate) use codex::{apply_retry_window_at, WindowOutcome};
 pub use glm_reset::use_reset_card as use_glm_reset_card;
 // 归一化函数供 quota_tests 调用（release 构建中 crate 内未直接引用）
 #[cfg(test)]
+pub(crate) use codex::inherit_reset_expiry;
+#[cfg(test)]
 pub use codex::normalize_codex;
 #[cfg(test)]
 pub use codex_appserver::to_wham_shape;

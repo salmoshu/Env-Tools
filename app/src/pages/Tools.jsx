@@ -6,7 +6,7 @@
 // 交互式 bash 以保留 NVM/PATH），输出按行流式滚动；openssh 额外提供状态查看。
 
 import { useEffect, useRef, useState } from "react";
-import { useInstallState, setInstallRunning, setInstallResult, clearInstallLog, busyComponents } from "../installState.js";
+import { useInstallState, setInstallResult, clearInstallLog, busyComponents } from "../installState.js";
 import { t, useLang } from "../i18n.js";
 import { isNewerVersion, activateOnKeys } from "../utils.js";
 import BrandIcon from "../components/BrandIcon.jsx";
@@ -143,8 +143,6 @@ export default function Tools({ lastPayload }) {
   const running = install.running;
   const runs = install.runs || {};
   const runCount = Object.keys(runs).length;
-  // 只禁用正在安装的那个组件，其余组件可并发操作
-  const busy = busyComponents(install);
   const log = install.log;
   const result = install.result;
   const [logFilter, setLogFilter] = useState("all");
@@ -171,6 +169,7 @@ export default function Tools({ lastPayload }) {
   const environment = data.environment || "wsl";
   const versions = data.versions || {};
   const windowsSetupScript = data.windows_setup_script || "";
+  const busy = busyComponents(install, platformTab, wslTarget);
 
   useEffect(() => {
     (async () => {
@@ -305,13 +304,12 @@ export default function Tools({ lastPayload }) {
       return;
     }
     // 不再清空日志：并发安装时其它组件的输出要保留，按 runKey 分流
-    const currentRun = setInstallRunning({ label, component: actionKey });
     try {
       const result = await window.api.runComponent(
         actionKey, platformTab, windowsSetupScript, platformTab === "wsl" ? wslTarget : undefined);
-      setInstallResult({ ok: Boolean(result && result.ok), error: result && result.error }, currentRun);
+      setInstallResult({ ok: Boolean(result && result.ok), error: result && result.error });
     } catch (err) {
-      setInstallResult({ ok: false, error: String(err.message || err) }, currentRun);
+      setInstallResult({ ok: false, error: String(err.message || err) });
     }
   };
 
@@ -373,9 +371,13 @@ export default function Tools({ lastPayload }) {
           type="button"
           className={`tools-tab tools-add${showRemote ? " active" : ""}`}
           title={t("tools.remote")}
+          aria-label={t("tools.remote")}
+          aria-expanded={showRemote}
           onClick={() => setShowRemote((v) => !v)}
         >
-          +
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+          </svg>
         </button>
       </div>
 

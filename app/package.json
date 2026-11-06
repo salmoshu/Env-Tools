@@ -1,12 +1,13 @@
 {
   "name": "env-tools-app",
-  "version": "0.7.49",
+  "version": "0.7.50",
   "private": true,
   "description": "Env-Tools desktop app — Electron + React shell with local Rust API backend",
   "main": "electron/main.js",
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "build": "vite build",
+    "test": "node --test scripts/*.test.mjs",
     "start": "electron .",
     "package": "node scripts/package.mjs"
   },

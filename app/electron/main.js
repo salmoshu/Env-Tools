@@ -13,6 +13,7 @@ const { spawn, execSync, exec } = require("child_process");
 const os = require("os");
 const path = require("path");
 const fs = require("fs");
+const { installTarget, installScope, installConflict } = require("./installTarget.js");
 
 const REPO_ROOT = path.join(__dirname, "..", "..");
 // v0.7.0 起数据引擎全部原生（env-tools-api），python 引擎不再是依赖；
@@ -1230,7 +1231,7 @@ const COMPONENT_FLAGS = {
 // 给足 60min；完全停滞由 setup 脚本自检提前中止，不会真等满超时
 const INSTALL_TIMEOUT_MS = 60 * 60 * 1000;
 // 当前在跑的安装子进程：runKey → { child, cancelled }。
-// 不同组件可并发安装；同一 runKey 重复发起会被拒绝。
+// 不同平台/发行版可并发安装；同一目标的同一组件（包括看板升级）互斥。
 const installRuns = new Map();
 
 // POSIX 下子进程独立进程组（detached），整组 SIGTERM 才能清理到
@@ -1462,10 +1463,16 @@ function sendInstall(payload) {
 // runs 统一入口：spawn 安装脚本，按行推送输出，可取消，超时兜底。
 // start/end 事件广播给所有窗口：升级由看板发起时，组件管理页也能同步
 // 显示"进行中"；日志行始终带 runKey，并发时前端按组件分流。
-function startInstall(runKey, spec, meta = {}) {
+function startInstall(baseKey, spec, meta = {}) {
+  const target = installTarget(spec, process.platform, process.env.WSL_DISTRO_NAME || "");
+  const runKey = `${installScope(target)}:${baseKey}`;
+  const components = meta.components || [];
+  const targetLabel = target.environment === "wsl" && target.distro ? `WSL · ${target.distro}`
+    : target.environment === "windows" ? "Windows" : "Linux";
+  const label = `${targetLabel} · ${meta.label || baseKey}`;
   return new Promise((resolve) => {
-    if (installRuns.has(runKey)) {
-      resolve({ ok: false, error: `${meta.label || runKey} is already running` });
+    if (installRuns.has(runKey) || installConflict(installRuns, target, components)) {
+      resolve({ ok: false, error: `${label} is already running` });
       return;
     }
     // 负载缺失（如 kdesk 数百 MB 厂商包不随应用分发）给明确提示，
@@ -1490,9 +1497,10 @@ function startInstall(runKey, spec, meta = {}) {
     sendInstall({
       key: runKey,
       start: {
-        label: meta.label || runKey,
+        ...target,
+        label,
         kind: meta.kind || "",
-        components: meta.components || [],
+        components,
         targets: meta.targets || [],
       },
     });
@@ -1501,7 +1509,7 @@ function startInstall(runKey, spec, meta = {}) {
       windowsHide: true,
       detached: process.platform !== "win32",
     });
-    const run = { child, cancelled: false };
+    const run = { child, cancelled: false, ...target, components };
     installRuns.set(runKey, run);
     let output = "";
     let lineBuf = "";

@@ -16,13 +16,14 @@ import {
 import { RefreshIcon } from "../components/Titlebar.jsx";
 import Select from "../components/Select.jsx";
 import ResetButton from "../components/ResetButton.jsx";
+import ResetChancesText from "../components/ResetChancesText.jsx";
 import BrandIcon from "../components/BrandIcon.jsx";
 import UpgradeOverlay from "../components/UpgradeOverlay.jsx";
 import AgentAccountControl from "../components/AgentAccountControl.jsx";
 import { agentAccountId } from "../components/AgentAccountPicker.jsx";
 import { agentProviderKey, useAgentAccountStates } from "../agentAccounts.js";
 import { t, useLang } from "../i18n.js";
-import { useInstallState, setInstallRunning, setInstallResult } from "../installState.js";
+import { useInstallState, setInstallResult, upgradingTargets as getUpgradingTargets } from "../installState.js";
 
 const ANALYTICS_REFRESH_MS = 5 * 60 * 1000;
 // 页面分析口径固定 30 天（v0.7.34 移除范围下拉框后，历史 localStorage 里的
@@ -248,16 +249,9 @@ function QuotaCard({ account, versions, onUpgrade, upgrading, providerKey, accou
         if (applicable != null) {
           parts.push(Number(applicable) > 0 ? t("dash.resetUsableNow") : t("dash.resetAfterLimit"));
         }
-        const nextExpiresAt = Number(resetCredits.next_expires_at);
-        let expiry = "";
-        if (Number.isFinite(nextExpiresAt) && nextExpiresAt > 0) {
-          const d = new Date(nextExpiresAt * 1000);
-          const pad = (n) => String(n).padStart(2, "0");
-          expiry = ` · ${t("dash.resetChancesEarliest")} ${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-        }
         return (
           <div className="limit-resets">
-            {t("dash.resetChances")}: {parts.join(" · ")}{expiry}
+            <ResetChancesText account={account}>{t("dash.resetChances")}: {parts.join(" · ")}</ResetChancesText>
             {/* stale 沿用数据不渲染重置按钮：过期的 ≥95% 读数可能触发不必要的重置 */}
             {Number(available) > 0 && !account.stale && nearQuotaLimit(account) ? (
               <ResetButton
@@ -291,19 +285,9 @@ function QuotaCard({ account, versions, onUpgrade, upgrading, providerKey, accou
         const parts = [];
         if (five.length) parts.push(`5h ×${five.length}`);
         if (week.length) parts.push(`7d ×${week.length}`);
-        const soonest = [...five, ...week]
-          .map((c) => Number(c.expire_after_seconds))
-          .filter((n) => Number.isFinite(n) && n > 0)
-          .sort((a, b) => a - b)[0];
-        let expiry = "";
-        if (soonest) {
-          const d = new Date(Date.now() + soonest * 1000);
-          const pad = (n) => String(n).padStart(2, "0");
-          expiry = ` · ${t("dash.resetChancesEarliest")} ${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-        }
         return (
           <div className="limit-resets">
-            {t("dash.resetChances")}: {parts.join(" · ")}{expiry}
+            <ResetChancesText account={account}>{t("dash.resetChances")}: {parts.join(" · ")}</ResetChancesText>
             {five.length && windowUsagePct(account, "5h") >= QUOTA_RESET_THRESHOLD ? (
               <ResetButton provider="glm" resetType="FIVE_HOUR" accountId={account.account_id || "default"} what={t("dash.resetWhat5h")}>{t("dash.resetUse5h")}</ResetButton>
             ) : null}
@@ -567,9 +551,6 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
   }, []);
   // 升级状态来自全局 installState：切页后"升级中…"徽章与结果提示都还在
   const install = useInstallState();
-  // 多场升级并发时，所有在跑 provider 的角标都要亮，而不只是最近一场
-  const upgradingTargets = Object.values(install.runs || {}).flatMap((run) => run.targets || []);
-  const upgrading = upgradingTargets.length ? { targets: upgradingTargets } : null;
   const analyticsBusy = useRef(false);
   // 手动刷新广播 analytics-invalidated 时若在途请求未完结，置位排队补拉
   const analyticsQueued = useRef(false);
@@ -690,6 +671,9 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
     ? lastPayload
     : (usage || { data: null });
   const data = usagePayload && usagePayload.data;
+  // 多场升级并发时，仅当前平台/发行版的 provider 显示角标。
+  const upgradingTargets = getUpgradingTargets(install, data);
+  const upgrading = upgradingTargets.length ? { targets: upgradingTargets } : null;
   const errors = (data && data.errors) || [];
   const versions = (data && data.versions) || {};
   const allAccounts = (data && data.accounts) || [];
@@ -847,16 +831,14 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
   // 升级执行（确认后异步进行；卡片显示动态提醒，结果落入升级提示条）
   const beginUpgrade = useCallback(async (targets) => {
     // 只拦截同目标的重复升级，其它组件可并发安装/升级
-    const duplicate = Object.values(install.runs || {}).some((run) =>
-      (run.targets || []).some((target) => targets.includes(target)));
+    const data = (usagePayload && usagePayload.data) || {};
+    const duplicate = getUpgradingTargets(install, data).some((target) => targets.includes(target));
     if (duplicate) return;
-    const currentRun = setInstallRunning({ label: targets.join(", "), kind: "upgrade", targets });
     try {
-      const data = (usagePayload && usagePayload.data) || {};
       const result = await window.api.upgrade(targets, data.environment, data.windows_setup_script);
-      setInstallResult({ ok: Boolean(result && result.ok), error: result && result.error }, currentRun);
+      setInstallResult({ ok: Boolean(result && result.ok), error: result && result.error });
     } catch (err) {
-      setInstallResult({ ok: false, error: String(err.message || err) }, currentRun);
+      setInstallResult({ ok: false, error: String(err.message || err) });
     } finally {
       // 升级完成后刷新用量数据（版本号变化）
       if (onRefresh) onRefresh();

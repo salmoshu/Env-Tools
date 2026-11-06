@@ -28,5 +28,6 @@ jobs:
         run: |
           pnpm install
           pnpm exec vite build
+          pnpm test
       - name: Shell syntax check (bash entrypoints)
         run: for f in scripts/setup.sh scripts/tools.sh; do bash -n "$f"; done

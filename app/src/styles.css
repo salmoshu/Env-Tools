@@ -487,6 +487,7 @@ td b { font-weight: 600; }
 .qmembership.error { color: var(--red); }
 /* 重置机会行：品牌规范下的中性灰，不使用状态绿 */
 .limit-resets { margin: 1px 0 2px; color: var(--dim); font-size: 11px; font-variant-numeric: tabular-nums; }
+.reset-chances-text[title] { cursor: help; }
 /* 配额重置按钮：≥95% 用量才出现，点击弹确认对话框，结果内联展示 */
 .reset-action-btn {
   margin-left: 8px; padding: 0 9px; font-size: 11px; line-height: 18px;
@@ -542,7 +543,7 @@ td b { font-weight: 600; }
 .codex-account-select:focus { border-color: var(--accent-border); box-shadow: 0 0 0 3px var(--accent-softer); }
 .qcard-head, .provider-head { flex-wrap: wrap; }
 .qcard, .provider { min-width: 0; }
-.agent-account-picker { position: relative; display: inline-flex; min-width: 0; max-width: 100%; }
+.agent-account-picker { position: relative; display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; }
 .agent-account-control { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; }
 .agent-account-apply {
   display: inline-flex; align-items: center; justify-content: center;
@@ -1232,6 +1233,10 @@ td b { font-weight: 600; }
 }
 .tools-tabs-spacer { flex: 1; }
 .tools-tab.tools-add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
   width: 32px;
   padding: 0;
   font-size: 17px;

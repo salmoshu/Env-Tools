@@ -88,11 +88,9 @@ fn timestamp_of(raw: Option<&Value>) -> Option<i64> {
     (timestamp > 0).then_some(timestamp)
 }
 
-fn next_reset_expiry(reset_credits: &Value) -> Option<i64> {
-    let direct = ["next_expires_at", "nextExpiresAt", "expires_at", "expiresAt"]
-        .iter()
-        .find_map(|key| timestamp_of(reset_credits.get(*key)));
-    let from_credits = reset_credits
+fn reset_expiries(reset_credits: &Value) -> Vec<Option<i64>> {
+    let now = chrono::Utc::now().timestamp();
+    let mut expiries: Vec<Option<i64>> = reset_credits
         .get("credits")
         .and_then(Value::as_array)
         .into_iter()
@@ -105,14 +103,67 @@ fn next_reset_expiry(reset_credits: &Value) -> Option<i64> {
                 .unwrap_or(true)
         })
         .filter_map(|credit| {
-            timestamp_of(credit.get("expires_at").or_else(|| credit.get("expiresAt")))
-        });
-    let now = chrono::Utc::now().timestamp();
-    direct
+            let raw = credit.get("expires_at").or_else(|| credit.get("expiresAt"))?;
+            if raw.is_null() {
+                // 官方协议中 null 表示没有到期限制；缺失字段才是未知。
+                Some(None)
+            } else {
+                timestamp_of(Some(raw)).filter(|at| *at > now).map(Some)
+            }
+        })
+        .collect();
+    // 相同日期可能对应多次机会，不能去重。
+    expiries.sort_unstable_by_key(|at| at.unwrap_or(i64::MAX));
+    expiries
+}
+
+/// 直连 wham/usage 不带重置机会到期时间。回退时沿用同一份重置机会的
+/// 全部到期时间；次数变化或时间已过期则不能沿用，避免显示错误日期。
+pub(crate) fn inherit_reset_expiry(account: &mut Value, previous: &Value, now_unix: i64) {
+    let Some(previous_credits) = previous
+        .get("rate_limit_reset_credits")
+        .and_then(Value::as_object)
+    else {
+        return;
+    };
+    let previous_available = previous_credits
+        .get("available_count")
+        .and_then(Value::as_i64);
+    let Some(credits) = account
+        .get_mut("rate_limit_reset_credits")
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    let available = credits.get("available_count").and_then(Value::as_i64);
+    if credits.contains_key("next_expires_at")
+        || credits.contains_key("expires_at_list")
+        || available.is_none()
+        || available != previous_available
+    {
+        return;
+    }
+    let expiries: Vec<Value> = previous_credits
+        .get("expires_at_list")
+        .and_then(Value::as_array)
         .into_iter()
-        .chain(from_credits)
-        .filter(|timestamp| *timestamp > now)
-        .min()
+        .flatten()
+        .filter(|at| at.is_null() || at.as_i64().is_some_and(|at| at > now_unix))
+        .cloned()
+        .collect();
+    let next = previous_credits
+        .get("next_expires_at")
+        .and_then(Value::as_i64)
+        .filter(|at| *at > now_unix)
+        .into_iter()
+        .chain(expiries.iter().filter_map(Value::as_i64))
+        .min();
+    if let Some(expiry) = next {
+        credits.insert("next_expires_at".into(), Value::from(expiry));
+    }
+    if !expiries.is_empty() {
+        credits.insert("expires_at_list".into(), serde_json::json!(expiries));
+    }
 }
 
 pub fn normalize_codex(data: &Value) -> Value {
@@ -170,8 +221,24 @@ pub fn normalize_codex(data: &Value) -> Value {
                 }
             }
         }
-        if let Some(expiry) = next_reset_expiry(&reset_credits) {
+        let expiries = reset_expiries(&reset_credits);
+        let direct = ["next_expires_at", "nextExpiresAt", "expires_at", "expiresAt"]
+            .iter()
+            .find_map(|key| timestamp_of(reset_credits.get(*key)))
+            .filter(|at| *at > chrono::Utc::now().timestamp());
+        if let Some(expiry) = direct
+            .into_iter()
+            .chain(expiries.iter().flatten().copied())
+            .min()
+        {
             normalized.insert("next_expires_at".into(), Value::from(expiry));
+        }
+        if reset_credits
+            .get("credits")
+            .and_then(Value::as_array)
+            .is_some()
+        {
+            normalized.insert("expires_at_list".into(), serde_json::json!(expiries));
         }
         if !normalized.is_empty() {
             result["rate_limit_reset_credits"] = Value::Object(normalized);
@@ -407,7 +474,10 @@ fn apply_retry_window_at_for_guarded(
         last_fail_ms: 0,
     });
     match outcome {
-        Ok(account) => {
+        Ok(mut account) => {
+            if let Some(previous) = win.last_good.as_ref() {
+                inherit_reset_expiry(&mut account, previous, now_ms / 1000);
+            }
             win.last_good = Some(account.clone());
             win.consecutive_fails = 0;
             win.last_fail_ms = 0;

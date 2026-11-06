@@ -28,12 +28,6 @@ function notify() {
   for (const fn of listeners) fn();
 }
 
-function runKeyOf(running) {
-  if (running.key) return running.key;
-  if (running.component) return `component:${running.component}`;
-  return `upgrade:${(running.targets || []).join(",")}`;
-}
-
 function componentsOf(running) {
   if (Array.isArray(running.components) && running.components.length) return running.components;
   if (running.component) return [running.component];
@@ -41,7 +35,7 @@ function componentsOf(running) {
 }
 
 function normalizeRun(running) {
-  const key = runKeyOf(running);
+  const key = running.key;
   const run = { ...running, key, components: componentsOf(running) };
   runLabels[key] = run.label || key;
   return run;
@@ -116,17 +110,11 @@ export function subscribeInstallState(notifyFn) {
   return () => listeners.delete(notifyFn);
 }
 
-export function setInstallRunning(running) {
-  if (!running) {
-    state = { ...state, running: null };
-    notify();
-    return null;
-  }
-  return upsertRun(running);
-}
-
-export function setInstallResult(result, run) {
-  finishRun(run && run.key, result);
+// 运行记录只由主进程的 start/end 广播维护，避免乐观记录与发行版回退后
+// 的真实 runKey 不同，留下永不结束的任务。IPC 结果也覆盖启动前失败。
+export function setInstallResult(result) {
+  state = { ...state, result };
+  notify();
 }
 
 export function dismissInstallResult() {
@@ -139,13 +127,23 @@ export function clearInstallLog() {
   notify();
 }
 
-/** 正在安装的组件 key 集合（看板升级与组件管理共用同一套 run） */
-export function busyComponents(install) {
+/** 当前平台/发行版正在安装的组件（看板升级与组件管理共用）。 */
+export function busyComponents(install, environment, distro = "") {
   const busy = new Set();
   for (const run of Object.values((install && install.runs) || {})) {
+    if (run.environment !== environment) continue;
+    if (environment === "wsl" && distro && run.distro !== distro) continue;
     for (const component of run.components || []) busy.add(component);
   }
   return busy;
+}
+
+export function upgradingTargets(install, data = {}) {
+  data = data || {};
+  const environment = ["windows", "wsl"].includes(data.environment)
+    ? data.environment : data.native_environment || "windows";
+  const busy = busyComponents(install, environment, data.wsl_distro || "");
+  return Object.keys(UPGRADE_COMPONENTS).filter((provider) => busy.has(UPGRADE_COMPONENTS[provider]));
 }
 
 /** React 绑定：安装状态变化时触发重渲染 */
