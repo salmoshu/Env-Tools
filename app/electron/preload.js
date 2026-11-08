@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld("api", {
   onOpenSettings: (callback) => subscribe("open-settings", () => callback()),
   onInstallProgress: (callback) => subscribe("install-progress", (payload) => callback(payload)),
   refresh: () => ipcRenderer.send("refresh"),
+  onRefreshComplete: (callback) => subscribe("refresh-complete", callback),
   getAnalytics: (days, agent, target) => ipcRenderer.invoke("get-analytics", days, agent, target),
   getBackendStatus: () => ipcRenderer.invoke("get-backend-status"),
   listTargets: () => ipcRenderer.invoke("list-targets"),

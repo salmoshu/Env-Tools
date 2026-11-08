@@ -120,10 +120,17 @@ pub fn parse_timestamp(value: Option<&Value>) -> Option<DateTime<Utc>> {
             Utc.timestamp_opt(numeric as i64, 0).single()
         }
         Value::String(text) => {
-            let trimmed = text.trim().trim_end_matches('Z');
-            DateTime::parse_from_rfc3339(&format!("{trimmed}+00:00"))
-                .ok()
-                .map(|dt| dt.with_timezone(&Utc))
+            let trimmed = text.trim();
+            // Accept both UTC values with a trailing `Z` and values emitted by
+            // `iso_seconds`, which carry an explicit local offset (`+08:00`).
+            // The previous implementation always appended `+00:00`, making
+            // offset-bearing RFC3339 values unparsable when read back from the
+            // reset-expiry cache.
+            let parsed = DateTime::parse_from_rfc3339(trimmed).or_else(|_| {
+                let without_z = trimmed.strip_suffix('Z').unwrap_or(trimmed);
+                DateTime::parse_from_rfc3339(&format!("{without_z}+00:00"))
+            });
+            parsed.ok().map(|dt| dt.with_timezone(&Utc))
         }
         _ => None,
     }

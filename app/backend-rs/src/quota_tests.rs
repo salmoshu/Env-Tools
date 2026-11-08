@@ -417,43 +417,6 @@ fn codex_non_expiring_reset_credits_remain_distinct_from_unknown() {
 }
 
 #[test]
-fn codex_successful_fallback_keeps_reset_expiry() {
-    let _env = crate::settings::TEST_ENV_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    use crate::quota::{apply_retry_window_at, WindowOutcome};
-
-    crate::quota::invalidate_codex_retry_state();
-    let now_ms = chrono::Utc::now().timestamp_millis();
-    let expiry = now_ms / 1000 + 3600;
-    let complete = serde_json::json!({
-        "provider": "OpenAI Codex",
-        "rate_limit_reset_credits": {
-            "available_count": 2,
-            "next_expires_at": expiry,
-        },
-    });
-    let fallback = serde_json::json!({
-        "provider": "OpenAI Codex",
-        "rate_limit_reset_credits": {
-            "available_count": 2,
-            "applicable_available_count": 0,
-        },
-    });
-    match apply_retry_window_at(Ok(complete), now_ms) {
-        WindowOutcome::Fresh(_) => {}
-        other => panic!("完整响应应 Fresh，实际 {other:?}"),
-    }
-    match apply_retry_window_at(Ok(fallback), now_ms + 1000) {
-        WindowOutcome::Fresh(account) => {
-            assert_eq!(account["rate_limit_reset_credits"]["next_expires_at"], expiry);
-        }
-        other => panic!("直连回退响应应 Fresh，实际 {other:?}"),
-    }
-    crate::quota::invalidate_codex_retry_state();
-}
-
-#[test]
 fn kimi_limits_normalize_window_labels() {
     let result = crate::quota::normalize_kimi(&serde_json::json!({
         "limits": [

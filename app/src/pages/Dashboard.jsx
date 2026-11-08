@@ -6,8 +6,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AGENT_COLORS, AGENT_LABELS, abbrev, activateOnKeys, fmt, fmtPct, fmtReset, fmtSpan, fmtTimestamp,
-  isNewerVersion, levelClass, nearQuotaLimit, QUOTA_RESET_THRESHOLD, sortByDisplayOrder,
-  timeFractionOf, windowUsagePct,
+  isNewerVersion, levelClass, sortByDisplayOrder, timeFractionOf,
 } from "../utils.js";
 import {
   CalendarHeatmap, DonutChart, LineChart, MODEL_PALETTE,
@@ -15,8 +14,7 @@ import {
 } from "../components/charts.jsx";
 import { RefreshIcon } from "../components/Titlebar.jsx";
 import Select from "../components/Select.jsx";
-import ResetButton from "../components/ResetButton.jsx";
-import ResetChancesText from "../components/ResetChancesText.jsx";
+import ResetChances from "../components/ResetChances.jsx";
 import BrandIcon from "../components/BrandIcon.jsx";
 import UpgradeOverlay from "../components/UpgradeOverlay.jsx";
 import AgentAccountControl from "../components/AgentAccountControl.jsx";
@@ -127,7 +125,6 @@ function QuotaCard({ account, versions, onUpgrade, upgrading, providerKey, accou
     : "";
   const info = versions[account.provider] || {};
   const newer = info.current && info.latest && isNewerVersion(info.latest, info.current);
-  const resetCredits = account.rate_limit_reset_credits;
   // GLM 双通道：coding plan（bigmodel）窗口 + Start Plan（ZCode）窗口，
   // "Start ·" 前缀区分；两路并存时显示通道切换下拉。边界：
   // - 仅 StartPlan 有数据（如 API key 配额不可用）→ 单通道直接显示它
@@ -240,31 +237,7 @@ function QuotaCard({ account, versions, onUpgrade, upgrading, providerKey, accou
         );
       })}
       {(() => {
-        if (!resetCredits || typeof resetCredits !== "object") return null;
-        const available = resetCredits.available_count;
-        const applicable = resetCredits.applicable_available_count;
-        if (available == null && applicable == null) return null;
-        const parts = [];
-        if (available != null) parts.push(t("dash.resetRemaining").replace("{n}", String(available)));
-        if (applicable != null) {
-          parts.push(Number(applicable) > 0 ? t("dash.resetUsableNow") : t("dash.resetAfterLimit"));
-        }
-        return (
-          <div className="limit-resets">
-            <ResetChancesText account={account}>{t("dash.resetChances")}: {parts.join(" · ")}</ResetChancesText>
-            {/* stale 沿用数据不渲染重置按钮：过期的 ≥95% 读数可能触发不必要的重置 */}
-            {Number(available) > 0 && !account.stale && nearQuotaLimit(account) ? (
-              <ResetButton
-                provider="codex"
-                accountId={account.account_id || "default"}
-                what={t("dash.resetWhatCodex")}
-              >{t("dash.resetNow")}</ResetButton>
-            ) : null}
-          </div>
-        );
-      })()}
-      {(() => {
-        // StartPlan 通道：重置卡属 BigModel 通道，此处只显示套餐到期
+        // StartPlan 通道显示套餐到期，BigModel 重置机会仍可从独立 hint 查看。
         if (isGlm && activeChannel === "start") {
           const endsIn = Math.max(
             0,
@@ -277,43 +250,19 @@ function QuotaCard({ account, versions, onUpgrade, upgrading, providerKey, accou
             </div>
           );
         }
-        const cards = account.reset_cards;
-        if (!cards || typeof cards !== "object") return null;
-        const five = Array.isArray(cards.five_hour) ? cards.five_hour : [];
-        const week = Array.isArray(cards.week) ? cards.week : [];
-        if (!five.length && !week.length) return null;
-        const parts = [];
-        if (five.length) parts.push(`5h ×${five.length}`);
-        if (week.length) parts.push(`7d ×${week.length}`);
-        return (
-          <div className="limit-resets">
-            <ResetChancesText account={account}>{t("dash.resetChances")}: {parts.join(" · ")}</ResetChancesText>
-            {five.length && windowUsagePct(account, "5h") >= QUOTA_RESET_THRESHOLD ? (
-              <ResetButton provider="glm" resetType="FIVE_HOUR" accountId={account.account_id || "default"} what={t("dash.resetWhat5h")}>{t("dash.resetUse5h")}</ResetButton>
-            ) : null}
-            {week.length && windowUsagePct(account, "7d") >= QUOTA_RESET_THRESHOLD ? (
-              <ResetButton provider="glm" resetType="WEEK" accountId={account.account_id || "default"} what={t("dash.resetWhat7d")}>{t("dash.resetUse7d")}</ResetButton>
-            ) : null}
-          </div>
-        );
+        return null;
       })()}
+      <ResetChances account={account} />
     </div>
   );
 }
 
 /** 配额异常占位卡片：按 provider 类型分级引导，API 型绝不引导"去登录" */
-function QuotaErrorCard({ err, onFix, providerKey, accountState }) {
+function QuotaErrorCard({ err, onFix, providerKey, accountState, refreshing = false }) {
   const [expanded, setExpanded] = useState(false);
-  // 重试中的动态反馈：网络重试是异步的，没有状态提示用户会以为没点上
-  const [retrying, setRetrying] = useState(false);
-  const retry = async () => {
-    if (retrying) return;
-    setRetrying(true);
-    try {
-      await Promise.resolve(onFix && onFix("refresh"));
-    } finally {
-      setTimeout(() => setRetrying(false), 1200);
-    }
+  // 与页头共用实际刷新周期，直到刷新完成信号或刷新看门狗结束。
+  const retry = () => {
+    if (!refreshing && onFix) onFix("refresh");
   };
   const message = String((err && err.error) || t("state.unknownError"));
   const provider = String((err && err.provider) || "");
@@ -359,8 +308,8 @@ function QuotaErrorCard({ err, onFix, providerKey, accountState }) {
         {kind === "keys" && (
           <button className="qerror-btn" onClick={() => onFix && onFix("settings")}>{t("err.addKey")}</button>
         )}
-        <button className="qerror-btn ghost" disabled={retrying} onClick={retry}>
-          {retrying ? <span className="spin-dot" /> : <RefreshIcon />} {t(retrying ? "state.retrying" : "state.retry")}
+        <button className="qerror-btn ghost" disabled={refreshing} aria-busy={refreshing} onClick={retry}>
+          <RefreshIcon spinning={refreshing} /> {t(refreshing ? "state.retrying" : "state.retry")}
         </button>
       </div>
       {loginFeedback ? <div className={`qerror-login-feedback${loginFeedback.ok ? " ok" : ""}`}>{loginFeedback.text}</div> : null}
@@ -519,7 +468,8 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
         <button
           type="button"
           className="refresh-inline"
-          title={t("tip.refresh")}
+          title={`${t("tip.refresh")} (F5)`}
+          aria-keyshortcuts="F5"
           disabled={refreshing}
           onClick={() => onRefresh && onRefresh()}
         >
@@ -646,12 +596,13 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
   // analytics-invalidated：在此重拉，让图表与配额卡一起变新——此前没人订阅
   // 该广播，手动刷新只更新配额区，图表区看起来"没反应"
   useEffect(() => window.api.onAnalyticsInvalidated(() => {
+    refreshUsage(target);
     if (analyticsBusy.current) {
       analyticsQueued.current = true;
       return;
     }
     requestAnalytics(days, agent, target);
-  }), [days, agent, target, requestAnalytics]);
+  }), [days, agent, target, requestAnalytics, refreshUsage]);
 
   // 按月拉 365 天、按年拉 5 年；agent/target 切换后旧数据作废重拉
   useEffect(() => {
@@ -1034,7 +985,8 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
           <button
             type="button"
             className="btn refresh-inline"
-            title={t("tip.refresh")}
+            title={`${t("tip.refresh")} (F5)`}
+            aria-keyshortcuts="F5"
             disabled={refreshing}
             onClick={() => onRefresh && onRefresh()}
           >
@@ -1228,6 +1180,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
               err={displayError}
               providerKey={providerKey}
               accountState={accountStates[providerKey]}
+              refreshing={refreshing}
               onFix={async (action) => {
                 if (action === "refresh") {
                   if (onRefresh) onRefresh();

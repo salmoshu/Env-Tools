@@ -2,7 +2,7 @@
 // 其余为全量窗口的分析页）。主窗口左侧边栏导航：Analytics / Tools；悬浮看板
 // 入口为 header 图标按钮（设置齿轮左侧），header 右侧其余为窗口按钮。
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Titlebar, {
   AnalyticsIcon, BoardIcon, GearIcon, ExpandIcon, MaximizeIcon, RestoreIcon, PinIcon,
   ToolsIcon, useEnvBadge,
@@ -13,6 +13,7 @@ import Tools from "./pages/Tools.jsx";
 import SettingsPage from "./pages/SettingsPage.jsx";
 import { t, useLang } from "./i18n.js";
 import { showToast, ToastStack } from "./toast.jsx";
+import { ResetConfirmation } from "./components/ResetButton.jsx";
 import { dismissInstallResult, useInstallState } from "./installState.js";
 import {
   activateOnKeys, applyTheme, readThemePreference, resolvedTheme, watchExternalTheme,
@@ -40,6 +41,7 @@ export default function App() {
   // disabled 卡死——65s 强制复位（后端取数超时 60s，广播应在此之前到达），
   // 避免"点了没反应、只能等它自己恢复"的观感
   const refreshWatchdog = useRef(0);
+  const refreshActive = useRef(false);
   // 订阅语言切换：t() 的输出随 useLang 状态变化整树重渲染
   useLang();
 
@@ -96,11 +98,17 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const off = window.api.onUsageUpdate((payload) => {
+    const finishRefresh = () => {
       clearTimeout(refreshWatchdog.current);
-      setLastPayload(payload);
+      refreshActive.current = false;
       setRefreshing(false);
+    };
+    const off = window.api.onUsageUpdate((payload) => {
+      setLastPayload(payload);
+      if (!window.api.onRefreshComplete) finishRefresh();
     });
+    // 即使配额完全没变、不产生 usage-update，也能结束手动刷新状态。
+    const offRefresh = window.api.onRefreshComplete?.(finishRefresh);
     const offNavigate = window.api.onNavigate((next) => {
       if (next !== currentRoute()) {
         window.location.hash = `#/${next}`;
@@ -113,6 +121,7 @@ export default function App() {
     window.api.isMaximized().then(setMaximized);
     return () => {
       off();
+      offRefresh?.();
       offNavigate();
       offMaximized();
       clearTimeout(refreshWatchdog.current);
@@ -126,21 +135,38 @@ export default function App() {
   const isSettings = route === "settings";
 
   const navigate = (next) => { window.location.hash = `#/${next}`; };
-  const triggerRefresh = () => {
+  const triggerRefresh = useCallback(() => {
+    if (refreshActive.current) return;
+    refreshActive.current = true;
     setRefreshing(true);
     clearTimeout(refreshWatchdog.current);
-    refreshWatchdog.current = setTimeout(() => setRefreshing(false), 65000);
+    refreshWatchdog.current = setTimeout(() => {
+      refreshActive.current = false;
+      setRefreshing(false);
+    }, 65000);
     try {
       window.api.refresh();
     } catch {
       clearTimeout(refreshWatchdog.current);
+      refreshActive.current = false;
       setRefreshing(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    const onKey = (event) => {
+      if (event.key !== "F5") return;
+      event.preventDefault();
+      if (!event.repeat) triggerRefresh();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [triggerRefresh]);
 
   return (
     <div className={isBoard ? "board-frame" : "app-frame"}>
       <ToastStack />
+      <ResetConfirmation />
       <Titlebar title={isBoard ? "AI Usage Monitor" : "Env-Tools"} version={version} envBadge={envBadge}>
         {isBoard ? (
           <button type="button" className="btn" title={t("tip.expand")} onClick={() => window.api.openFullDashboard()}>

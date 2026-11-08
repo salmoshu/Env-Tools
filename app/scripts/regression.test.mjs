@@ -72,3 +72,8 @@ test("明确无到期限制与缺失到期时间分别展示", () => {
     available_count: 2, expires_at_list: [null],
   } }), [{ label: "", at: null, noExpiry: true }, { label: "", at: null }]);
 });
+
+test("GLM 日期缺失时保留真实次数并标记未知日期", () => {
+  assert.deepEqual(resetExpiries({ reset_cards: { five_hour: [{ expire_at: null, expire_after_seconds: null }] } }),
+    [{ label: "5h", at: null }]);
+});

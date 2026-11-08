@@ -487,8 +487,8 @@ ipcMain.on("window-close", (event) => {
   const window = senderWindow(event);
   if (window) window.close();
 });
-ipcMain.on("refresh", async () => {
-  pushUsage();
+ipcMain.on("refresh", async (event) => {
+  const usageRefresh = pushUsage().catch(() => {});
   // 手动刷新同时失效分析/速率缓存：前端随即重拉的 analytics 是新鲜数据
   try {
     if (backendPort) {
@@ -499,6 +499,8 @@ ipcMain.on("refresh", async () => {
     }
   } catch {}
   for (const w of liveWindows()) w.webContents.send("analytics-invalidated");
+  await usageRefresh;
+  if (!event.sender.isDestroyed()) event.sender.send("refresh-complete");
 });
 // 全量窗口 ⇄ 用量看板：互相打开对方窗口；设置页自 v0.7.0 起住主窗口内
 ipcMain.handle("open-usage-board", async () => {

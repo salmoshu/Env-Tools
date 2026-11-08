@@ -20,13 +20,16 @@ export function fmtPct(fraction) {
   return fraction == null ? "-" : (fraction * 100).toFixed(1) + "%";
 }
 
-// 配额重置按钮的出现门槛：任一窗口用量 ≥95%（剩余 <5%）才允许重置，
-// 避免额度充裕时误触浪费重置机会
-export const QUOTA_RESET_THRESHOLD = 95;
+// 外层快捷重置按钮在用量达到 80% 时出现；hint 内的入口不受此门槛限制。
+export const QUOTA_RESET_THRESHOLD = 80;
 
 // 指定窗口（按标签片段匹配，如 "5h" / "7d"）的用量百分比；无数据返回 0
 export function windowUsagePct(account, labelPart) {
-  const w = (account.windows || []).find((item) => String(item.label || "").includes(labelPart));
+  const w = (account.windows || []).find((item) => {
+    const label = String(item.label || "");
+    // GLM 重置卡仅用于 BigModel，Start Plan 是另一条独立通道。
+    return !label.startsWith("Start") && label.includes(labelPart);
+  });
   return w && w.used_percent != null ? Number(w.used_percent) : 0;
 }
 

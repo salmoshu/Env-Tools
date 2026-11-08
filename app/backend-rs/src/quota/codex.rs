@@ -2,6 +2,7 @@
 //! 优先官方 `codex app-server`（account/rateLimits/read，见 codex_appserver），
 //! CLI 不可用/查询失败时回退直连 wham/usage。
 
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use serde_json::Value;
@@ -117,33 +118,8 @@ fn reset_expiries(reset_credits: &Value) -> Vec<Option<i64>> {
     expiries
 }
 
-/// 直连 wham/usage 不带重置机会到期时间。回退时沿用同一份重置机会的
-/// 全部到期时间；次数变化或时间已过期则不能沿用，避免显示错误日期。
-pub(crate) fn inherit_reset_expiry(account: &mut Value, previous: &Value, now_unix: i64) {
-    let Some(previous_credits) = previous
-        .get("rate_limit_reset_credits")
-        .and_then(Value::as_object)
-    else {
-        return;
-    };
-    let previous_available = previous_credits
-        .get("available_count")
-        .and_then(Value::as_i64);
-    let Some(credits) = account
-        .get_mut("rate_limit_reset_credits")
-        .and_then(Value::as_object_mut)
-    else {
-        return;
-    };
-    let available = credits.get("available_count").and_then(Value::as_i64);
-    if credits.contains_key("next_expires_at")
-        || credits.contains_key("expires_at_list")
-        || available.is_none()
-        || available != previous_available
-    {
-        return;
-    }
-    let expiries: Vec<Value> = previous_credits
+fn valid_reset_expiries(credits: &Value, now_unix: i64) -> Vec<Value> {
+    let mut expiries: Vec<Value> = credits
         .get("expires_at_list")
         .and_then(Value::as_array)
         .into_iter()
@@ -151,19 +127,98 @@ pub(crate) fn inherit_reset_expiry(account: &mut Value, previous: &Value, now_un
         .filter(|at| at.is_null() || at.as_i64().is_some_and(|at| at > now_unix))
         .cloned()
         .collect();
-    let next = previous_credits
+    expiries.sort_by_key(|at| at.as_i64().unwrap_or(i64::MAX));
+    expiries
+}
+
+fn next_reset_expiry(credits: &Value, now_unix: i64) -> Option<i64> {
+    credits
         .get("next_expires_at")
         .and_then(Value::as_i64)
         .filter(|at| *at > now_unix)
         .into_iter()
-        .chain(expiries.iter().filter_map(Value::as_i64))
-        .min();
+        .chain(valid_reset_expiries(credits, now_unix).iter().filter_map(Value::as_i64))
+        .min()
+}
+
+/// 日期字段缺失、null 或空数组时沿用历史日期；次数变化时不把旧机会
+/// 当作当前机会。完整的新日期/无到期限制响应优先，所有绝对时间均过滤过期项。
+pub(crate) fn inherit_reset_expiry(account: &mut Value, previous: &Value, now_unix: i64) {
+    let Some(current) = account.get_mut("rate_limit_reset_credits")
+    else {
+        return;
+    };
+    let available = current.get("available_count").and_then(Value::as_i64);
+    let mut expiries = valid_reset_expiries(current, now_unix);
+    let mut next = next_reset_expiry(current, now_unix);
+    let previous_credits = &previous["rate_limit_reset_credits"];
+    let previous_available = previous_credits.get("available_count").and_then(Value::as_i64);
+    let complete_non_expiring = available.is_some_and(|count| count > 0
+        && expiries.len() == count as usize && expiries.iter().all(Value::is_null));
+    if available.is_some_and(|count| count > 0) && available == previous_available {
+        let previous_next = next_reset_expiry(previous_credits, now_unix);
+        if next.is_none() && !complete_non_expiring {
+            next = previous_next;
+            let cached = valid_reset_expiries(previous_credits, now_unix);
+            if !cached.is_empty() {
+                expiries = cached;
+            }
+        } else if next.is_some() && next == previous_next && expiries.is_empty() {
+            // 本轮只给了最早日期且没有变化时，保留历史的完整日期列表。
+            expiries = valid_reset_expiries(previous_credits, now_unix);
+        }
+    }
+    if available == Some(0) {
+        next = None;
+        expiries.clear();
+    }
+    let Some(credits) = current.as_object_mut() else { return };
+    credits.remove("next_expires_at");
+    credits.remove("expires_at_list");
     if let Some(expiry) = next {
         credits.insert("next_expires_at".into(), Value::from(expiry));
     }
     if !expiries.is_empty() {
         credits.insert("expires_at_list".into(), serde_json::json!(expiries));
     }
+}
+
+// 独立于配额重试窗口：重启、手动刷新或账号注册表变更都不会丢失已获取日期。
+// 以实际登录身份而非 default/work 等 profile 名隔离，令换号和 token 续期安全共存。
+fn reset_expiry_cache_key(credentials: &Value) -> Option<String> {
+    let tokens = credentials.get("tokens")?;
+    let account_id = tokens.get("account_id").and_then(Value::as_str).unwrap_or("");
+    let claims = tokens.get("id_token").and_then(Value::as_str)
+        .and_then(|token| token.split('.').nth(1))
+        .and_then(base64url_decode)
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+    let subject = claims.as_ref().and_then(|claims| claims.get("sub"))
+        .and_then(Value::as_str).unwrap_or("");
+    let identity = if !account_id.is_empty() || !subject.is_empty() {
+        serde_json::json!([account_id, subject]).to_string()
+    } else {
+        // 旧凭证无稳定身份时按 token 的摘要隔离，不跨不同登录沿用。
+        let token = tokens.get("access_token").and_then(Value::as_str).filter(|v| !v.is_empty())?;
+        serde_json::json!(["token", token]).to_string()
+    };
+    Some(super::reset_cache::key(&identity))
+}
+
+fn reset_expiry_cache_path(credentials: &Value) -> Option<PathBuf> {
+    Some(super::reset_cache::path("codex", &reset_expiry_cache_key(credentials)?))
+}
+
+fn cache_reset_expiry_at(account: &mut Value, path: &Path, now_unix: i64) {
+    if account["rate_limit_reset_credits"]["available_count"].as_i64().is_none() {
+        // 本轮未提供次数时，不以未知状态覆盖历史机会集合。
+        return;
+    }
+    super::reset_cache::update(path, |previous| {
+        inherit_reset_expiry(account, previous, now_unix);
+        Some(serde_json::json!({
+            "rate_limit_reset_credits": account["rate_limit_reset_credits"],
+        }))
+    });
 }
 
 pub fn normalize_codex(data: &Value) -> Value {
@@ -367,6 +422,9 @@ fn fetch_account(account: &AccountProfile) -> Result<Value, String> {
     }
     account_data["account_id"] = Value::String(account.id.clone());
     account_data["account_label"] = Value::String(account.label.clone());
+    if let Some(cache_path) = reset_expiry_cache_path(&credentials) {
+        cache_reset_expiry_at(&mut account_data, &cache_path, chrono::Utc::now().timestamp());
+    }
     attach_manual_membership(
         &mut account_data,
         &crate::settings::codex_membership_key(&account.id),
@@ -474,10 +532,7 @@ fn apply_retry_window_at_for_guarded(
         last_fail_ms: 0,
     });
     match outcome {
-        Ok(mut account) => {
-            if let Some(previous) = win.last_good.as_ref() {
-                inherit_reset_expiry(&mut account, previous, now_ms / 1000);
-            }
+        Ok(account) => {
             win.last_good = Some(account.clone());
             win.consecutive_fails = 0;
             win.last_fail_ms = 0;
@@ -503,6 +558,7 @@ fn apply_retry_window_at_for_guarded(
             }
             if win.consecutive_fails < CODEX_FAIL_STREAK_LIMIT {
                 if let Some(mut last) = win.last_good.clone() {
+                    inherit_reset_expiry(&mut last, &Value::Null, now_ms / 1000);
                     last["stale"] = Value::Bool(true);
                     eprintln!(
                         "[codex] quota fetch failed ({}/{CODEX_FAIL_STREAK_LIMIT}{}), serving last good data: {message}",
@@ -588,5 +644,131 @@ pub fn consume_reset_credit(account_id: &str) -> Result<Value, String> {
         headers.push(("ChatGPT-Account-Id", account_id));
     }
     let body = serde_json::json!({ "redeem_request_id": super::util::random_token() }).to_string();
-    post_json(&url, &headers, &body, use_proxy, timeout)
+    let result = post_json(&url, &headers, &body, use_proxy, timeout)?;
+    if matches!(result.get("code").and_then(Value::as_str), Some("reset" | "no_credit" | "already_redeemed")) {
+        if let Some(path) = reset_expiry_cache_path(&credentials) {
+            super::reset_cache::clear(&path);
+        }
+    }
+    Ok(result)
+}
+
+#[cfg(test)]
+mod reset_expiry_cache_tests {
+    use super::*;
+    use serde_json::json;
+    use super::super::reset_cache::TestCache as CacheFile;
+
+    fn snapshot(credits: Value) -> Value {
+        json!({"rate_limit_reset_credits": credits})
+    }
+
+    #[test]
+    fn missing_null_and_empty_dates_reload_from_disk() {
+        let file = CacheFile::new();
+        let now = 1_800_000_000;
+        let mut complete = snapshot(json!({
+            "available_count": 2, "applicable_available_count": 0,
+            "next_expires_at": now + 100,
+            "expires_at_list": [now + 100, now + 200],
+        }));
+        cache_reset_expiry_at(&mut complete, &file.0, now);
+        drop(complete);
+        // 不依赖 last_good 或任何内存日期缓存，每轮从同一磁盘文件恢复。
+        for dates in [json!({}), json!({"next_expires_at": null}),
+            json!({"next_expires_at": null, "expires_at_list": []})] {
+            let mut current = snapshot(dates);
+            current["rate_limit_reset_credits"]["available_count"] = json!(2);
+            current["rate_limit_reset_credits"]["applicable_available_count"] = json!(1);
+            cache_reset_expiry_at(&mut current, &file.0, now + 1);
+            assert_eq!(current["rate_limit_reset_credits"]["next_expires_at"], now + 100);
+            assert_eq!(current["rate_limit_reset_credits"]["expires_at_list"], json!([now + 100, now + 200]));
+            assert_eq!(current["rate_limit_reset_credits"]["applicable_available_count"], 1);
+        }
+    }
+
+    #[test]
+    fn new_dates_replace_cache_and_expired_dates_are_removed() {
+        let file = CacheFile::new();
+        let now = 1_800_000_000;
+        for expiry in [now + 100, now + 200] {
+            let mut current = snapshot(json!({"available_count": 2, "next_expires_at": expiry}));
+            cache_reset_expiry_at(&mut current, &file.0, now);
+        }
+        let mut missing = snapshot(json!({"available_count": 2}));
+        cache_reset_expiry_at(&mut missing, &file.0, now + 150);
+        assert_eq!(missing["rate_limit_reset_credits"]["next_expires_at"], now + 200);
+        let mut expired = snapshot(json!({"available_count": 2}));
+        cache_reset_expiry_at(&mut expired, &file.0, now + 200);
+        assert!(expired["rate_limit_reset_credits"]["next_expires_at"].is_null());
+        assert!(crate::settings::read_json(&file.0).unwrap()["rate_limit_reset_credits"]["next_expires_at"].is_null());
+    }
+
+    #[test]
+    fn changed_counts_do_not_resurrect_consumed_credits() {
+        let file = CacheFile::new();
+        let now = 1_800_000_000;
+        let mut complete = snapshot(json!({"available_count": 2, "next_expires_at": now + 100}));
+        cache_reset_expiry_at(&mut complete, &file.0, now);
+        for count in [1, 2, 0, 2] {
+            let mut current = snapshot(json!({"available_count": count}));
+            cache_reset_expiry_at(&mut current, &file.0, now + 1);
+            assert!(current["rate_limit_reset_credits"]["next_expires_at"].is_null());
+        }
+        // 最新次数为 0 时，即使响应还带旧日期，也不能把旧日期缓存回来。
+        let mut exhausted = snapshot(json!({"available_count": 0, "next_expires_at": now + 100}));
+        cache_reset_expiry_at(&mut exhausted, &file.0, now + 1);
+        assert!(exhausted["rate_limit_reset_credits"]["next_expires_at"].is_null());
+    }
+
+    #[test]
+    fn full_non_expiring_details_override_old_dates_but_unknown_count_does_not() {
+        let file = CacheFile::new();
+        let now = 1_800_000_000;
+        let mut complete = snapshot(json!({"available_count": 2, "next_expires_at": now + 100}));
+        cache_reset_expiry_at(&mut complete, &file.0, now);
+        let mut unknown = snapshot(json!({"applicable_available_count": 0}));
+        cache_reset_expiry_at(&mut unknown, &file.0, now + 1);
+        assert_eq!(crate::settings::read_json(&file.0).unwrap()["rate_limit_reset_credits"]["next_expires_at"], now + 100);
+        let mut no_expiry = snapshot(json!({"available_count": 2, "expires_at_list": [null, null]}));
+        cache_reset_expiry_at(&mut no_expiry, &file.0, now + 1);
+        let mut missing = snapshot(json!({"available_count": 2}));
+        cache_reset_expiry_at(&mut missing, &file.0, now + 2);
+        assert!(missing["rate_limit_reset_credits"]["next_expires_at"].is_null());
+        assert_eq!(missing["rate_limit_reset_credits"]["expires_at_list"], json!([null, null]));
+    }
+
+    #[test]
+    fn same_earliest_keeps_details_and_corrupt_cache_is_repaired() {
+        let file = CacheFile::new();
+        let now = 1_800_000_000;
+        std::fs::create_dir_all(file.0.parent().unwrap()).unwrap();
+        std::fs::write(&file.0, "{broken").unwrap();
+        let mut complete = snapshot(json!({"available_count": 2, "expires_at_list": [now + 200, now + 100]}));
+        cache_reset_expiry_at(&mut complete, &file.0, now);
+        let mut current = snapshot(json!({"available_count": 2, "next_expires_at": now + 100}));
+        cache_reset_expiry_at(&mut current, &file.0, now + 1);
+        assert_eq!(current["rate_limit_reset_credits"]["expires_at_list"], json!([now + 100, now + 200]));
+    }
+
+    #[test]
+    fn login_identity_isolates_accounts_and_survives_token_refresh() {
+        let login = |id: &str, token: &str| json!({"tokens": {"account_id": id, "access_token": token}});
+        assert_eq!(reset_expiry_cache_key(&login("account-a", "old")), reset_expiry_cache_key(&login("account-a", "refreshed")));
+        assert_ne!(reset_expiry_cache_key(&login("account-a", "token")), reset_expiry_cache_key(&login("account-b", "token")));
+        assert_ne!(reset_expiry_cache_key(&login("", "token-a")), reset_expiry_cache_key(&login("", "token-b")));
+        assert!(reset_expiry_cache_key(&json!({"tokens": {}})).is_none());
+    }
+
+    #[test]
+    fn reset_expiry_invalidation_is_persistent() {
+        let file = CacheFile::new();
+        let now = 1_800_000_000;
+        let mut complete = snapshot(json!({"available_count": 2, "next_expires_at": now + 100}));
+        cache_reset_expiry_at(&mut complete, &file.0, now);
+        super::super::reset_cache::clear(&file.0);
+        let mut current = snapshot(json!({"available_count": 2}));
+        cache_reset_expiry_at(&mut current, &file.0, now);
+        assert!(current["rate_limit_reset_credits"]["next_expires_at"].is_null());
+    }
 }

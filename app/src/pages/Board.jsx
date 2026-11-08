@@ -4,13 +4,12 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  activateOnKeys, fmtSpan, isNewerVersion, levelClass, nearQuotaLimit, QUOTA_RESET_THRESHOLD,
-  sortByDisplayOrder, timeFractionOf, fmtReset, windowUsagePct,
+  activateOnKeys, fmtSpan, isNewerVersion, levelClass,
+  sortByDisplayOrder, timeFractionOf, fmtReset,
 } from "../utils.js";
 import { t, useLang } from "../i18n.js";
 import { useInstallState, setInstallResult, upgradingTargets as getUpgradingTargets } from "../installState.js";
-import ResetButton from "../components/ResetButton.jsx";
-import ResetChancesText from "../components/ResetChancesText.jsx";
+import ResetChances from "../components/ResetChances.jsx";
 import BrandIcon from "../components/BrandIcon.jsx";
 import UpgradeOverlay from "../components/UpgradeOverlay.jsx";
 import AgentAccountControl from "../components/AgentAccountControl.jsx";
@@ -284,51 +283,7 @@ export default function Board({ lastPayload }) {
                   </div>
                 );
               })}
-              {(() => {
-                const resetCredits = account.rate_limit_reset_credits;
-                if (!resetCredits || typeof resetCredits !== "object") return null;
-                const available = resetCredits.available_count;
-                const applicable = resetCredits.applicable_available_count;
-                if (available == null && applicable == null) return null;
-                const parts = [];
-                if (available != null) parts.push(t("dash.resetRemaining").replace("{n}", String(available)));
-                if (applicable != null) {
-                  parts.push(Number(applicable) > 0 ? t("dash.resetUsableNow") : t("dash.resetAfterLimit"));
-                }
-                return (
-                  <div className="limit-resets">
-                    <ResetChancesText account={account}>{t("dash.resetChances")}: {parts.join(" · ")}</ResetChancesText>
-                    {Number(available) > 0 && !account.stale && nearQuotaLimit(account) ? (
-                      <ResetButton
-                        provider="codex"
-                        accountId={account.account_id || "default"}
-                        what={t("dash.resetWhatCodex")}
-                      >{t("dash.resetNow")}</ResetButton>
-                    ) : null}
-                  </div>
-                );
-              })()}
-              {(() => {
-                const cards = account.reset_cards;
-                if (!cards || typeof cards !== "object") return null;
-                const five = Array.isArray(cards.five_hour) ? cards.five_hour : [];
-                const week = Array.isArray(cards.week) ? cards.week : [];
-                if (!five.length && !week.length) return null;
-                const parts = [];
-                if (five.length) parts.push(`5h ×${five.length}`);
-                if (week.length) parts.push(`7d ×${week.length}`);
-                return (
-                  <div className="limit-resets">
-                    <ResetChancesText account={account}>{t("dash.resetChances")}: {parts.join(" · ")}</ResetChancesText>
-                    {five.length && windowUsagePct(account, "5h") >= QUOTA_RESET_THRESHOLD ? (
-                      <ResetButton provider="glm" resetType="FIVE_HOUR" accountId={account.account_id || "default"} what={t("dash.resetWhat5h")}>{t("dash.resetUse5h")}</ResetButton>
-                    ) : null}
-                    {week.length && windowUsagePct(account, "7d") >= QUOTA_RESET_THRESHOLD ? (
-                      <ResetButton provider="glm" resetType="WEEK" accountId={account.account_id || "default"} what={t("dash.resetWhat7d")}>{t("dash.resetUse7d")}</ResetButton>
-                    ) : null}
-                  </div>
-                );
-              })()}
+              <ResetChances account={account} />
             </div>
           );
         })}

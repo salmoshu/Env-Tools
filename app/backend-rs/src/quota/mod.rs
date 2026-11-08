@@ -23,6 +23,7 @@ mod glm;
 mod glm_reset;
 mod http;
 mod kimi;
+mod reset_cache;
 // settings::membership_settings 也复用归一化逻辑，需对 crate 可见
 pub(crate) mod membership;
 mod util;
