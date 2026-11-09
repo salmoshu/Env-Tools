@@ -17,7 +17,6 @@ const DICT = {
     "upgrade.confirmTitle": "Update components",
     "upgrade.confirmHint": "The update runs in the background. You can follow its progress in Tools.",
     "dash.resetExpiryEmpty": "No reset chances available",
-    "dash.resetHintNote": "Each reset uses 1 chance. You can start here at any usage level.",
     "dash.resetStaleHint": "Showing cached data. Refresh before using a reset chance.",
     // 导航 / 窗口
     "nav.analytics": "Analytics",
@@ -328,7 +327,6 @@ const DICT = {
     "upgrade.confirmTitle": "更新组件",
     "upgrade.confirmHint": "更新将在后台进行，可在组件管理中查看进度与日志。",
     "dash.resetExpiryEmpty": "暂无可用重置机会",
-    "dash.resetHintNote": "每次重置消耗 1 次机会，可在任意用量时从此处发起。",
     "dash.resetStaleHint": "当前显示缓存数据，请刷新后再使用重置机会。",
     "nav.analytics": "用量分析",
     "nav.tools": "组件管理",

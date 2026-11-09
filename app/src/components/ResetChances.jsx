@@ -37,7 +37,7 @@ export default function ResetChances({ account }) {
     <div className="limit-resets">
       <ResetChancesText account={account} renderActions={(close) => <>
         <div className="reset-expiry-actions">{actions.map((action) => button(action, close))}</div>
-        <div className="reset-expiry-note">{t(stale ? "dash.resetStaleHint" : "dash.resetHintNote")}</div>
+        {stale ? <div className="reset-expiry-note">{t("dash.resetStaleHint")}</div> : null}
       </>}>
         {t("dash.resetChances")}: {parts.join(" · ")}
       </ResetChancesText>

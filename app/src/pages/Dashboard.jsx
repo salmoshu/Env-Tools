@@ -86,6 +86,11 @@ const AGENT_PROVIDERS = {
   // ZCode 走智谱 GLM Coding Plan，筛选 zcode 时配额区显示 GLM 卡
   zcode: ["GLM"],
 };
+// GLM / DeepSeek are model vendors selected inside an agent session, so they
+// stay available in analytics labels but are not agent filter choices.
+const AGENT_FILTER_OPTIONS = Object.entries(AGENT_LABELS)
+  .filter(([value]) => value !== "glm" && value !== "deepseek");
+const AGENT_FILTER_VALUES = new Set(AGENT_FILTER_OPTIONS.map(([value]) => value));
 
 const MONTH_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -341,7 +346,10 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
   const [busy, setBusy] = useState(false);
   const [days] = useState(ANALYTICS_DAYS);
   const [agent, setAgent] = useState(() => {
-    try { return localStorage.getItem(AGENT_KEY) || "all"; } catch { return "all"; }
+    try {
+      const saved = localStorage.getItem(AGENT_KEY) || "all";
+      return AGENT_FILTER_VALUES.has(saved) ? saved : "all";
+    } catch { return "all"; }
   });
   const [targets, setTargets] = useState([
     { id: "aggregate", kind: "aggregate" },
@@ -978,7 +986,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                 setAgent(value);
                 try { localStorage.setItem(AGENT_KEY, value); } catch {}
               }}
-              options={Object.entries(AGENT_LABELS).map(([value, label]) =>
+              options={AGENT_FILTER_OPTIONS.map(([value, label]) =>
                 [value, value === "all" ? t("dash.agentAll") : label])}
             />
           </label>
@@ -1221,7 +1229,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
           <h2>{t("dash.dailyTokens")}</h2>
           <div className="card-head-actions">
             {/* 粒度：按小时=今日 24 时 / 按天=近 30 天 / 按周=90 天 / 按月=365 天；
-                图表支持悬停滚轮缩放 x 轴 */}
+                图表支持 Ctrl+滚轮或右键横向拖动缩放 x 轴 */}
             <Select
               value={trendGran}
               ariaLabel={t("dash.dailyTokens")}

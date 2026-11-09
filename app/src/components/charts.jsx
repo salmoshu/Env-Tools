@@ -33,28 +33,86 @@ function useChartBuild(ref, build, deps) {
   }, deps);
 }
 
-// 滚轮 x 轴缩放：指针悬停在支持缩放的图表上时，滚轮拉伸/收缩可见数据窗口
-// （右对齐最新数据，上滚放大、下滚缩小回全量）；图表外或未开缩放的图表
-// 不拦截，页面保持原有滚动。返回可见桶数，null = 全部。
-function useWheelZoom(ref, enabled, total, minCount = 4) {
+// x 轴缩放只响应 Ctrl+滚轮或右键横向拖动；普通滚轮继续交给页面滚动。
+// 窗口右对齐最新数据，返回可见桶数，null = 全部。
+function useXAxisZoom(ref, enabled, total, minCount = 4) {
   const [count, setCount] = useState(null);
+  const countRef = useRef(null);
+  const dragRef = useRef(null);
+
+  const applyCount = (next) => {
+    if (next === countRef.current) return;
+    countRef.current = next;
+    setCount(next);
+  };
+
+  const fromWheel = (current, deltaY) => {
+    const visible = Math.min(current || total, total);
+    if (deltaY < 0) return Math.max(minCount, Math.floor(visible * 0.8));
+    const next = Math.max(visible + 1, Math.ceil(visible * 1.25));
+    return next >= total ? null : next;
+  };
+
+  const fromDrag = (start, deltaX) => {
+    // 每 64px 横向位移对应一次 0.8/1.25 缩放，左拖放大、右拖缩小。
+    const scaled = start * Math.pow(1.25, deltaX / 64);
+    if (scaled >= total) return null;
+    return Math.max(minCount, Math.min(total - 1, Math.round(scaled)));
+  };
+
   // 粒度/数据切换后复位到全量
-  useEffect(() => { setCount(null); }, [total, enabled]);
+  useEffect(() => {
+    countRef.current = null;
+    dragRef.current = null;
+    setCount(null);
+  }, [total, enabled]);
   useEffect(() => {
     const el = ref.current;
     if (!el || !enabled || !total || total <= minCount) return undefined;
     const onWheel = (event) => {
+      if (!event.ctrlKey) return;
       event.preventDefault();
       event.stopPropagation();
-      setCount((prev) => {
-        const cur = Math.min(prev || total, total);
-        if (event.deltaY < 0) return Math.max(minCount, Math.floor(cur * 0.8));
-        const next = Math.max(cur + 1, Math.ceil(cur * 1.25));
-        return next >= total ? null : next;
-      });
+      applyCount(fromWheel(countRef.current, event.deltaY));
+    };
+    const onMouseDown = (event) => {
+      if (event.button !== 2) return;
+      event.preventDefault();
+      event.stopPropagation();
+      dragRef.current = {
+        startX: event.clientX,
+        startCount: Math.min(countRef.current || total, total),
+      };
+    };
+    const onMouseMove = (event) => {
+      const drag = dragRef.current;
+      if (!drag) return;
+      if (!(event.buttons & 2)) {
+        dragRef.current = null;
+        return;
+      }
+      event.preventDefault();
+      applyCount(fromDrag(drag.startCount, event.clientX - drag.startX));
+    };
+    const onMouseUp = (event) => {
+      if (event.button === 2) dragRef.current = null;
+    };
+    const onContextMenu = (event) => {
+      event.preventDefault();
     };
     el.addEventListener("wheel", onWheel, { passive: false });
-    return () => el.removeEventListener("wheel", onWheel);
+    el.addEventListener("mousedown", onMouseDown);
+    el.addEventListener("contextmenu", onContextMenu);
+    window.addEventListener("mousemove", onMouseMove, { passive: false });
+    window.addEventListener("mouseup", onMouseUp);
+    return () => {
+      el.removeEventListener("wheel", onWheel);
+      el.removeEventListener("mousedown", onMouseDown);
+      el.removeEventListener("contextmenu", onContextMenu);
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+      dragRef.current = null;
+    };
   }, [enabled, total, minCount]);
   return count;
 }
@@ -135,7 +193,7 @@ export function StackedBars({ labels, series, columnTip, className = "", zoomabl
   // labels/series/columnTip 均为父组件渲染期新建引用，不能直接做依赖（等于每次重建）；
   // 以数据序列化做 key：父组件无关重渲染（如刷新按钮动画）不再重建整棵 SVG
   const total = labels ? labels.length : 0;
-  const zoomCount = useWheelZoom(ref, zoomable, total);
+  const zoomCount = useXAxisZoom(ref, zoomable, total);
   const from = zoomCount ? Math.max(0, total - zoomCount) : 0;
   const vLabels = labels ? labels.slice(from) : labels;
   const vSeries = series.map((item) => ({ ...item, data: item.data.slice(from) }));
@@ -285,7 +343,7 @@ function buildLineChart(container, labels, values) {
 export function LineChart({ labels, values, zoomable = false }) {
   const ref = useRef(null);
   const total = labels ? labels.length : 0;
-  const zoomCount = useWheelZoom(ref, zoomable, total, 7);
+  const zoomCount = useXAxisZoom(ref, zoomable, total, 7);
   const from = zoomCount ? Math.max(0, total - zoomCount) : 0;
   const vLabels = labels ? labels.slice(from) : labels;
   const vValues = values ? values.slice(from) : values;
