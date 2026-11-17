@@ -38,6 +38,7 @@ use tokio::sync::Mutex;
 mod accounts;
 mod disk;
 mod jharu;
+mod jharu_full;
 mod analytics;
 mod apply_update;
 mod quota;
@@ -880,6 +881,8 @@ async fn main() {
         .route("/api/disk/scan", get(disk_scan))
         .route("/api/disk/dev", get(disk_dev))
         .route("/api/disk/ai-tools", get(disk_ai_tools))
+        .route("/api/disk/scan-full", get(disk_scan_full))
+        .route("/api/disk/clean", axum::routing::post(disk_clean))
         .route("/api/usage", get(usage))
         .route("/api/backend-status", get(backend_status))
         .route("/api/settings", get(get_settings).post(update_settings))
@@ -981,4 +984,31 @@ async fn disk_ai_tools() -> Json<Value> {
         .await
         .unwrap_or_default();
     Json(serde_json::json!({ "ok": true, "items": result }))
+}
+
+/// /api/disk/scan-full?tab=<models|browsers|python|junk|health>
+async fn disk_scan_full(Query(params): Query<HashMap<String, String>>) -> Json<Value> {
+    let tab = params.get("tab").cloned().unwrap_or_default();
+    if tab.is_empty() { return Json(serde_json::json!({ "ok": false, "error": "tab required" })); }
+    let result = tokio::task::spawn_blocking(move || jharu_full::scan_all(&tab))
+        .await
+        .unwrap_or(serde_json::json!({ "ok": false, "error": "scan worker failed" }));
+    Json(result)
+}
+
+/// POST /api/disk/clean  body: { "paths": ["C:\..."] }
+/// 移入回收站（PowerShell VisualBasic FileIO）
+async fn disk_clean(
+    axum::extract::State(_state): axum::extract::State<AppState>,
+    axum::extract::Json(body): axum::extract::Json<Value>,
+) -> Json<Value> {
+    let paths: Vec<String> = body.get("paths")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    if paths.is_empty() { return Json(serde_json::json!({ "ok": false, "error": "paths required" })); }
+    let result = tokio::task::spawn_blocking(move || jharu_full::move_to_recycle_bin(&paths))
+        .await
+        .unwrap_or(serde_json::json!({ "ok": false, "error": "clean worker failed" }));
+    Json(result)
 }

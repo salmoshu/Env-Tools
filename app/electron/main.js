@@ -864,6 +864,20 @@ ipcMain.handle("disk-ai-tools", async () => {
   try { return await backendFetch("/api/disk/ai-tools"); }
   catch (err) { return { ok: false, error: err.message }; }
 });
+ipcMain.handle("disk-scan-full", async (_e, tab) => {
+  try { return await backendFetch(`/api/disk/scan-full?tab=${encodeURIComponent(tab)}`); }
+  catch (err) { return { ok: false, error: err.message }; }
+});
+ipcMain.handle("disk-clean", async (_e, paths) => {
+  try {
+    const res = await backendFetch("/api/disk/clean", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paths }),
+    });
+    return res;
+  } catch (err) { return { ok: false, error: err.message }; }
+});
 ipcMain.handle("disk-scan", async (_e, path, top, depth) => {
   const q = `?path=${encodeURIComponent(path)}&top=${encodeURIComponent(top || 30)}&depth=${encodeURIComponent(depth || 2)}`;
   try { return await backendFetch(`/api/disk/scan${q}`); }
