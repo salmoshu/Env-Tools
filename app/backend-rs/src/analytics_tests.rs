@@ -772,3 +772,166 @@ fn kimi_work_sessions_ingest_usage_cwd_and_identity() {
     let kimi_only = state.aggregate(7, "kimi", now);
     assert_eq!(kimi_only["sessions"].as_array().unwrap().len(), 0);
 }
+
+/// 新版 kimi code（k3.1+）事件体系：llm.request 消失，模型步骤以
+/// context.append_loop_event 内嵌 event.type=="step.begin" 开始。
+/// 验证 step.begin → usage.record 配对产生 gen_seconds（TPOT 口径恢复）
+#[test]
+fn kimi_step_begin_pairs_usage_record_for_tpot() {
+    let dir = tempfile_dir();
+    let kimi_home = dir.join("home").join(".kimi-code");
+    let sess_dir = kimi_home
+        .join("sessions")
+        .join("session_step")
+        .join("agents")
+        .join("main");
+    let now = chrono::Local
+        .with_ymd_and_hms(2026, 11, 15, 12, 0, 0)
+        .unwrap();
+    let ts = now.timestamp() * 1000;
+    // 新版序列：step.begin → content.part → usage.record（同一模型步骤）
+    write_file(
+        &sess_dir.join("wire.jsonl"),
+        &[
+            format!(
+                r#"{{"type":"context.append_loop_event","agentId":"main","event":{{"type":"step.begin","uuid":"u1","turnId":"0","step":1}},"time":{}}}"#,
+                ts - 6000
+            ),
+            format!(
+                r#"{{"type":"context.append_loop_event","agentId":"main","event":{{"type":"content.part","uuid":"c1","turnId":"0"}},"time":{}}}"#,
+                ts
+            ),
+            kimi_line(ts, "kimi-code/k3.1-pro", 800, 180, 500, 0),
+            // 下一步：工具产出后新的 step.begin，再一条 usage（时长 2s）
+            format!(
+                r#"{{"type":"context.append_loop_event","agentId":"main","event":{{"type":"tool.result","turnId":"0"}},"time":{}}}"#,
+                ts + 1000
+            ),
+            format!(
+                r#"{{"type":"context.append_loop_event","agentId":"main","event":{{"type":"step.begin","uuid":"u2","turnId":"0","step":2}},"time":{}}}"#,
+                ts + 2000
+            ),
+            kimi_line(ts + 4000, "kimi-code/k3.1-pro", 100, 70, 0, 0),
+        ],
+    );
+    write_file(
+        &kimi_home.join("session_index.jsonl"),
+        &[r#"{"sessionId":"session_step","workDir":"E:/Proj/Robo-GNSS"}"#.to_string()],
+    );
+
+    let mut state = AnalyticsState::default();
+    state.scan_all(&[kimi_home], &[], &[], &[], &[], now.timestamp() + 10);
+    let all = state.aggregate(7, "all", chrono::Local.timestamp_opt(now.timestamp() + 10, 0).unwrap());
+    let sessions = all["sessions"].as_array().unwrap();
+    assert_eq!(sessions.len(), 1);
+    let row = &sessions[0];
+    // 两条请求各配对成功：gen_seconds = 6s + 2s = 8s，output = 250
+    // gen_rate = 250 / 8 = 31.25 tok/s
+    let gen_rate = row["gen_rate"].as_f64().expect("step.begin 配对后 gen_rate 必得");
+    assert!((gen_rate - 31.25).abs() < 0.05, "gen_rate = {gen_rate}");
+    // 墙钟口径独立成立：250 tok ÷ 4s 跨度 = 62.5（与 gen_rate 各自计算）
+    assert!((row["rate"].as_f64().unwrap() - 62.5).abs() < 0.05);
+}
+
+/// 配额厂商归因 + 滚动 token 汇总（额度估算的数据基础）：
+/// kimi/codex/zcode 直归；omp 按底层模型前缀归并（kimi→kimi、gpt→codex）；
+/// deepseek 模型经 omp 使用不参与估算；cutoff 之外的记录不计入
+#[test]
+fn rolling_quota_tokens_attributes_sources_and_omp_models() {
+    use crate::analytics::{quota_provider_of, Source};
+    // 归因单元
+    assert_eq!(quota_provider_of(Source::Kimi, "kimi-code/k3"), Some("kimi"));
+    assert_eq!(quota_provider_of(Source::KimiWork, "k3-agent"), Some("kimi"));
+    assert_eq!(quota_provider_of(Source::Codex, "gpt-6.1-sol"), Some("codex"));
+    assert_eq!(quota_provider_of(Source::ZCode, "glm-4.7"), Some("glm"));
+    assert_eq!(quota_provider_of(Source::Omp, "kimi-code/k3-256k"), Some("kimi"));
+    assert_eq!(quota_provider_of(Source::Omp, "gpt-6.1-sol"), Some("codex"));
+    assert_eq!(quota_provider_of(Source::Omp, "glm-4.7"), Some("glm"));
+    assert_eq!(quota_provider_of(Source::Omp, "deepseek-v4-pro"), None);
+
+    let dir = tempfile_dir();
+    let kimi_home = dir.join("kimi");
+    let omp_home = dir.join("omp");
+    let now = chrono::Local
+        .with_ymd_and_hms(2026, 11, 16, 12, 0, 0)
+        .unwrap();
+    let ts = now.timestamp() * 1000;
+    // kimi 会话：窗口内 1000 tok + 窗口外（2h 前）500 tok
+    write_file(
+        &kimi_home.join("sessions").join("session_r1").join("agents").join("main").join("wire.jsonl"),
+        &[
+            kimi_line(ts - 1000, "kimi-code/k3", 600, 400, 0, 0),
+            kimi_line(ts - 2 * 3600 * 1000, "kimi-code/k3", 500, 0, 0, 0),
+        ],
+    );
+    write_file(
+        &kimi_home.join("session_index.jsonl"),
+        &[r#"{"sessionId":"session_r1","workDir":"E:/p/a"}"#.to_string()],
+    );
+    // omp 会话：kimi 模型 300 tok（归 kimi 估算）+ gpt 模型 900 tok（归 codex）
+    // + deepseek 模型 999 tok（不参与）
+    let omp_sess = omp_home.join("agent").join("sessions").join("-p");
+    write_file(
+        &omp_sess.join("2026-11-16T03-00-00-000Z_omp-r1.jsonl"),
+        &[
+            r#"{"type":"session","version":3,"id":"omp-r1","timestamp":"2026-11-16T03:00:00.000Z","cwd":"E:/p/a"}"#.to_string(),
+            r#"{"type":"message","id":"m1","timestamp":"2026-11-16T03:59:00.000Z","message":{"role":"assistant","model":"k3-256k","provider":"kimi-code","usage":{"input":200,"output":100,"cacheRead":0,"cacheWrite":0}}}"#.to_string(),
+            r#"{"type":"message","id":"m2","timestamp":"2026-11-16T03:59:30.000Z","message":{"role":"assistant","model":"gpt-6.1-sol","provider":"openai-codex","usage":{"input":600,"output":300,"cacheRead":0,"cacheWrite":0}}}"#.to_string(),
+            r#"{"type":"message","id":"m3","timestamp":"2026-11-16T03:59:45.000Z","message":{"role":"assistant","model":"deepseek-v4-pro","provider":"deepseek","usage":{"input":999,"output":0,"cacheRead":0,"cacheWrite":0}}}"#.to_string(),
+        ],
+    );
+    let mut state = AnalyticsState::default();
+    state.scan_all(&[kimi_home], &[], &[], &[omp_home], &[], now.timestamp());
+    // 近 1h：kimi = 1000（kimi 会话窗口内）+ 300（omp 的 kimi 模型）= 1300
+    assert_eq!(state.rolling_quota_tokens("kimi", now.timestamp() - 3600), 1300);
+    // 近 1h：codex = 900（omp 的 gpt 模型）
+    assert_eq!(state.rolling_quota_tokens("codex", now.timestamp() - 3600), 900);
+    // 近 3h：kimi 追加窗口外的 500
+    assert_eq!(state.rolling_quota_tokens("kimi", now.timestamp() - 3 * 3600), 1800);
+}
+
+/// daily_quota：配额厂商口径逐日桶——不受 agent 筛选影响（选 kimi 时
+/// codex/glm 的厂商桶仍在），omp 用量按底层模型归并到对应厂商
+#[test]
+fn daily_quota_buckets_survive_agent_filter_and_attribute_omp() {
+    let dir = tempfile_dir();
+    let kimi_home = dir.join("kimi");
+    let omp_home = dir.join("omp");
+    let now = chrono::Local
+        .with_ymd_and_hms(2026, 11, 16, 12, 0, 0)
+        .unwrap();
+    let ts = now.timestamp() * 1000;
+    write_file(
+        &kimi_home.join("sessions").join("session_dq").join("agents").join("main").join("wire.jsonl"),
+        &[kimi_line(ts, "kimi-code/k3", 1000, 500, 0, 0)],
+    );
+    write_file(
+        &kimi_home.join("session_index.jsonl"),
+        &[r#"{"sessionId":"session_dq","workDir":"E:/p/a"}"#.to_string()],
+    );
+    // omp：gpt 模型 900（归 codex）+ kimi 模型 300（归 kimi）
+    let omp_sess = omp_home.join("agent").join("sessions").join("-p");
+    write_file(
+        &omp_sess.join("2026-11-16T03-00-00-000Z_omp-dq.jsonl"),
+        &[
+            r#"{"type":"session","version":3,"id":"omp-dq","timestamp":"2026-11-16T03:00:00.000Z","cwd":"E:/p/a"}"#.to_string(),
+            r#"{"type":"message","id":"m1","timestamp":"2026-11-16T03:59:00.000Z","message":{"role":"assistant","model":"gpt-6.1-sol","provider":"openai-codex","usage":{"input":600,"output":300,"cacheRead":0,"cacheWrite":0}}}"#.to_string(),
+            r#"{"type":"message","id":"m2","timestamp":"2026-11-16T03:59:30.000Z","message":{"role":"assistant","model":"k3-256k","provider":"kimi-code","usage":{"input":200,"output":100,"cacheRead":0,"cacheWrite":0}}}"#.to_string(),
+        ],
+    );
+    let mut state = AnalyticsState::default();
+    state.scan_all(&[kimi_home], &[], &[], &[omp_home], &[], now.timestamp());
+    // agent=kimi 筛选下，daily_quota 仍包含 codex 厂商桶
+    let agg = state.aggregate_with_week_start(
+        7,
+        "kimi",
+        chrono::Local.timestamp_opt(now.timestamp(), 0).unwrap(),
+        "monday",
+    );
+    let dq = &agg["daily_quota"];
+    let today_key = dq.as_object().unwrap().keys().next().unwrap().clone();
+    let day = &dq[&today_key];
+    assert_eq!(day["kimi"].as_i64(), Some(1800), "kimi 桶 = kimi 会话 1500 + omp 的 kimi 模型 300");
+    assert_eq!(day["codex"].as_i64(), Some(900), "agent 筛选为 kimi 时 codex 桶仍在");
+    assert!(day.get("glm").is_none(), "无 glm 用量不出桶");
+}

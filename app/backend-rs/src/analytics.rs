@@ -111,7 +111,10 @@ struct ScanCache {
 // 旧缓存（v1）里 codex 记录 gen_seconds 恒为 0，触发一次冷扫重建
 // v3：codex 模型跨批次持久化——旧缓存里增量段记录 model 恒为
 // "(unknown)"（token_count 行不带模型），触发一次冷扫重建历史
-const SCAN_CACHE_VERSION: u32 = 3;
+// v4：kimi 新事件体系（k3.1+）TPOT 配对——llm.request 消失，改由
+// step.begin 配对；旧缓存里新版会话 gen_seconds 恒为 0（gen_rate=null
+// 回退墙钟口径），触发一次冷扫重建
+const SCAN_CACHE_VERSION: u32 = 4;
 
 impl AnalyticsState {
     /// 首轮扫描前从磁盘水合增量缓存（只生效一次）。水合后首轮扫描照常跑：
@@ -155,6 +158,26 @@ impl AnalyticsState {
         }
         drop(writer);
         let _ = std::fs::rename(&tmp, path);
+    }
+
+    /// 滚动窗口 token 汇总（额度估算用）：cutoff_ts（秒）起的
+    /// input+output+cache_read+cache_creation 总量，按配额厂商归因
+    ///（见 quota_provider_of）。前端用法量反推窗口总额：
+    /// 估算总额 = 本值 ÷ 窗口已用百分比
+    pub fn rolling_quota_tokens(&self, provider: &str, cutoff_ts: i64) -> i64 {
+        let mut total: i64 = 0;
+        for state in self.files.values() {
+            for record in &state.records {
+                if record.ts < cutoff_ts {
+                    continue;
+                }
+                if quota_provider_of(state.source, &record.model) == Some(provider) {
+                    total +=
+                        record.input + record.output + record.cache_read + record.cache_creation;
+                }
+            }
+        }
+        total
     }
 }
 
@@ -730,6 +753,84 @@ pub fn cli_of(source: Source) -> &'static str {
     }
 }
 
+/// 周窗口统计（配额厂商口径）：按 week_start 把 day_list 分周，每周给出
+/// 各厂商的 7d 总量（daily_quota 求和）与 5h 峰值窗口用量（epoch 对齐的
+/// 5h 槽桶取最大，槽按中点时刻归周）。行按时间升序，供前端直接绘图
+fn build_weekly_quota(
+    day_list: &[String],
+    daily_quota: &HashMap<String, HashMap<&'static str, i64>>,
+    quota_5h_slots: &HashMap<(i64, &'static str), i64>,
+    week_start: &str,
+) -> Vec<serde_json::Value> {
+    let start_dow = if week_start == "sunday" { 0 } else { 1 }; // Chrono: 周日=0 周一=1
+    // 周分桶：day_list 升序；周界日（getDay==start_dow）开新周
+    let mut weeks: Vec<(String, String)> = Vec::new(); // (start, end)
+    for day in day_list {
+        let weekday = chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d")
+            .map(|d| d.weekday().num_days_from_sunday())
+            .unwrap_or(1);
+        if weekday == start_dow || weeks.is_empty() {
+            weeks.push((day.clone(), day.clone()));
+        } else {
+            weeks.last_mut().unwrap().1 = day.clone();
+        }
+    }
+    // 5h 槽 → 归周（中点时刻的日期落在本周 [start,end] 区间内）
+    let mut slot_week: Vec<(usize, &'static str, i64)> = Vec::new(); // (week_idx, provider, tokens)
+    for ((slot, provider), tokens) in quota_5h_slots {
+        let mid = Local.timestamp_opt(slot * 18000 + 9000, 0).single();
+        if let Some(mid_local) = mid {
+            let mid_date = date_string(mid_local);
+            if let Some(idx) = weeks.iter().position(|(s, e)| mid_date >= *s && mid_date <= *e) {
+                slot_week.push((idx, *provider, *tokens));
+            }
+        }
+    }
+    let mut rows: Vec<serde_json::Value> = Vec::new();
+    for (idx, (start, end)) in weeks.iter().enumerate() {
+        // 该周各厂商日总量求和（遍历周内日期）
+        let mut week_days: Vec<&String> = Vec::new();
+        for day in day_list {
+            if day >= start && day <= end {
+                week_days.push(day);
+            }
+        }
+        let mut providers: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+        let mut seen: std::collections::HashSet<&'static str> = std::collections::HashSet::new();
+        for day in &week_days {
+            if let Some(per_provider) = daily_quota.get(*day) {
+                for (&provider, &tokens) in per_provider {
+                    seen.insert(provider);
+                    let entry = providers
+                        .entry(provider.to_string())
+                        .or_insert_with(|| serde_json::json!({ "total": 0, "peak5h": 0 }));
+                    entry["total"] = serde_json::json!(entry["total"].as_i64().unwrap_or(0) + tokens);
+                }
+            }
+        }
+        for &provider in &seen {
+            let peak = slot_week
+                .iter()
+                .filter(|(wi, p, _)| *wi == idx && *p == provider)
+                .map(|(_, _, tokens)| *tokens)
+                .max()
+                .unwrap_or(0);
+            if let Some(entry) = providers.get_mut(provider) {
+                entry["peak5h"] = serde_json::json!(peak);
+            }
+        }
+        if providers.is_empty() {
+            continue;
+        }
+        rows.push(serde_json::json!({
+            "start": start,
+            "end": end,
+            "providers": providers,
+        }));
+    }
+    rows
+}
+
 pub fn agent_of(source: Source, model: &str) -> &'static str {
     // omp/zcode/kimi-work 源整体归各自 agent：底层模型可任意，
     // 按模型归并会把这些客户端的用量混进别家统计，且筛选/图标都以客户端身份为准
@@ -751,6 +852,38 @@ pub fn agent_of(source: Source, model: &str) -> &'static str {
         "codex"
     } else {
         "kimi"
+    }
+}
+
+/// 配额厂商归因（额度估算专用）：把各源用量折算到对应配额账号。
+/// 与 agent_of 不同——omp 需按底层模型前缀归并（omp 用 kimi/gpt 模型
+/// 烧的是同一份 kimi/codex 订阅额度，估算窗口总额时必须计入）；
+/// deepseek 等 API 型无配额窗口，返回 None 不参与估算
+pub fn quota_provider_of(source: Source, model: &str) -> Option<&'static str> {
+    match source {
+        Source::Kimi | Source::KimiWork => Some("kimi"),
+        Source::Codex => Some("codex"),
+        Source::ZCode => Some("glm"),
+        Source::Omp => {
+            let lowered = model.to_lowercase();
+            if lowered.contains("kimi") {
+                Some("kimi")
+            } else if lowered.contains("gpt")
+                || lowered.contains("codex")
+                || lowered.starts_with("o1")
+                || lowered.starts_with("o3")
+                || lowered.starts_with("o4")
+            {
+                Some("codex")
+            } else if lowered.contains("glm")
+                || lowered.contains("zhipu")
+                || lowered.contains("zai")
+            {
+                Some("glm")
+            } else {
+                None
+            }
+        }
     }
 }
 
@@ -952,6 +1085,23 @@ impl AnalyticsState {
                             }
                             continue;
                         }
+                        // 新版 kimi code（k3.1+ 事件体系）：llm.request 事件消失，
+                        // 每个模型步骤以 context.append_loop_event 内嵌
+                        // event.type=="step.begin" 开始、usage.record 结束。
+                        // 不配对则 gen_seconds 恒 0 → gen_rate=null → 前端
+                        // 回退整段墙钟口径（实测 11h 长会话显示 5 tok/s，
+                        // 而逐请求净时长口径为 35 tok/s）。配对语义与旧版
+                        // 一致（含 TTFT/prefill）
+                        if line.contains("\"context.append_loop_event\"")
+                            && line.contains("\"step.begin\"")
+                        {
+                            if let Ok(evt) = serde_json::from_str::<serde_json::Value>(line) {
+                                if let Some(start) = evt.get("time").and_then(|v| v.as_f64()) {
+                                    state.pending_llm_ms = start as i64;
+                                }
+                            }
+                            continue;
+                        }
                         if let Some(mut record) =
                             parse_kimi_line_with_pending(line, state.pending_llm_ms)
                         {
@@ -1139,10 +1289,35 @@ impl AnalyticsState {
         let mut active_day_tokens = 0i64;
         // 日期格式化按天缓存：同一日期只在首次出现时 format
         let mut date_cache: HashMap<i32, String> = HashMap::new();
+        // 配额厂商口径的逐日桶（周窗口统计卡）：date → provider → token。
+        // 在 agent 筛选之前累计——配额是账号级概念，kimi/codex/glm 的
+        // 厂商视图必须覆盖 omp 等客户端经底层模型产生的用量
+        let mut daily_quota: HashMap<String, HashMap<&'static str, i64>> = HashMap::new();
+        // 5h 槽桶（epoch 对齐）：(slot, provider) → token。用于每周的
+        // 5h 峰值窗口用量——比"周均"更贴近 5h 额度的实际消耗压力
+        let mut quota_5h_slots: HashMap<(i64, &'static str), i64> = HashMap::new();
 
         for (file_key, state) in &self.files {
             let main_file = is_main_agent_file(file_key, state.source);
             for record in &state.records {
+                // daily_quota 先于 agent 筛选累计（见声明处注释）
+                if let Some(qp) = quota_provider_of(state.source, &record.model) {
+                    let qtotal = record.input + record.output + record.cache_read + record.cache_creation;
+                    if let Some(qlocal) = Local.timestamp_opt(record.ts, 0).single() {
+                        let qdate = date_cache
+                            .entry(qlocal.date_naive().num_days_from_ce())
+                            .or_insert_with(|| date_string(qlocal))
+                            .clone();
+                        *daily_quota
+                            .entry(qdate)
+                            .or_default()
+                            .entry(qp)
+                            .or_insert(0) += qtotal;
+                    }
+                    *quota_5h_slots
+                        .entry((record.ts.div_euclid(18000), qp))
+                        .or_insert(0) += qtotal;
+                }
                 let record_agent = agent_of(state.source, &record.model);
                 if agent != "all" && record_agent != agent {
                     continue;
@@ -1703,6 +1878,8 @@ impl AnalyticsState {
             "daily_agent": day_list.iter().map(|day| {
                 (day.clone(), daily_agent.get(day).cloned().unwrap_or_default())
             }).collect::<HashMap<String, _>>(),
+            "daily_quota": daily_quota,
+            "weekly_quota": build_weekly_quota(&day_list, &daily_quota, &quota_5h_slots, week_start),
             "today_hourly": hourly.iter().enumerate().map(|(hour, b)| serde_json::json!({
                 "hour": hour,
                 "input": b.input,
