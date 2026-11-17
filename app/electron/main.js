@@ -868,6 +868,30 @@ ipcMain.handle("disk-scan-full", async (_e, tab) => {
   try { return await backendFetch(`/api/disk/scan-full?tab=${encodeURIComponent(tab)}`); }
   catch (err) { return { ok: false, error: err.message }; }
 });
+ipcMain.handle("disk-deep", async (_e, path, depth) => {
+  const q = `?path=${encodeURIComponent(path)}&depth=${encodeURIComponent(depth || 2)}`;
+  return backendFetch(`/api/disk/deep${q}`).catch(e => ({ ok: false, error: e.message }));
+});
+ipcMain.handle("disk-dupes", async (_e, roots, min) => {
+  const q = `?roots=${encodeURIComponent((roots || []).join("|"))}&min=${encodeURIComponent(min || 10000000)}`;
+  return backendFetch(`/api/disk/dupes${q}`).catch(e => ({ ok: false, error: e.message }));
+});
+ipcMain.handle("disk-projects", async (_e, path) => {
+  const q = `?path=${encodeURIComponent(path || "")}`;
+  return backendFetch(`/api/disk/projects${q}`).catch(e => ({ ok: false, error: e.message }));
+});
+ipcMain.handle("disk-worktrees", async (_e, path) => {
+  const q = `?path=${encodeURIComponent(path || "")}`;
+  return backendFetch(`/api/disk/worktrees${q}`).catch(e => ({ ok: false, error: e.message }));
+});
+ipcMain.handle("disk-bin", async () => backendFetch("/api/disk/bin").catch(e => ({ ok: false, error: e.message })));
+ipcMain.handle("disk-bin-purge", async () => backendFetch("/api/disk/bin/purge", { method: "POST" }).catch(e => ({ ok: false, error: e.message })));
+ipcMain.handle("disk-system", async () => backendFetch("/api/disk/system").catch(e => ({ ok: false, error: e.message })));
+ipcMain.handle("disk-startup", async () => backendFetch("/api/disk/startup").catch(e => ({ ok: false, error: e.message })));
+ipcMain.handle("disk-apps", async () => backendFetch("/api/disk/apps").catch(e => ({ ok: false, error: e.message })));
+ipcMain.handle("disk-processes", async () => backendFetch("/api/disk/processes").catch(e => ({ ok: false, error: e.message })));
+ipcMain.handle("disk-history", async () => backendFetch("/api/disk/history").catch(e => ({ ok: false, error: e.message })));
+ipcMain.handle("disk-desktop", async () => backendFetch("/api/disk/desktop").catch(e => ({ ok: false, error: e.message })));
 ipcMain.handle("disk-clean", async (_e, paths) => {
   try {
     const res = await backendFetch("/api/disk/clean", {

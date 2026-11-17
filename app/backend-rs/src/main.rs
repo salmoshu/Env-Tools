@@ -39,6 +39,7 @@ mod accounts;
 mod disk;
 mod jharu;
 mod jharu_full;
+mod jharu_extra;
 mod analytics;
 mod apply_update;
 mod quota;
@@ -883,6 +884,18 @@ async fn main() {
         .route("/api/disk/ai-tools", get(disk_ai_tools))
         .route("/api/disk/scan-full", get(disk_scan_full))
         .route("/api/disk/clean", axum::routing::post(disk_clean))
+        .route("/api/disk/deep", get(disk_deep))
+        .route("/api/disk/dupes", get(disk_dupes))
+        .route("/api/disk/projects", get(disk_projects))
+        .route("/api/disk/worktrees", get(disk_worktrees))
+        .route("/api/disk/bin", get(disk_bin))
+        .route("/api/disk/bin/purge", axum::routing::post(disk_bin_purge))
+        .route("/api/disk/system", get(disk_system))
+        .route("/api/disk/startup", get(disk_startup))
+        .route("/api/disk/apps", get(disk_apps))
+        .route("/api/disk/processes", get(disk_processes))
+        .route("/api/disk/history", get(disk_history))
+        .route("/api/disk/desktop", get(disk_desktop))
         .route("/api/usage", get(usage))
         .route("/api/backend-status", get(backend_status))
         .route("/api/settings", get(get_settings).post(update_settings))
@@ -1011,4 +1024,41 @@ async fn disk_clean(
         .await
         .unwrap_or(serde_json::json!({ "ok": false, "error": "clean worker failed" }));
     Json(result)
+}
+
+async fn disk_deep(Query(p): Query<HashMap<String, String>>) -> Json<Value> {
+    let path = p.get("path").cloned().unwrap_or("C:\\".into());
+    let depth = p.get("depth").and_then(|v| v.parse().ok()).unwrap_or(2);
+    Json(spawn_scan(move || jharu_extra::deep_scan(&path, depth.clamp(1, 5))))
+}
+async fn disk_dupes(Query(p): Query<HashMap<String, String>>) -> Json<Value> {
+    let roots: Vec<String> = p.get("roots").map(|r| r.split('|').map(String::from).collect()).unwrap_or_default();
+    let min = p.get("min").and_then(|v| v.parse().ok()).unwrap_or(10_000_000);
+    Json(spawn_scan(move || jharu_extra::dupes_scan(&roots, min)))
+}
+async fn disk_projects(Query(p): Query<HashMap<String, String>>) -> Json<Value> {
+    let path = p.get("path").cloned().unwrap_or_default();
+    if path.is_empty() { return Json(jharu_extra::system_space()); }
+    Json(spawn_scan(move || jharu_extra::projects_scan(&path)))
+}
+async fn disk_worktrees(Query(p): Query<HashMap<String, String>>) -> Json<Value> {
+    let path = p.get("path").cloned().unwrap_or_default();
+    Json(spawn_scan(move || jharu_extra::worktrees_scan(&path)))
+}
+async fn disk_bin() -> Json<Value> { Json(spawn_scan(|| jharu_extra::bin_list())) }
+async fn disk_bin_purge() -> Json<Value> { Json(spawn_scan(|| jharu_extra::bin_purge())) }
+async fn disk_system() -> Json<Value> { Json(spawn_scan(|| jharu_extra::system_space())) }
+async fn disk_startup() -> Json<Value> { Json(spawn_scan(|| jharu_extra::startup_scan())) }
+async fn disk_apps() -> Json<Value> { Json(spawn_scan(|| jharu_extra::apps_list())) }
+async fn disk_processes() -> Json<Value> { Json(spawn_scan(|| jharu_extra::process_list())) }
+async fn disk_history() -> Json<Value> { Json(spawn_scan(|| jharu_extra::history_compare())) }
+async fn disk_desktop() -> Json<Value> { Json(spawn_scan(|| jharu_extra::desktop_scan())) }
+
+fn spawn_scan<F>(f: F) -> Value where F: FnOnce() -> Value + Send + 'static {
+    // 在 axum handler 中安全使用：当前已在 tokio 运行时上下文中
+    tokio::task::block_in_place(move || {
+        let handle = tokio::task::spawn_blocking(f);
+        tokio::runtime::Handle::current().block_on(handle)
+            .unwrap_or(serde_json::json!({"ok": false, "error": "worker failed"}))
+    })
 }
