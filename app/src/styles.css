@@ -449,6 +449,34 @@ td b { font-weight: 600; }
 
 /* --- 套餐配额卡片（全量窗口紧凑版 + 看板版） --- */
 .quota-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+
+/* 套餐配额标题行与 token 额度拨动开关（百分比 ↔ 已用/≈总） */
+.quotas-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.quotas-head h2 { margin: 0; }
+.qtoken-switch {
+  display: inline-flex; align-items: center; gap: 7px;
+  border: none; background: transparent; padding: 2px 4px;
+  cursor: pointer; color: var(--faint); font-size: 11px;
+}
+.qtoken-switch:hover { color: var(--dim); }
+.qtoken-track {
+  position: relative; width: 28px; height: 16px; border-radius: 999px;
+  background: var(--track); transition: background 0.18s var(--ease); flex: none;
+}
+.qtoken-knob {
+  position: absolute; top: 2px; left: 2px; width: 12px; height: 12px;
+  border-radius: 50%; background: var(--dim);
+  transition: transform 0.18s var(--ease), background 0.18s var(--ease);
+}
+.qtoken-switch.on .qtoken-track { background: var(--accent); }
+.qtoken-switch.on .qtoken-knob { transform: translateX(12px); background: #fff; }
+.qtoken-switch.on .qtoken-label { color: var(--accent-text); font-weight: 600; }
+.qtoken-label { user-select: none; white-space: nowrap; }
+
+/* 周窗口 token 统计卡（GroupedBars 竖柱，同每日 Token 卡风格） */
+.quota-weeks { margin-bottom: 14px; }
+
+
 .qcard {
   background: var(--card); border: 1px solid var(--border);
   border-radius: var(--r-card); padding: 14px 16px 12px; box-shadow: var(--shadow-card);

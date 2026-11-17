@@ -16,6 +16,14 @@ export function abbrev(value) {
   return String(Math.round(value));
 }
 
+/// 两位小数版（配额 token 估算显示用：121.14M / ≈257.63M）
+export function abbrev2(value) {
+  if (value >= 1e9) return (value / 1e9).toFixed(2) + "B";
+  if (value >= 1e6) return (value / 1e6).toFixed(2) + "M";
+  if (value >= 1e3) return (value / 1e3).toFixed(1) + "K";
+  return String(Math.round(value));
+}
+
 export function fmtPct(fraction) {
   return fraction == null ? "-" : (fraction * 100).toFixed(1) + "%";
 }

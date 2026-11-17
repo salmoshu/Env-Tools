@@ -207,6 +207,100 @@ export function StackedBars({ labels, series, columnTip, className = "", zoomabl
   return <div ref={ref} className={`chart${zoomable ? " chart-zoomable" : ""} ${className}`} />;
 }
 
+/** 分组并排柱状图：与 StackedBars 同风格（坐标轴/网格/x 标签/悬浮提示/
+ *  滚轮缩放一致），每列内多序列并排——周窗口统计（7d 周量 vs 5h 峰值）
+ *  等非可加场景。refLine 可选：在指定值画水平虚线参考（如 5h 额度估算） */
+export function GroupedBars({ labels, series, columnTip, className = "", zoomable = false, refLine = null }) {
+  const ref = useRef(null);
+  const total = labels ? labels.length : 0;
+  const zoomCount = useXAxisZoom(ref, zoomable, total);
+  const from = zoomCount ? Math.max(0, total - zoomCount) : 0;
+  const vLabels = labels ? labels.slice(from) : labels;
+  const vSeries = series.map((item) => ({ ...item, data: item.data.slice(from) }));
+  const vTip = (i, peak) => columnTip(i + from, peak);
+  const dataKey = JSON.stringify([vLabels, vSeries.map((item) => [item.color, item.data]), refLine && refLine.value]);
+  useChartBuild(ref, (container) => {
+    if (!vLabels) return;
+    buildGroupedBars(container, vLabels, vSeries, vTip, refLine);
+  }, [dataKey]);
+  useEffect(() => bindChartClickTooltip(ref), []);
+  return <div ref={ref} className={`chart${zoomable ? " chart-zoomable" : ""} ${className}`} />;
+}
+
+function buildGroupedBars(container, labels, series, columnTip, refLine = null) {
+  container.textContent = "";
+  const width = Math.max(container.clientWidth || 0, 240);
+  const height = Math.max(container.clientHeight || 0, 160);
+  const margin = { top: 10, right: 10, bottom: 20, left: 52 };
+  const innerW = width - margin.left - margin.right;
+  const innerH = height - margin.top - margin.bottom;
+  const peaks = labels.map((_, i) => series.reduce((max, item) => Math.max(max, item.data[i] || 0), 0));
+  // 参考线参与上限计算，保证虚线始终在图内
+  const maxVal = niceMax(Math.max(1, ...peaks, refLine ? refLine.value : 0));
+  const svg = svgEl("svg", { width, height });
+
+  for (let tick = 0; tick <= 4; tick++) {
+    const y = margin.top + innerH - (innerH * tick) / 4;
+    svgEl("line", {
+      x1: margin.left, x2: margin.left + innerW, y1: y, y2: y,
+      stroke: "var(--track)", "stroke-width": 1,
+    }, svg);
+    if (tick > 0) {
+      const text = svgEl("text", {
+        x: margin.left - 8, y: y + 3, "text-anchor": "end",
+        "font-size": 10.5, fill: "var(--faint)",
+      }, svg);
+      text.textContent = abbrev((maxVal * tick) / 4);
+    }
+  }
+
+  const slot = innerW / labels.length;
+  const groupWidth = Math.min(slot * 0.72, 48);
+  const n = Math.max(1, series.length);
+  const barWidth = Math.max(2, groupWidth / n - 2);
+  const labelStep = Math.max(1, Math.ceil(labels.length / Math.max(1, Math.floor(innerW / 54))));
+  labels.forEach((label, i) => {
+    const groupX = margin.left + slot * i + (slot - groupWidth) / 2;
+    series.forEach((item, k) => {
+      const value = item.data[i] || 0;
+      if (!value) return;
+      const bottom = margin.top + innerH;
+      const top = margin.top + innerH - (value / maxVal) * innerH;
+      svgEl("rect", {
+        x: groupX + k * (groupWidth / n), y: top,
+        width: barWidth, height: Math.max(1, bottom - top),
+        fill: item.color, rx: Math.min(3, barWidth / 4),
+      }, svg);
+    });
+    if (i % labelStep === 0) {
+      const text = svgEl("text", {
+        x: margin.left + slot * i + slot / 2, y: height - 6,
+        "text-anchor": "middle", "font-size": 10.5, fill: "var(--faint)",
+      }, svg);
+      text.textContent = label;
+    }
+    const hit = svgEl("rect", {
+      x: margin.left + slot * i, y: margin.top, width: slot, height: innerH,
+      fill: "transparent",
+    }, svg);
+    hit.dataset.tip = columnTip(i, peaks[i]);
+  });
+  // 水平虚线参考（如 5h 额度估算）：超出数据峰也不截断，右侧标注
+  if (refLine && refLine.value > 0 && refLine.value <= maxVal) {
+    const y = margin.top + innerH - (refLine.value / maxVal) * innerH;
+    svgEl("line", {
+      x1: margin.left, x2: margin.left + innerW, y1: y, y2: y,
+      stroke: "var(--warn)", "stroke-width": 1.2, "stroke-dasharray": "5 4",
+    }, svg);
+    const text = svgEl("text", {
+      x: margin.left + innerW - 4, y: y - 4, "text-anchor": "end",
+      "font-size": 10.5, fill: "var(--warn)",
+    }, svg);
+    text.textContent = refLine.label;
+  }
+  container.appendChild(svg);
+}
+
 function donutArcPath(cx, cy, rInner, rOuter, start, end) {
   const px = (r, a) => cx + r * Math.cos(a);
   const py = (r, a) => cy + r * Math.sin(a);

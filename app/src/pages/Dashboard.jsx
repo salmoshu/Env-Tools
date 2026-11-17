@@ -5,11 +5,11 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  AGENT_COLORS, AGENT_LABELS, abbrev, activateOnKeys, fmt, fmtPct, fmtReset, fmtSpan, fmtTimestamp,
+  AGENT_COLORS, AGENT_LABELS, abbrev, abbrev2, activateOnKeys, fmt, fmtPct, fmtReset, fmtSpan, fmtTimestamp,
   isNewerVersion, levelClass, sortByDisplayOrder, timeFractionOf,
 } from "../utils.js";
 import {
-  CalendarHeatmap, DonutChart, LineChart, MODEL_PALETTE,
+  CalendarHeatmap, GroupedBars, DonutChart, LineChart, MODEL_PALETTE,
   SERIES_DEFS, StackedBars, ProjectBars,
 } from "../components/charts.jsx";
 import { RefreshIcon } from "../components/Titlebar.jsx";
@@ -124,7 +124,239 @@ function MembershipLine({ account }) {
   );
 }
 
-function QuotaCard({ account, versions, onUpgrade, upgrading, providerKey, accountState }) {
+/** 套餐配额 token 额度估算（v0.7.53）：厂商只公布已用百分比（Kimi/Codex）
+ *  或积分（GLM），窗口 token 总额需反推：
+ *  估算总额 = 窗口 elapsed 时段内实际 token 用量 ÷ 窗口已用%
+ *  （用量来自分析引擎，omp 会话按底层模型归并计入对应配额）。
+ *  区块标题旁的开关切换显示口径：百分比（原样）/ token 额度（已用/≈总） */
+const QUOTA_PROVIDER_KEYS = {
+  "Kimi Code": "kimi",
+  "OpenAI Codex": "codex",
+  GLM: "glm",
+};
+const QUOTA_TOKEN_MODE_KEY = "ai-usage-monitor.quota-token-mode";
+// 估算范围含 5h/7d 与月度（≤32d，Kimi Monthly Total 也支持 token 显示）
+const QUOTA_ESTIMABLE_MAX_SECONDS = 32 * 86400;
+// 拉取桶 30 分钟：倒计时推进不再逐秒/逐5分钟重拉；查询侧带 ±2 桶容差，
+// 桶翻转期间沿用最近一次结果——修复估算时隐时现的闪烁
+const QUOTA_EST_FETCH_BUCKET = 1800;
+
+/** 窗口估算元数据：{ key, bucket(30 分钟桶), elapsed }；不满足估算条件返回 null */
+function quotaEstimateMeta(provider, w) {
+  const key = QUOTA_PROVIDER_KEYS[provider];
+  if (!key) return null;
+  if (!(w.used_percent > 0) || !w.window_seconds
+    || w.window_seconds > QUOTA_ESTIMABLE_MAX_SECONDS || w.reset_after_seconds == null) {
+    return null;
+  }
+  const elapsed = Math.max(600, w.window_seconds - w.reset_after_seconds);
+  return {
+    key,
+    bucket: Math.round(elapsed / QUOTA_EST_FETCH_BUCKET) * QUOTA_EST_FETCH_BUCKET,
+    elapsed,
+    windowSeconds: w.window_seconds,
+  };
+}
+
+/** 容差查询：精确桶 → ±1、±2 桶，命中即返回最近拉取结果 */
+function quotaEstimateLookup(estimates, provider, w) {
+  const meta = quotaEstimateMeta(provider, w);
+  if (!meta) return null;
+  for (const offset of [0, -1, 1, -2, 2]) {
+    const v = estimates[`${meta.key}|${meta.bucket + offset * QUOTA_EST_FETCH_BUCKET}`];
+    if (v != null) return v.tokens;
+  }
+  return null;
+}
+
+/// 查询估算总额（含历史中位）：返回 median(历史各代 + 当前单点) 或 null
+function quotaEstimateLookupTotal(estimates, provider, w, usedTokens) {
+  const meta = quotaEstimateMeta(provider, w);
+  if (!meta) return null;
+  for (const offset of [0, -1, 1, -2, 2]) {
+    const v = estimates[`${meta.key}|${meta.bucket + offset * QUOTA_EST_FETCH_BUCKET}`];
+    if (v != null) {
+      const pct = Math.max(0.01, w.used_percent);
+      const points = [usedTokens / (pct / 100)];
+      if (Array.isArray(v.history)) {
+        points.push(...v.history.filter((x) => Number.isFinite(x) && x > 0));
+      }
+      points.sort((a, b) => a - b);
+      const mid = Math.floor(points.length / 2);
+      return points.length % 2 ? points[mid] : (points[mid - 1] + points[mid]) / 2;
+    }
+  }
+  return null;
+}
+
+/** 拉取各窗口 elapsed 时段的实际 token 用量（随配额 60s 刷新自动更新；
+ *  指纹按 5 分钟桶节流，避免倒计时秒级变化反复触发） */
+function useQuotaEstimates(accounts, target) {
+  const [estimates, setEstimates] = useState({});
+  const fingerprint = accounts
+    .flatMap((a) => (a.windows || [])
+      .map((w) => {
+        const meta = quotaEstimateMeta(a.provider, w);
+        if (!meta) return null;
+        const at = a.fetched_at ? Math.floor(new Date(a.fetched_at).getTime() / 1000) : 0;
+        return `${meta.key}|${meta.bucket}|${meta.windowSeconds}|${at}`;
+      })
+      .filter(Boolean))
+    .join("&");
+  useEffect(() => {
+    if (!fingerprint) return;
+    let cancelled = false;
+    const wants = new Map(); // 键 provider|bucketedElapsed → { key, elapsed, at, window }
+    for (const token of fingerprint.split("&")) {
+      const [key, bucket, win, at] = token.split("|");
+      wants.set(token, { key, elapsed: Number(bucket), win: Number(win), at: Number(at) });
+    }
+    Promise.all(
+      [...wants.entries()].map(async ([storeKey, { key, elapsed, win, at }]) => {
+        try {
+          const result = await window.api.getAnalyticsRolling(key, elapsed, target, {
+            at, window: win, history: true,
+          });
+          if (!cancelled && result && result.ok) {
+            return [storeKey, { tokens: result.tokens || 0, history: result.history || null }];
+          }
+        } catch {}
+        return null;
+      }),
+    ).then((rows) => {
+      if (cancelled) return;
+      setEstimates((prev) => {
+        const next = { ...prev };
+        for (const row of rows) {
+          if (row) next[row[0]] = row[1];
+        }
+        return next;
+      });
+    });
+    return () => { cancelled = true; };
+  }, [fingerprint, target]);
+  return estimates;
+}
+
+/// 估算总额：median(各代历史高水位估算 + 当前单点)——比单点更稳，
+/// 百分比取整/跨设备覆盖差被多代平滑。无历史时退化为单点。
+function quotaEstimateTotal(estimates, storeKey, usedTokens, pct) {
+  const entry = estimates[storeKey];
+  if (!entry) return usedTokens / (pct / 100);
+  const points = [usedTokens / (pct / 100)];
+  const hist = entry.history;
+  if (Array.isArray(hist) && hist.length > 0) {
+    points.push(...hist.filter((v) => Number.isFinite(v) && v > 0));
+  }
+  points.sort((a, b) => a - b);
+  const mid = Math.floor(points.length / 2);
+  return points.length % 2 ? points[mid] : (points[mid - 1] + points[mid]) / 2;
+}
+
+/** 周窗口 token 统计卡（单厂商）：近 ~13 周的 7d 窗口用量（周柱）与
+ *  5h 峰值窗口用量并排，另以虚线参考线标出按当前配额反推的 5h 额度估算——
+ *  直接回答"该厂商的 5h 额度预计多大、我平时压到多满"。
+ *  数据独立自取 90 天（不随页面范围/agent 筛选），后端 weekly_quota
+ *  厂商口径（omp 底层模型已归并）；下拉切换 Kimi/Codex/GLM（无"全部"） */
+const QUOTA_WEEKLY_PROVIDER_KEY = "ai-usage-monitor.quota-weekly-provider";
+
+function QuotaWeeklyCard({ target, weekStart, accounts, estimates }) {
+  const [weeklyAnalytics, setWeeklyAnalytics] = useState(null);
+  const [provider, setProvider] = useState(() => {
+    try {
+      const saved = localStorage.getItem(QUOTA_WEEKLY_PROVIDER_KEY);
+      return ["kimi", "codex", "glm"].includes(saved) ? saved : "kimi";
+    } catch { return "kimi"; }
+  });
+  useEffect(() => {
+    let cancelled = false;
+    window.api.getAnalytics(90, "all", target)
+      .then((result) => { if (!cancelled && result && result.ok) setWeeklyAnalytics(result.analytics); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [target]);
+  const weeks = useMemo(() => {
+    const weekly = weeklyAnalytics && weeklyAnalytics.weekly_quota;
+    if (!Array.isArray(weekly)) return [];
+    return weekly
+      .map((row) => ({
+        start: row.start,
+        end: row.end,
+        total: (row.providers && row.providers[provider] && row.providers[provider].total) || 0,
+        peak5h: (row.providers && row.providers[provider] && row.providers[provider].peak5h) || 0,
+      }))
+      .filter((row) => row.total > 0 || row.peak5h > 0);
+  }, [weeklyAnalytics, provider]);
+  // 5h 额度估算参考线：该厂商当前 5h 窗口的 已用token ÷ 已用%。
+  // 多账号（如 codex free/plus）时遍历所有账号找有用量的 5h 窗口
+  const limit5h = useMemo(() => {
+    const providerName = { kimi: "Kimi Code", codex: "OpenAI Codex", glm: "GLM" }[provider];
+    const candidates = accounts
+      .filter((a) => a.provider === providerName)
+      .flatMap((a) => a.windows || [])
+      .filter((w) => w.window_seconds && Math.abs(w.window_seconds - 18000) <= 600
+        && w.used_percent > 0);
+    for (const w5h of candidates) {
+      const used = quotaEstimateLookup(estimates, providerName, w5h);
+      if (used != null) {
+        const total = quotaEstimateLookupTotal(estimates, providerName, w5h, used);
+        if (total != null) return total;
+      }
+    }
+    return null;
+  }, [accounts, estimates, provider]);
+  if (weeks.length === 0) return null;
+  const WINDOWS_PER_WEEK = 168 / 5; // 33.6 个 5h 窗口
+  const mmdd = (date) => date.slice(5);
+  return (
+    <section className="card quota-weeks">
+      <div className="card-head-row">
+        <h2>{t("dash.quotaWeekly")}</h2>
+        <div className="card-head-actions">
+          <Select
+            value={provider}
+            ariaLabel={t("dash.quotaWeeklyProvider")}
+            align="right"
+            onChange={(value) => {
+              setProvider(value);
+              try { localStorage.setItem(QUOTA_WEEKLY_PROVIDER_KEY, value); } catch {}
+            }}
+            options={[["kimi", "Kimi"], ["codex", "Codex"], ["glm", "GLM"]]}
+          />
+        </div>
+      </div>
+      <div className="table-hint" style={{ marginBottom: 6 }}>{t("dash.quotaWeeklyHint")}</div>
+      <div className="legend">
+        <span className="item"><span className="swatch" style={{ background: "var(--c-input)" }} />{t("dash.quotaWeekly7d")}</span>
+        <span className="item"><span className="swatch" style={{ background: "var(--c-output)" }} />{t("dash.quotaWeekly5h")}</span>
+      </div>
+      {weeks.length < 2 ? <div className="table-hint">{t("dash.quotaWeeklyShort")}</div> : null}
+      <GroupedBars
+        className="tall"
+        zoomable
+        labels={weeks.map((w) => mmdd(w.start))}
+        series={[
+          { color: "var(--c-input)", data: weeks.map((w) => w.total) },
+          { color: "var(--c-output)", data: weeks.map((w) => w.peak5h) },
+        ]}
+        refLine={limit5h ? { value: limit5h, label: `${t("dash.quotaWeekly5hLimit")} ≈${abbrev(limit5h)}` } : null}
+        columnTip={(i) => {
+          const w = weeks[i] || {};
+          const range = `${mmdd(w.start || "")}–${mmdd(w.end || "")}`;
+          const current = i === weeks.length - 1 ? ` · ${t("dash.quotaWeekCurrent")}` : "";
+          return `<b>${range}${current}</b>` +
+            `<div class="tt-row"><span class="swatch" style="background:var(--c-input)"></span>${t("dash.quotaWeekly7d")}<span class="tt-val">${fmt(w.total || 0)}</span></div>` +
+            `<div class="tt-row"><span class="swatch" style="background:var(--c-output)"></span>${t("dash.quotaWeekly5h")}<span class="tt-val">${fmt(w.peak5h || 0)}</span></div>` +
+            (limit5h
+              ? `<div class="tt-row">${t("dash.quotaWeekly5hLimit")}<span class="tt-val">≈${fmt(limit5h)}</span></div>`
+              : "");
+        }}
+      />
+    </section>
+  );
+}
+
+function QuotaCard({ account, versions, onUpgrade, upgrading, providerKey, accountState, tokenMode, estimates }) {
   const updated = account.fetched_at
     ? new Date(account.fetched_at).toLocaleTimeString("en-GB", { hour12: false })
     : "";
@@ -225,11 +457,41 @@ function QuotaCard({ account, versions, onUpgrade, upgrading, providerKey, accou
           : (showUsage
             ? <span className="reset">Usage {w.usage}</span>
             : null);
+        // token 额度口径：百分比替换为 已用/≈总（无估算数据的窗口回退百分比显示）
+        let pctText = `${pct.toFixed(1)}%`;
+        let pctTitle = undefined;
+        if (tokenMode === "tokens") {
+          const meta = quotaEstimateMeta(account.provider, w);
+          const usedTokens = quotaEstimateLookup(estimates, account.provider, w);
+          if (usedTokens != null) {
+            // Kimi 月度为家庭共享额度（w.sub 带 "Kimi Code share: xx.xx%"）：
+            // 本地只覆盖 Kimi Code 份额，按 share 校正有效已用比例再反推总额
+            let effectivePct = pct;
+            const shareMatch = String(w.sub || "").match(/([\d.]+)\s*%/);
+            const share = shareMatch ? Number(shareMatch[1]) : null;
+            if (share && share > 0 && share < 100) effectivePct = pct * share / 100;
+            const meta = quotaEstimateMeta(account.provider, w);
+            const storeKey = meta ? `${meta.key}|${meta.bucket}` : null;
+            const totalTokens = quotaEstimateLookupTotal(estimates, account.provider, w, usedTokens)
+              ?? (usedTokens / (effectivePct / 100));
+            pctText = `${abbrev2(usedTokens)} / ≈${abbrev2(totalTokens)}`;
+            pctTitle = (share && share > 0 && share < 100)
+              ? t("dash.quotaEstimateTipShared")
+                .replace("{used}", abbrev2(usedTokens))
+                .replace("{pct}", effectivePct.toFixed(2))
+                .replace("{share}", share.toFixed(2))
+              : t("dash.quotaEstimateTip")
+                .replace("{used}", abbrev2(usedTokens))
+                .replace("{pct}", pct.toFixed(0));
+          } else if (meta) {
+            pctTitle = t("dash.quotaEstimatePending");
+          }
+        }
         return (
           <div className="qquota" key={index}>
             <div className="qrow">
               <span>{String(w.label || "").replace(/^Start · /, "")}</span>
-              <span className="pct">{pct.toFixed(1)}%{tail ? " · " : ""}{tail}</span>
+              <span className="pct" title={pctTitle}>{pctText}{tail ? " · " : ""}{tail}</span>
             </div>
             <div className="bar">
               <div className={`fill ${levelClass(pct)}`} style={{ width: `${pct}%` }} />
@@ -666,6 +928,19 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
   // 每家只显示当前账号；账号菜单仍合并完整注册表与 usage 选项。
   accounts = sortByDisplayOrder(accounts.filter(matchesActiveAccount), (a) => a.provider);
   shownErrors = sortByDisplayOrder(shownErrors.filter(matchesActiveAccount), (e) => e.provider || "");
+
+  // 套餐配额显示口径：百分比（原样）/ token 额度估算（已用/≈总，开关持久化）
+  const [quotaTokenMode, setQuotaTokenMode] = useState(() => {
+    try { return localStorage.getItem(QUOTA_TOKEN_MODE_KEY) === "tokens" ? "tokens" : "pct"; } catch { return "pct"; }
+  });
+  const toggleQuotaTokenMode = () => {
+    setQuotaTokenMode((prev) => {
+      const next = prev === "tokens" ? "pct" : "tokens";
+      try { localStorage.setItem(QUOTA_TOKEN_MODE_KEY, next); } catch {}
+      return next;
+    });
+  };
+  const quotaEstimates = useQuotaEstimates(accounts, target);
 
   // --- 分析数据派生 ---
   const dayList = (analytics && analytics.day_list) || [];
@@ -1160,7 +1435,20 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
       </div>
 
       <section className="block">
-        <h2>{t("dash.quotas")}{agent !== "all" ? ` · ${AGENT_LABELS[agent]}` : ""}</h2>
+        <div className="quotas-head">
+          <h2>{t("dash.quotas")}{agent !== "all" ? ` · ${AGENT_LABELS[agent]}` : ""}</h2>
+          <button
+            type="button"
+            className={`qtoken-switch${quotaTokenMode === "tokens" ? " on" : ""}`}
+            role="switch"
+            aria-checked={quotaTokenMode === "tokens"}
+            title={t("dash.quotaTokenToggle")}
+            onClick={toggleQuotaTokenMode}
+          >
+            <span className="qtoken-track"><span className="qtoken-knob" /></span>
+            <span className="qtoken-label">{t("dash.quotaTokenLabel")}</span>
+          </button>
+        </div>
         {usagePayload && usagePayload.error ? (
           <div className="quota-unavailable">
             {t("dash.quotaUnavailable")} — {usagePayload.error}
@@ -1177,6 +1465,8 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
               upgrading={upgrading}
               providerKey={agentProviderKey(account.provider)}
               accountState={accountStates[agentProviderKey(account.provider)]}
+              tokenMode={quotaTokenMode}
+              estimates={quotaEstimates}
             />
           ))}
           {(usagePayload && !usagePayload.error ? shownErrors : []).map((err) => {
@@ -1218,6 +1508,8 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
             : null}
         </div>
       </section>
+
+      <QuotaWeeklyCard target={target} weekStart={weekStart} accounts={accounts} estimates={quotaEstimates} />
 
       <div className="dashboard-cards">
       <section
