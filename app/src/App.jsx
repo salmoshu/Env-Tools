@@ -10,6 +10,7 @@ import Titlebar, {
 import Dashboard from "./pages/Dashboard.jsx";
 import Board from "./pages/Board.jsx";
 import Tools from "./pages/Tools.jsx";
+import DiskPage, { DiskIcon } from "./pages/DiskPage.jsx";
 import SettingsPage from "./pages/SettingsPage.jsx";
 import { t, useLang } from "./i18n.js";
 import { showToast, ToastStack } from "./toast.jsx";
@@ -23,6 +24,7 @@ function currentRoute() {
   const hash = window.location.hash.replace(/^#\/?/, "");
   if (hash === "board") return "board";
   if (hash === "tools") return "tools";
+  if (hash === "disk") return "disk";
   if (hash === "settings") return "settings";
   return "dashboard";
 }
