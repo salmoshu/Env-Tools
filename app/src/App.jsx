@@ -225,7 +225,7 @@ export default function App() {
       ) : isSettings ? (
         <SettingsPage lastPayload={lastPayload} refreshing={refreshing} onRefresh={triggerRefresh} />
       ) : (
-        <div className="app-body">
+        <div className="app-body app-body-col">
           {/* v0.7.54：主入口迁至 header，侧栏改为 Jharu 风格的分区子导航 */}
           <div className="app-main-header">
             <button type="button" className={`main-tab${route === "dashboard" ? " active" : ""}`} onClick={() => navigate("dashboard")}>
@@ -238,6 +238,7 @@ export default function App() {
               <DiskIcon /> <span>{t("nav.disk")}</span>
             </button>
           </div>
+          <div className="app-body-row">
           {/* 两页常驻、只切显示：此前每次切页都卸载重建 Dashboard，
               实测切回时有 85–97ms 长任务和帧尖峰（切页卡顿主因） */}
           <div className="page-scroll" style={{ display: route === "tools" ? undefined : "none" }}>
@@ -252,6 +253,7 @@ export default function App() {
           </div>
           <div className="page-scroll" style={{ display: route === "disk" ? undefined : "none" }}>
             <DiskPage />
+          </div>
           </div>
         </div>
       )}}

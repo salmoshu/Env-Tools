@@ -221,6 +221,9 @@ button:focus-visible, [role="button"]:focus-visible, th.sortable:focus-visible {
 @media (prefers-reduced-motion: no-preference) {
   body, .titlebar, .card, .qcard, .kpi-card, .provider, .tool-card, .dialog,
   /* v0.7.54：主入口 header 选项卡（替代左侧栏三大入口）+ Jharu 风格侧栏 */
+.app-body-col { flex-direction: column !important; }
+.app-body-row { display: flex; flex: 1; min-height: 0; overflow: hidden; }
+
 .app-main-header {
   display: flex; align-items: center; gap: 2px; flex: none;
   padding: 8px 16px 0; border-bottom: 1px solid var(--border);
