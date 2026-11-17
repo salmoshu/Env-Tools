@@ -39,6 +39,7 @@ log() {
 }
 
 KIMI_NPM_PKG="@moonshot-ai/kimi-code"
+KIMI_LATEST_URL="${KIMI_LATEST_URL:-https://code.kimi.com/kimi-code/latest}"
 KIMI_INSTALL_URL="https://code.kimi.com/kimi-code/install.sh"
 ENTIRE_INSTALL_URL="https://entire.com/install.sh"
 # npm 默认源失败时回退的国内镜像
@@ -85,6 +86,17 @@ latest_npm_version() {
     if [ -z "$ver" ]; then
         ver="$(npm view "$1" version --loglevel=error --cache "$NPM_CACHE" --registry "$NPM_MIRROR" 2>/dev/null | tail -1)"
         [ -n "$ver" ] && NPM_SOURCE_NOTE="默认源查询失败，已改用国内镜像 ($NPM_MIRROR)"
+    fi
+    printf '%s' "$ver"
+}
+
+# 原生 Kimi 与界面提示统一使用官方 CDN；官方查询失败时才回退 npm registry。
+latest_kimi_version() {
+    local ver
+    ver="$(curl -fsSL --max-time 15 "$KIMI_LATEST_URL" 2>/dev/null | extract_semver)"
+    if [ -z "$ver" ]; then
+        emit kimi "官方版本查询失败，改用 npm ($KIMI_NPM_PKG)" >&2
+        ver="$(latest_npm_version "$KIMI_NPM_PKG")"
     fi
     printf '%s' "$ver"
 }
@@ -407,9 +419,9 @@ kimi_worker() {
     local before after after_ver latest local_ver rc attempt
     local KIMI_TMP="$RESULT_DIR/kimi-tmp" OUTF
     before="$(version_of kimi)"
-    # 官方脚本安装的二进制没有 npm 元数据，用 registry 最新版与 --version 输出对比
+    # 原生二进制与界面提示同用官方 CDN；npm 仅作版本查询备用
     emit kimi '查询最新版本 (code.kimi.com) ...'
-    latest="$(latest_npm_version "$KIMI_NPM_PKG")"
+    latest="$(latest_kimi_version)"
     [ -n "$NPM_SOURCE_NOTE" ] && emit kimi "$NPM_SOURCE_NOTE"
     local_ver="$(printf '%s' "$before" | extract_semver)"
     if is_up_to_date "$local_ver" "$latest"; then
