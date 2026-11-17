@@ -582,6 +582,14 @@ fn version_cache_path() -> PathBuf {
 
 /// 增量扫描磁盘缓存：~/.cache/ai-usage-monitor/scan-cache-<scope>.json
 ///（scope 含 ':' 时替换为 '_'，Windows 文件名不允许冒号）
+/// 配额快照历史（额度估算精度用）：~/.cache/ai-usage-monitor/quota-history.jsonl
+pub fn quota_history_path() -> PathBuf {
+    local_home()
+        .join(".cache")
+        .join("ai-usage-monitor")
+        .join("quota-history.jsonl")
+}
+
 pub fn scan_cache_path(scope: &str) -> PathBuf {
     let safe = scope.replace(':', "_");
     local_home()

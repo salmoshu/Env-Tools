@@ -36,9 +36,11 @@ use serde_json::Value;
 use tokio::sync::Mutex;
 
 mod accounts;
+mod disk;
 mod analytics;
 mod apply_update;
 mod quota;
+mod quota_history;
 mod settings;
 
 #[cfg(test)]
@@ -64,6 +66,14 @@ const SCAN_GAP_LOCAL: i64 = 30;
 const SCAN_GAP_WSL: i64 = 120;
 const USAGE_TTL: Duration = Duration::from_secs(20);
 const ANALYTICS_WSL_TTL: Duration = Duration::from_secs(120);
+
+/// 配额快照专用分析引擎（与主 AppState.analytics 分离：usage 闭包 'static）。
+/// HashMap::new 非 const——OnceLock 惰性初始化绕过静态限制
+static SNAP_ENGINES: std::sync::OnceLock<
+    std::sync::Mutex<
+        std::collections::HashMap<String, Arc<std::sync::Mutex<analytics::AnalyticsState>>>,
+    >,
+> = std::sync::OnceLock::new();
 
 #[derive(Clone)]
 struct AppState {
@@ -421,6 +431,102 @@ async fn analytics(
     Json(value)
 }
 
+/// /api/analytics/rolling：额度估算用——provider（kimi/codex/glm）在近
+/// seconds 秒内的 token 总量（按配额厂商归因，omp 底层模型归并计入）。
+/// 前端以 窗口内实际用量 ÷ 窗口已用% 反推 5h/7d 窗口的 token 总额。
+/// 独立 rolling scope：与主分析互不干扰，扫描节流与主视图一致
+async fn analytics_rolling(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Json<Value> {
+    let provider = params
+        .get("agent")
+        .map(String::as_str)
+        .filter(|raw| ["kimi", "codex", "glm"].contains(raw))
+        .unwrap_or("kimi")
+        .to_string();
+    let seconds: i64 = params
+        .get("seconds")
+        .and_then(|raw| raw.parse().ok())
+        .unwrap_or(3600)
+        .clamp(300, 60 * 86400);
+    let aggregate = params
+        .get("aggregate")
+        .map(|v| v == "1" || v == "true")
+        .unwrap_or(false);
+    // 时钟对齐：cutoff 以配额 fetched_at 时刻为基准（百分比与 token 同一时刻），
+    // 默认退化为 now（容错：配额时间戳缺失时）
+    let at = params
+        .get("at")
+        .and_then(|raw| raw.parse::<i64>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or_else(|| chrono::Local::now().timestamp());
+    let window_seconds = params
+        .get("window")
+        .and_then(|raw| raw.parse::<i64>().ok())
+        .filter(|v| *v > 0);
+    let with_history = params
+        .get("history")
+        .map(|v| v == "1" || v == "true")
+        .unwrap_or(false);
+    let scope = if aggregate {
+        "rolling:aggregate".to_string()
+    } else {
+        "rolling:local".to_string()
+    };
+    let engine_arc = {
+        let mut engines = state.analytics.lock().unwrap();
+        engines.entry(scope.clone()).or_default().clone()
+    };
+    let mut engine = engine_arc.lock().unwrap();
+    engine.hydrate_once(&settings::scan_cache_path(&scope));
+    let now_sec = chrono::Local::now().timestamp();
+    let scan_gap = if aggregate { SCAN_GAP_WSL } else { SCAN_GAP_LOCAL };
+    if now_sec - engine.last_scan_secs >= scan_gap {
+        engine.scan_all(
+            &kimi_homes(aggregate, None),
+            &codex_homes(aggregate, None),
+            &zcode_homes(aggregate, None),
+            &omp_homes(aggregate, None),
+            &kimi_work_homes(None),
+            now_sec,
+        );
+        engine.last_scan_secs = now_sec;
+        engine.save_cache(&settings::scan_cache_path(&scope));
+    }
+    drop(engine);
+    let tokens = engine_arc
+        .lock()
+        .unwrap()
+        .rolling_quota_tokens(&provider, at - seconds);
+    // 历史估算：各代高水位点的 tokens/pct 数组（旧→新），前端与当前单点合并取中位
+    let history = if with_history {
+        match window_seconds {
+            Some(win) => {
+                let vals = quota_history::generation_estimates(
+                    &settings::quota_history_path(),
+                    &provider,
+                    win,
+                    8,
+                );
+                if vals.is_empty() { Value::Null } else { serde_json::json!(vals) }
+            }
+            None => Value::Null,
+        }
+    } else {
+        Value::Null
+    };
+    Json(serde_json::json!({
+        "ok": true,
+        "agent": provider,
+        "seconds": seconds,
+        "at": at,
+        "tokens": tokens,
+        "history": history,
+    }))
+}
+
+
 /// /api/usage：四家配额全原生（Kimi/Codex OAuth 刷新 + DeepSeek/GLM 直连）。
 async fn usage(axum::extract::State(state): axum::extract::State<AppState>) -> Json<Value> {
     let value = state
@@ -428,6 +534,9 @@ async fn usage(axum::extract::State(state): axum::extract::State<AppState>) -> J
         .get_or_fetch("usage".to_string(), USAGE_TTL, move || async move {
             tokio::task::spawn_blocking(|| {
                 let (accounts, errors) = quota::collect_all();
+                // 配额快照落盘（额度估算精度）：pct/代际变化才落一行。
+                // tokens 经 rolling 引擎按窗口 elapsed 取本机（含 WSL）用量
+                record_quota_snapshots(&accounts);
                 let versions = settings::collect_versions();
                 let settings = settings::load_settings();
                 let data = serde_json::json!({
@@ -445,6 +554,75 @@ async fn usage(axum::extract::State(state): axum::extract::State<AppState>) -> J
         })
         .await;
     Json(value)
+}
+
+/// 配额快照（额度估算精度）：对每个厂商窗口，pct 或代际变化时落一行
+/// {ts, p, win, pct, ra, el, tok}。tok 用 rolling 引擎按 elapsed 取本机
+/// （local，配额凭证本就仅本机）用量；引擎独立 scope 不与主分析争锁。
+fn record_quota_snapshots(accounts: &[Value]) {
+    static LAST: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, (i64, f64)>>,
+    > = std::sync::OnceLock::new();
+    let key_of = |provider: &str| match provider {
+        "Kimi Code" => Some("kimi"),
+        "OpenAI Codex" => Some("codex"),
+        "GLM" => Some("glm"),
+        _ => None,
+    };
+    let now_sec = chrono::Local::now().timestamp();
+    for account in accounts {
+        let Some(key) = key_of(account.get("provider").and_then(|v| v.as_str()).unwrap_or("")) else { continue };
+        for w in account.get("windows").and_then(|v| v.as_array()).unwrap_or(&Vec::new()) {
+            let pct = w.get("used_percent").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let win = w.get("window_seconds").and_then(|v| v.as_i64()).unwrap_or(0);
+            let ra = w.get("reset_after_seconds").and_then(|v| v.as_i64()).unwrap_or(0);
+            if pct <= 0.0 || win <= 0 || win > 32 * 86400 || ra <= 0 {
+                continue;
+            }
+            let elapsed = win - ra;
+            let gen = now_sec - elapsed; // 窗口起点 = 代际标识
+            let map_key = format!("{key}|{win}");
+            let mut last = LAST.get_or_init(Default::default).lock().unwrap();
+            if let Some((last_gen, last_pct)) = last.get(&map_key) {
+                if *last_gen == gen && (*last_pct - pct).abs() < 0.5 {
+                    continue; // 同代且 pct 未变（<0.5 即取整粒度内）——不落盘
+                }
+            }
+            // 取本机 elapsed 时段 token（独立引擎；扫描节流 30s）
+            let scope = "quota-history".to_string();
+            let engine_arc = SNAP_ENGINES
+                .get_or_init(Default::default)
+                .lock()
+                .unwrap()
+                .entry(scope.clone())
+                .or_default()
+                .clone();
+            let mut engine = engine_arc.lock().unwrap();
+            engine.hydrate_once(&settings::scan_cache_path(&scope));
+            if now_sec - engine.last_scan_secs >= SCAN_GAP_LOCAL {
+                engine.scan_all(
+                    &kimi_homes(false, None),
+                    &codex_homes(false, None),
+                    &zcode_homes(false, None),
+                    &omp_homes(false, None),
+                    &kimi_work_homes(None),
+                    now_sec,
+                );
+                engine.last_scan_secs = now_sec;
+                engine.save_cache(&settings::scan_cache_path(&scope));
+            }
+            let tokens = engine.rolling_quota_tokens(key, now_sec - elapsed);
+            drop(engine);
+            quota_history::append(
+                &settings::quota_history_path(),
+                &serde_json::json!({
+                    "ts": now_sec, "p": key, "win": win,
+                    "pct": pct, "ra": ra, "el": elapsed, "tok": tokens,
+                }),
+            );
+            last.insert(map_key, (gen, pct));
+        }
+    }
 }
 
 /// 手动刷新：清空分析/配额缓存，下次请求强制增量重扫
@@ -696,6 +874,9 @@ async fn main() {
     let app = Router::new()
         .route("/api/health", get(health))
         .route("/api/analytics", get(analytics))
+        .route("/api/analytics/rolling", get(analytics_rolling))
+        .route("/api/disk/drives", get(disk_drives))
+        .route("/api/disk/scan", get(disk_scan))
         .route("/api/usage", get(usage))
         .route("/api/backend-status", get(backend_status))
         .route("/api/settings", get(get_settings).post(update_settings))
@@ -757,4 +938,28 @@ async fn main() {
         });
     }
     axum::serve(listener, app).await.unwrap();
+}
+
+/// /api/disk/drives：驱动器列表（卷路径、总/可用/已用、使用率%）
+async fn disk_drives() -> Json<Value> {
+    Json(serde_json::json!({ "ok": true, "drives": disk::drives() }))
+}
+
+/// /api/disk/scan?path=<dir>&top=<n>&depth=<n>：目录体积排行
+async fn disk_scan(
+    Query(params): Query<HashMap<String, String>>,
+) -> Json<Value> {
+    let path = params.get("path").cloned().unwrap_or_default();
+    let top = params.get("top").and_then(|v| v.parse().ok()).unwrap_or(30);
+    let depth = params.get("depth").and_then(|v| v.parse().ok()).unwrap_or(2);
+    if path.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "path required" }));
+    }
+    // spawn_blocking：磁盘 IO 不阻塞运行时
+    let result = tokio::task::spawn_blocking(move || {
+        disk::scan_dir(&path, top.clamp(1, 200), depth.clamp(1, 6))
+    })
+    .await
+    .unwrap_or(serde_json::json!({ "ok": false, "error": "scan worker failed" }));
+    Json(result)
 }

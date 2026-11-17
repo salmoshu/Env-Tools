@@ -851,8 +851,33 @@ ipcMain.handle("quota-reset", async (_event, provider, resetType, accountId) => 
   return result;
 });
 
-ipcMain.handle("get-analytics", async (_event, days, agent, targetId) => {
+// 额度估算：provider 近 N 秒 token 总量（本地/汇总目标；远端目标不支持）
+ipcMain.handle("get-disk-drives", async () => {
+  try { return await backendFetch("/api/disk/drives"); }
+  catch (err) { return { ok: false, error: err.message }; }
+});
+ipcMain.handle("disk-scan", async (_e, path, top, depth) => {
+  const q = `?path=${encodeURIComponent(path)}&top=${encodeURIComponent(top || 30)}&depth=${encodeURIComponent(depth || 2)}`;
+  try { return await backendFetch(`/api/disk/scan${q}`); }
+  catch (err) { return { ok: false, error: err.message }; }
+});
+
+ipcMain.handle("get-analytics-rolling", async (_event, agent, seconds, targetId, opts) => {
   const aggregate = targetId === "aggregate";
+  const extra = opts || {};
+  let query = `?agent=${encodeURIComponent(agent || "kimi")}&seconds=${encodeURIComponent(seconds || 3600)}` +
+    `${aggregate ? "&aggregate=1" : ""}`;
+  if (extra.at) query += `&at=${encodeURIComponent(extra.at)}`;
+  if (extra.window) query += `&window=${encodeURIComponent(extra.window)}`;
+  if (extra.history) query += "&history=1";
+  try {
+    return await backendFetch(`/api/analytics/rolling${query}`);
+  } catch (err) {
+    return { ok: false, error: `Rolling engine unavailable: ${err.message}` };
+  }
+});
+
+ipcMain.handle("get-analytics", async (_event, days, agent, targetId) => {  const aggregate = targetId === "aggregate";
   const query = `?days=${encodeURIComponent(days || 30)}&agent=${encodeURIComponent(agent || "all")}` +
     `${aggregate ? "&aggregate=1" : ""}`;
   if (aggregate) {
