@@ -10,6 +10,10 @@ export default function ResetChances({ account }) {
   const parts = [];
   const actions = [];
   let stale = Boolean(account.stale);
+  const credStatus = cards && cards.credential_status;
+  const credExpired = Boolean(credStatus && credStatus.expired);
+  const cacheExpired = Boolean(cards && cards.cache_expired);
+  const cacheAgeH = cards && cards.cache_age_hours != null ? Math.round(cards.cache_age_hours) : null;
   if (credits && typeof credits === "object") {
     const available = credits.available_count;
     const applicable = credits.applicable_available_count;
@@ -35,9 +39,22 @@ export default function ResetChances({ account }) {
   );
   return (
     <div className="limit-resets">
+      {credExpired && (
+        <div className="cred-expired-warning">
+          <span>{t("dash.credExpired")}{credStatus.exp_human ? `（${credStatus.exp_human}）` : ""}</span>
+          <button type="button" className="cred-reauth-btn" onClick={() => {
+            if (window.api && window.api.openZcode) window.api.openZcode();
+          }}>{t("dash.credReauth")}</button>
+        </div>
+      )}
+      {!credExpired && cacheExpired && (
+        <div className="cred-expired-warning mild">
+          {t("dash.cacheExpired").replace("{h}", String(cacheAgeH ?? "?"))}
+        </div>
+      )}
       <ResetChancesText account={account} renderActions={(close) => <>
         <div className="reset-expiry-actions">{actions.map((action) => button(action, close))}</div>
-        {stale ? <div className="reset-expiry-note">{t("dash.resetStaleHint")}</div> : null}
+        {stale && !credExpired ? <div className="reset-expiry-note">{t("dash.resetStaleHint")}</div> : null}
       </>}>
         {t("dash.resetChances")}: {parts.join(" · ")}
       </ResetChancesText>

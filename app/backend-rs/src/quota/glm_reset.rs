@@ -495,3 +495,79 @@ mod tests {
         assert_eq!(decrypt_value(&key, "enc:v1:only.two"), None);
     }
 }
+
+// ─── 凭证状态检测（v0.7.55：改善重置卡过期体验） ──────────────────────────
+
+/// JWT payload 的 exp（unix 秒）。JWT 格式 header.payload.signature，
+/// payload 是 base64url 编码的 JSON。解析失败返回 None（按未过期处理，
+/// 让 API 调用自己判断）。
+pub fn parse_jwt_exp(jwt: &str) -> Option<i64> {
+    let payload_b64 = jwt.split('.').nth(1)?;
+    let bytes = b64url_decode(payload_b64)?;
+    let json: Value = serde_json::from_slice(&bytes).ok()?;
+    json.get("exp").and_then(|v| v.as_i64())
+}
+
+/// 凭证文件最后修改时间（用于前端提示凭证多久没刷新）
+pub fn credential_mtime(profile: &AccountProfile) -> Option<i64> {
+    let path = crate::accounts::glm_reset_credentials_path(profile)?;
+    let meta = std::fs::metadata(path).ok()?;
+    meta.modified().ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+}
+
+/// 带凭证状态的重置卡采集：JWT 过期时明确标记（而非静默回退缓存），
+/// 缓存超过 MAX_CACHE_AGE_HOURS 也标记（避免过旧数据长期出现）。
+const MAX_CACHE_AGE_HOURS: i64 = 72;
+
+pub fn collect_reset_cards_with_status(profile: &AccountProfile) -> Option<Value> {
+    if !env_enabled("GLM_RESET_CARDS", true) {
+        return None;
+    }
+    let (jwt, maas) = load_zcode_credentials(profile)?;
+    let now = Local::now();
+    let now_ts = now.timestamp();
+
+    // 凭证状态
+    let jwt_exp = parse_jwt_exp(&jwt);
+    let credential_expired = jwt_exp.is_some_and(|exp| exp < now_ts);
+    let credential_path = crate::accounts::glm_reset_credentials_path(profile)
+        .map(|p| p.display().to_string()).unwrap_or_default();
+    let cred_mtime = credential_mtime(profile);
+
+    let mut result = if credential_expired {
+        // JWT 已过期：不调 API（必然 401），直接用缓存并标记
+        let cached = super::reset_cache::read(&reset_cache_path(profile, &jwt, &maas));
+        cached_reset_status(None, &cached, now)?
+    } else {
+        // 正常调用
+        collect_reset_cards(profile)?
+    };
+
+    // 附加凭证状态信息
+    result["credential_status"] = serde_json::json!({
+        "expired": credential_expired,
+        "exp": jwt_exp,
+        "exp_human": jwt_exp.map(|e| {
+            chrono::DateTime::from_timestamp(e, 0)
+                .map(|d| d.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string())
+                .unwrap_or_default()
+        }),
+        "file_mtime": cred_mtime,
+        "file_path": credential_path,
+    });
+
+    // 缓存期限检查
+    if result["stale"].as_bool().unwrap_or(false) {
+        if let Some(mtime) = cred_mtime {
+            let age_hours = (now_ts - mtime) / 3600;
+            result["cache_age_hours"] = serde_json::json!(age_hours);
+            if age_hours > MAX_CACHE_AGE_HOURS {
+                result["cache_expired"] = serde_json::json!(true);
+            }
+        }
+    }
+
+    Some(result)
+}

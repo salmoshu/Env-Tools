@@ -220,7 +220,13 @@ button:focus-visible, [role="button"]:focus-visible, th.sortable:focus-visible {
 /* 品牌规范：hover/active 只做颜色深浅变化，不做位移缩放 */
 @media (prefers-reduced-motion: no-preference) {
   body, .titlebar, .card, .qcard, .kpi-card, .provider, .tool-card, .dialog,
-  /* v0.7.54：主入口 header 选项卡（替代左侧栏三大入口）+ Jharu 风格侧栏 */
+  .app-sidebar, .settings-sidebar, .settings-main, .settings-card, .status, #tooltip, .cal-cell {
+    transition: background-color var(--dur) var(--ease),
+      border-color var(--dur) var(--ease), color var(--dur) var(--ease);
+  }
+}
+
+/* v0.7.54：主入口 header 选项卡（替代左侧栏三大入口）+ Jharu 风格侧栏 */
 .app-body-col { flex-direction: column !important; }
 .app-body-row { display: flex; flex: 1; min-height: 0; overflow: hidden; }
 
@@ -270,12 +276,6 @@ button:focus-visible, [role="button"]:focus-visible, th.sortable:focus-visible {
 .disk-nav-text { display: flex; flex-direction: column; line-height: 1.25; min-width: 0; }
 .disk-nav-label { font-size: 12.5px; font-weight: 500; }
 .disk-nav-sub { font-size: 10.5px; color: var(--faint); }
-
-.app-sidebar, .settings-sidebar, .settings-main, .settings-card, .status, #tooltip, .cal-cell {
-    transition: background-color var(--dur) var(--ease),
-      border-color var(--dur) var(--ease), color var(--dur) var(--ease);
-  }
-}
 
 /* --- 标题栏 --- */
 .titlebar {
@@ -1586,3 +1586,21 @@ tr.group-row .group-stats { margin-left: 10px; color: var(--faint); font-weight:
 
 /* Jharu 磁盘管理：安全等级徽章 */
 .safety-badge { font-size: 11px; font-weight: 600; white-space: nowrap; }
+
+/* GLM 重置卡凭证过期警告 + 重新授权按钮 */
+.cred-expired-warning {
+  display: flex; align-items: center; gap: 8px;
+  margin: 2px 0; padding: 3px 8px; border-radius: 6px;
+  background: rgba(255, 65, 72, 0.08); border: 1px solid rgba(255, 65, 72, 0.25);
+  font-size: 10.5px; color: var(--red);
+}
+.cred-expired-warning.mild {
+  background: rgba(255, 210, 48, 0.08); border-color: rgba(255, 210, 48, 0.25); color: var(--warn);
+}
+.cred-reauth-btn {
+  padding: 1px 8px; font-size: 10px; line-height: 16px;
+  color: var(--accent-text); background: var(--accent-soft);
+  border: 1px solid var(--accent-border); border-radius: 5px;
+  cursor: pointer; white-space: nowrap;
+}
+.cred-reauth-btn:hover { background: var(--accent-hover); }

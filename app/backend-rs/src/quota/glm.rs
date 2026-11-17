@@ -306,7 +306,7 @@ pub fn collect(profile: &AccountProfile) -> Result<Value, String> {
             account["membership"] = membership;
         }
     }
-    if let Some(cards) = super::glm_reset::collect_reset_cards(profile) {
+    if let Some(cards) = super::glm_reset::collect_reset_cards_with_status(profile) {
         account["reset_cards"] = cards;
     }
     // Start Plan（ZCode 通道）token 余额桶：并入窗口区展示

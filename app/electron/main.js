@@ -868,6 +868,24 @@ ipcMain.handle("disk-scan-full", async (_e, tab) => {
   try { return await backendFetch(`/api/disk/scan-full?tab=${encodeURIComponent(tab)}`); }
   catch (err) { return { ok: false, error: err.message }; }
 });
+ipcMain.handle("open-zcode", async () => {
+  const paths = [
+    "D:\Users\Salmos\AppData\Local\Programs\ZCode\ZCode.exe",
+    process.env.LOCALAPPDATA + "\Programs\ZCode\ZCode.exe",
+    "C:\Program Files\ZCode\ZCode.exe",
+  ];
+  for (const p of paths) {
+    try {
+      const { execFile } = require("child_process");
+      const fs = require("fs");
+      if (fs.existsSync(p)) {
+        require("child_process").exec(`start "" "${p}"`);
+        return { ok: true, path: p };
+      }
+    } catch {}
+  }
+  return { ok: false, error: "ZCode executable not found" };
+});
 ipcMain.handle("disk-deep", async (_e, path, depth) => {
   const q = `?path=${encodeURIComponent(path)}&depth=${encodeURIComponent(depth || 2)}`;
   return backendFetch(`/api/disk/deep${q}`).catch(e => ({ ok: false, error: e.message }));

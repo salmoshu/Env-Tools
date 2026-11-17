@@ -17,6 +17,10 @@ pub fn path(provider: &str, key: &str) -> PathBuf {
         .join("reset-expiry").join(provider).join(format!("{key}.json"))
 }
 
+pub fn read(path: &Path) -> Value {
+    crate::settings::read_json(path).unwrap_or_else(|_| serde_json::json!({}))
+}
+
 pub fn update(path: &Path, merge: impl FnOnce(&Value) -> Option<Value>) -> Option<Value> {
     let _lock = CACHE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let previous = crate::settings::read_json(path).unwrap_or(Value::Null);

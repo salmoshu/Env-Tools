@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld("api", {
   diskDevScan: () => ipcRenderer.invoke("disk-dev-scan"),
   diskAiTools: () => ipcRenderer.invoke("disk-ai-tools"),
   diskScanFull: (tab) => ipcRenderer.invoke("disk-scan-full", tab),
+  openZcode: () => ipcRenderer.invoke("open-zcode"),
   diskClean: (paths) => ipcRenderer.invoke("disk-clean", paths),
   diskDeep: (path, depth) => ipcRenderer.invoke("disk-deep", path, depth),
   diskDupes: (roots, min) => ipcRenderer.invoke("disk-dupes", roots, min),
