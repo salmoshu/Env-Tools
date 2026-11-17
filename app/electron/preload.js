@@ -25,6 +25,8 @@ contextBridge.exposeInMainWorld("api", {
   onRefreshComplete: (callback) => subscribe("refresh-complete", callback),
   getAnalytics: (days, agent, target) => ipcRenderer.invoke("get-analytics", days, agent, target),
   getDiskDrives: () => ipcRenderer.invoke("get-disk-drives"),
+  diskDevScan: () => ipcRenderer.invoke("disk-dev-scan"),
+  diskAiTools: () => ipcRenderer.invoke("disk-ai-tools"),
   diskScan: (path, top, depth) => ipcRenderer.invoke("disk-scan", path, top, depth),
   getAnalyticsRolling: (agent, seconds, target, opts) => ipcRenderer.invoke("get-analytics-rolling", agent, seconds, target, opts),
   getBackendStatus: () => ipcRenderer.invoke("get-backend-status"),

@@ -856,6 +856,14 @@ ipcMain.handle("get-disk-drives", async () => {
   try { return await backendFetch("/api/disk/drives"); }
   catch (err) { return { ok: false, error: err.message }; }
 });
+ipcMain.handle("disk-dev-scan", async () => {
+  try { return await backendFetch("/api/disk/dev"); }
+  catch (err) { return { ok: false, error: err.message }; }
+});
+ipcMain.handle("disk-ai-tools", async () => {
+  try { return await backendFetch("/api/disk/ai-tools"); }
+  catch (err) { return { ok: false, error: err.message }; }
+});
 ipcMain.handle("disk-scan", async (_e, path, top, depth) => {
   const q = `?path=${encodeURIComponent(path)}&top=${encodeURIComponent(top || 30)}&depth=${encodeURIComponent(depth || 2)}`;
   try { return await backendFetch(`/api/disk/scan${q}`); }

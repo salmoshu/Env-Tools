@@ -37,6 +37,7 @@ use tokio::sync::Mutex;
 
 mod accounts;
 mod disk;
+mod jharu;
 mod analytics;
 mod apply_update;
 mod quota;
@@ -877,6 +878,8 @@ async fn main() {
         .route("/api/analytics/rolling", get(analytics_rolling))
         .route("/api/disk/drives", get(disk_drives))
         .route("/api/disk/scan", get(disk_scan))
+        .route("/api/disk/dev", get(disk_dev))
+        .route("/api/disk/ai-tools", get(disk_ai_tools))
         .route("/api/usage", get(usage))
         .route("/api/backend-status", get(backend_status))
         .route("/api/settings", get(get_settings).post(update_settings))
@@ -962,4 +965,20 @@ async fn disk_scan(
     .await
     .unwrap_or(serde_json::json!({ "ok": false, "error": "scan worker failed" }));
     Json(result)
+}
+
+/// /api/disk/dev：开发缓存扫描（25+ 规则，安全分级）
+async fn disk_dev() -> Json<Value> {
+    let result = tokio::task::spawn_blocking(|| jharu::scan_dev_caches())
+        .await
+        .unwrap_or_default();
+    Json(serde_json::json!({ "ok": true, "items": result }))
+}
+
+/// /api/disk/ai-tools：AI 编码工具磁盘痕迹
+async fn disk_ai_tools() -> Json<Value> {
+    let result = tokio::task::spawn_blocking(|| jharu::ai_tool_locations())
+        .await
+        .unwrap_or_default();
+    Json(serde_json::json!({ "ok": true, "items": result }))
 }
