@@ -247,6 +247,16 @@ export default function App() {
             >
               <span className="nav-icon"><ToolsIcon /></span> {t("nav.tools")}
             </div>
+            <div
+              className={`side-item nav${route === "disk" ? " active" : ""}`}
+              role="button"
+              tabIndex={0}
+              onClick={() => navigate("disk")}
+              onKeyDown={activateOnKeys(() => navigate("disk"))}
+              title={t("tip.disk")}
+            >
+              <span className="nav-icon"><DiskIcon /></span> {t("nav.disk")}
+            </div>
           </nav>
           {/* 两页常驻、只切显示：此前每次切页都卸载重建 Dashboard，
               实测切回时有 85–97ms 长任务和帧尖峰（切页卡顿主因） */}
@@ -259,6 +269,9 @@ export default function App() {
               refreshing={refreshing}
               onRefresh={triggerRefresh}
             />
+          </div>
+          <div className="page-scroll" style={{ display: route === "disk" ? undefined : "none" }}>
+            <DiskPage />
           </div>
         </div>
       )}
