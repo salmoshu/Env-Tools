@@ -206,10 +206,11 @@ function useQuotaEstimates(accounts, target) {
   useEffect(() => {
     if (!fingerprint) return;
     let cancelled = false;
-    const wants = new Map(); // 键 provider|bucketedElapsed → { key, elapsed, at, window }
+    const wants = new Map(); // 存储键 = key|bucket（与 quotaEstimateLookup 的查询键一致）
     for (const token of fingerprint.split("&")) {
       const [key, bucket, win, at] = token.split("|");
-      wants.set(token, { key, elapsed: Number(bucket), win: Number(win), at: Number(at) });
+      const storeKey = `${key}|${bucket}`;
+      wants.set(storeKey, { key, elapsed: Number(bucket), win: Number(win), at: Number(at) });
     }
     Promise.all(
       [...wants.entries()].map(async ([storeKey, { key, elapsed, win, at }]) => {
