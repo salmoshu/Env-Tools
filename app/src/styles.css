@@ -220,7 +220,55 @@ button:focus-visible, [role="button"]:focus-visible, th.sortable:focus-visible {
 /* 品牌规范：hover/active 只做颜色深浅变化，不做位移缩放 */
 @media (prefers-reduced-motion: no-preference) {
   body, .titlebar, .card, .qcard, .kpi-card, .provider, .tool-card, .dialog,
-  .app-sidebar, .settings-sidebar, .settings-main, .settings-card, .status, #tooltip, .cal-cell {
+  /* v0.7.54：主入口 header 选项卡（替代左侧栏三大入口）+ Jharu 风格侧栏 */
+.app-main-header {
+  display: flex; align-items: center; gap: 2px; flex: none;
+  padding: 8px 16px 0; border-bottom: 1px solid var(--border);
+}
+.main-tab {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 8px 16px 10px; border: none; background: transparent;
+  font-size: 12.5px; font-weight: 500; color: var(--faint);
+  cursor: pointer; border-bottom: 2px solid transparent;
+  border-radius: 8px 8px 0 0; transition: color 0.15s, border-color 0.15s;
+}
+.main-tab:hover { color: var(--dim); }
+.main-tab.active {
+  color: var(--accent-text); font-weight: 600;
+  border-bottom-color: var(--accent);
+}
+.main-tab svg { width: 14px; height: 14px; }
+
+/* Jharu 风格磁盘管理子导航侧栏 */
+.disk-sidebar {
+  width: 200px; flex: none; border-right: 1px solid var(--border);
+  background: var(--sidebar-bg); display: flex; flex-direction: column;
+  gap: 12px; padding: 14px 10px; overflow-y: auto;
+}
+.disk-nav-group { display: flex; flex-direction: column; gap: 1px; }
+.disk-nav-title {
+  font-size: 10px; font-weight: 600; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--faint); padding: 0 10px 3px;
+}
+.disk-nav-item {
+  display: flex; align-items: center; gap: 10px;
+  border: none; background: none; text-align: left;
+  padding: 6px 10px; border-radius: 8px; cursor: pointer;
+  color: var(--text); font-size: 13px;
+}
+.disk-nav-item:hover { background: var(--hover-soft); }
+.disk-nav-item.active { background: var(--accent-soft); }
+.disk-nav-item.active .disk-nav-label { color: var(--accent-text); font-weight: 600; }
+.disk-nav-icon {
+  width: 24px; height: 24px; border-radius: 6px;
+  background: var(--inset); display: flex; align-items: center;
+  justify-content: center; font-size: 12px; color: var(--dim); flex: none;
+}
+.disk-nav-text { display: flex; flex-direction: column; line-height: 1.25; min-width: 0; }
+.disk-nav-label { font-size: 12.5px; font-weight: 500; }
+.disk-nav-sub { font-size: 10.5px; color: var(--faint); }
+
+.app-sidebar, .settings-sidebar, .settings-main, .settings-card, .status, #tooltip, .cal-cell {
     transition: background-color var(--dur) var(--ease),
       border-color var(--dur) var(--ease), color var(--dur) var(--ease);
   }

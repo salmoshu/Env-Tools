@@ -226,38 +226,18 @@ export default function App() {
         <SettingsPage lastPayload={lastPayload} refreshing={refreshing} onRefresh={triggerRefresh} />
       ) : (
         <div className="app-body">
-          <nav className="app-sidebar">
-            <div
-              className={`side-item nav${route === "dashboard" ? " active" : ""}`}
-              role="button"
-              tabIndex={0}
-              onClick={() => navigate("dashboard")}
-              onKeyDown={activateOnKeys(() => navigate("dashboard"))}
-              title={t("tip.analytics")}
-            >
-              <span className="nav-icon"><AnalyticsIcon /></span> {t("nav.analytics")}
-            </div>
-            <div
-              className={`side-item nav${route === "tools" ? " active" : ""}`}
-              role="button"
-              tabIndex={0}
-              onClick={() => navigate("tools")}
-              onKeyDown={activateOnKeys(() => navigate("tools"))}
-              title={t("tip.tools")}
-            >
-              <span className="nav-icon"><ToolsIcon /></span> {t("nav.tools")}
-            </div>
-            <div
-              className={`side-item nav${route === "disk" ? " active" : ""}`}
-              role="button"
-              tabIndex={0}
-              onClick={() => navigate("disk")}
-              onKeyDown={activateOnKeys(() => navigate("disk"))}
-              title={t("tip.disk")}
-            >
-              <span className="nav-icon"><DiskIcon /></span> {t("nav.disk")}
-            </div>
-          </nav>
+          {/* v0.7.54：主入口迁至 header，侧栏改为 Jharu 风格的分区子导航 */}
+          <div className="app-main-header">
+            <button type="button" className={`main-tab${route === "dashboard" ? " active" : ""}`} onClick={() => navigate("dashboard")}>
+              <AnalyticsIcon /> <span>{t("nav.analytics")}</span>
+            </button>
+            <button type="button" className={`main-tab${route === "tools" ? " active" : ""}`} onClick={() => navigate("tools")}>
+              <ToolsIcon /> <span>{t("nav.tools")}</span>
+            </button>
+            <button type="button" className={`main-tab${route === "disk" ? " active" : ""}`} onClick={() => navigate("disk")}>
+              <DiskIcon /> <span>{t("nav.disk")}</span>
+            </button>
+          </div>
           {/* 两页常驻、只切显示：此前每次切页都卸载重建 Dashboard，
               实测切回时有 85–97ms 长任务和帧尖峰（切页卡顿主因） */}
           <div className="page-scroll" style={{ display: route === "tools" ? undefined : "none" }}>
@@ -274,7 +254,7 @@ export default function App() {
             <DiskPage />
           </div>
         </div>
-      )}
+      )}}
     </div>
   );
 }
