@@ -15,6 +15,19 @@ pub fn deep_scan(root: &str, max_depth: usize) -> Value {
     let start = std::time::Instant::now();
     let entries = scan_level(path, 0, max_depth);
     let total: u64 = entries.iter().filter_map(|e| e["size"].as_u64()).sum();
+    // 根目录扫描顺手记录顶层文件夹体积，供概览的系统盘树图使用（同
+    // Jharu：树图不测量新东西，只复用最近一次深度扫描的结果）。
+    let is_root_like = path.parent().is_none()
+        || root.trim_end_matches('\\').len() <= 3; // "C:\"
+    if is_root_like {
+        let folders: Vec<(String, u64)> = entries.iter()
+            .filter(|e| e["is_dir"].as_bool().unwrap_or(false) && e["depth"].as_u64() == Some(1))
+            .filter_map(|e| Some((e["path"].as_str()?.to_string(), e["size"].as_u64()?)))
+            .collect();
+        if !folders.is_empty() {
+            crate::jharu_overview::record_system_map(root, &folders, total);
+        }
+    }
     serde_json::json!({
         "ok": true, "path": root, "total": total, "total_h": hs(total),
         "elapsed_ms": start.elapsed().as_millis() as u64, "entries": entries,
@@ -44,6 +57,7 @@ fn scan_level(dir: &Path, depth: usize, max_depth: usize) -> Vec<Value> {
         out.push(serde_json::json!({
             "name": p.file_name().map(|n| n.to_string_lossy()).unwrap_or_default(),
             "path": p.display().to_string(), "size": sz, "size_h": hs(*sz),
+            "depth": depth + 1,
             "is_dir": is_dir, "files": fc, "kind": kind, "protected": protected, "hint": hint,
         }));
     }
@@ -536,10 +550,6 @@ pub fn history_dir_compare(root: &str) -> Value {
         "total_delta": total_delta, "total_delta_h": hs(total_delta.unsigned_abs()),
         "has_previous": prev.is_some() })
 }
-pub fn bin_list() -> Value { json_err("not implemented") }
-pub fn bin_purge() -> Value { json_err("not implemented") }
-pub fn bin_restore(_p: &str) -> Value { json_err("not implemented") }
-pub fn system_space() -> Value { json_err("not implemented") }
-pub fn startup_scan() -> Value { json_err("not implemented") }
-pub fn apps_list() -> Value { json_err("not implemented") }
+// bin_* / system_space / startup_scan / apps_list 已由 jharu_bin.rs 与
+// jharu_manage.rs 完整实现（trash + winreg crate 方案），此处仅保留进程评级。
 pub fn process_list() -> Value { process_rated() }

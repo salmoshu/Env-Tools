@@ -249,7 +249,7 @@ fn dir_stats(path: &PathBuf, max_depth: usize) -> (u64, u64) {
     (size, files)
 }
 
-fn is_any_tool_running(names: &[&str]) -> bool {
+pub(crate) fn is_any_tool_running(names: &[&str]) -> bool {
     use std::process::Command;
     let output = Command::new("tasklist")
         .arg("/FO").arg("CSV").arg("/NH")

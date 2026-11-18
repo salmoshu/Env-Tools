@@ -886,19 +886,104 @@ ipcMain.handle("disk-worktrees", async (_e, path) => {
   return backendFetch(`/api/disk/worktrees${q}`).catch(e => ({ ok: false, error: e.message }));
 });
 ipcMain.handle("disk-bin", async () => backendFetch("/api/disk/bin").catch(e => ({ ok: false, error: e.message })));
-ipcMain.handle("disk-bin-purge", async () => backendFetch("/api/disk/bin/purge", { method: "POST" }).catch(e => ({ ok: false, error: e.message })));
+ipcMain.handle("disk-bin-log", async () => backendFetch("/api/disk/bin/log").catch(e => ({ ok: false, error: e.message })));
+ipcMain.handle("disk-bin-purge", async (_e, body) => {
+  try {
+    return await backendFetch("/api/disk/bin/purge", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {}),
+    });
+  } catch (err) { return { ok: false, error: err.message }; }
+});
+ipcMain.handle("disk-bin-restore", async (_e, ids) => {
+  try {
+    return await backendFetch("/api/disk/bin/restore", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids }),
+    });
+  } catch (err) { return { ok: false, error: err.message }; }
+});
 ipcMain.handle("disk-system", async () => backendFetch("/api/disk/system").catch(e => ({ ok: false, error: e.message })));
+ipcMain.handle("disk-system-action", async (_e, action, shadow) => {
+  try {
+    return await backendFetch("/api/disk/system/action", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, shadow }),
+    });
+  } catch (err) { return { ok: false, error: err.message }; }
+});
 ipcMain.handle("disk-startup", async () => backendFetch("/api/disk/startup").catch(e => ({ ok: false, error: e.message })));
+ipcMain.handle("disk-startup-set", async (_e, ids, enable) => {
+  try {
+    return await backendFetch("/api/disk/startup/set", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids, enable }),
+    });
+  } catch (err) { return { ok: false, error: err.message }; }
+});
 ipcMain.handle("disk-apps", async () => backendFetch("/api/disk/apps").catch(e => ({ ok: false, error: e.message })));
+ipcMain.handle("disk-app-uninstall", async (_e, command) => {
+  try {
+    return await backendFetch("/api/disk/apps/uninstall", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ command }),
+    });
+  } catch (err) { return { ok: false, error: err.message }; }
+});
+ipcMain.handle("disk-sandboxes", async () => backendFetch("/api/disk/sandboxes").catch(e => ({ ok: false, error: e.message })));
+// 清理任务（后台 job + 进度轮询；IPC 桥无法直连 SSE，轮询是等价形态）
+ipcMain.handle("clean-start", async (_e, items, source) => {
+  const norm = (items || []).map(it => typeof it === "string"
+    ? { path: it, source: source || "清理" }
+    : { path: it.path, size: it.size, source: it.source || source || "清理" });
+  try {
+    return await backendFetch("/api/disk/clean/start", 15000, { items: norm });
+  } catch (err) { return { ok: false, error: err.message }; }
+});
+ipcMain.handle("clean-progress", async (_e, job) => {
+  try { return await backendFetch(`/api/disk/clean/progress?job=${encodeURIComponent(job)}`); }
+  catch (err) { return { ok: false, error: err.message }; }
+});
+ipcMain.handle("clean-cancel", async (_e, job) => {
+  try { return await backendFetch("/api/disk/clean/cancel", 15000, { job }); }
+  catch (err) { return { ok: false, error: err.message }; }
+});
+ipcMain.handle("disk-bin-purge-start", async (_e, body) => {
+  try { return await backendFetch("/api/disk/bin/purge/start", 15000, body || {}); }
+  catch (err) { return { ok: false, error: err.message }; }
+});
+ipcMain.handle("disk-overview", async () => backendFetch("/api/disk/overview").catch(e => ({ ok: false, error: e.message })));
+ipcMain.handle("disk-overview-cleanable", async () => backendFetch("/api/disk/overview/cleanable", 180000).catch(e => ({ ok: false, error: e.message })));
+ipcMain.handle("disk-overview-live", async () => backendFetch("/api/disk/overview/live").catch(e => ({ ok: false, error: e.message })));
+ipcMain.handle("disk-autocare", async () => backendFetch("/api/disk/autocare").catch(e => ({ ok: false, error: e.message })));
+ipcMain.handle("disk-autocare-update", async (_e, patch) => {
+  try {
+    return await backendFetch("/api/disk/autocare", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch || {}),
+    });
+  } catch (err) { return { ok: false, error: err.message }; }
+});
+ipcMain.handle("disk-autocare-run", async () => backendFetch("/api/disk/autocare/run", { method: "POST" }).catch(e => ({ ok: false, error: e.message })));
 ipcMain.handle("disk-processes", async () => backendFetch("/api/disk/processes").catch(e => ({ ok: false, error: e.message })));
 ipcMain.handle("disk-history", async () => backendFetch("/api/disk/history").catch(e => ({ ok: false, error: e.message })));
 ipcMain.handle("disk-desktop", async () => backendFetch("/api/disk/desktop").catch(e => ({ ok: false, error: e.message })));
-ipcMain.handle("disk-clean", async (_e, paths) => {
+ipcMain.handle("disk-clean", async (_e, items, source) => {
+  // items: 字符串数组（兼容旧调用）或 {path,size} 对象数组；source: 来源标签（写日志）
   try {
+    const norm = (items || []).map(it => typeof it === "string"
+      ? { path: it, source: source || "清理" }
+      : { path: it.path, size: it.size, source: it.source || source || "清理" });
     const res = await backendFetch("/api/disk/clean", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ paths }),
+      body: JSON.stringify({ items: norm }),
     });
     return res;
   } catch (err) { return { ok: false, error: err.message }; }

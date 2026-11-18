@@ -40,6 +40,11 @@ mod disk;
 mod jharu;
 mod jharu_full;
 mod jharu_extra;
+mod jharu_bin;
+mod jharu_manage;
+mod jharu_sandbox;
+mod jharu_autocare;
+mod jharu_overview;
 mod analytics;
 mod apply_update;
 mod quota;
@@ -889,10 +894,27 @@ async fn main() {
         .route("/api/disk/projects", get(disk_projects))
         .route("/api/disk/worktrees", get(disk_worktrees))
         .route("/api/disk/bin", get(disk_bin))
+        .route("/api/disk/bin/log", get(disk_bin_log))
         .route("/api/disk/bin/purge", axum::routing::post(disk_bin_purge))
+        .route("/api/disk/bin/restore", axum::routing::post(disk_bin_restore))
+        .route("/api/disk/bin/cancel", axum::routing::post(disk_bin_cancel))
+        .route("/api/disk/clean/start", axum::routing::post(disk_clean_start))
+        .route("/api/disk/clean/progress", get(disk_clean_progress))
+        .route("/api/disk/clean/cancel", axum::routing::post(disk_clean_cancel))
+        .route("/api/disk/bin/purge/start", axum::routing::post(disk_bin_purge_start))
         .route("/api/disk/system", get(disk_system))
+        .route("/api/disk/system/action", axum::routing::post(disk_system_action))
         .route("/api/disk/startup", get(disk_startup))
+        .route("/api/disk/startup/set", axum::routing::post(disk_startup_set))
         .route("/api/disk/apps", get(disk_apps))
+        .route("/api/disk/apps/uninstall", axum::routing::post(disk_app_uninstall))
+        .route("/api/disk/sandboxes", get(disk_sandboxes))
+        .route("/api/disk/sandboxes/cleanable", get(disk_sandbox_cleanable))
+        .route("/api/disk/overview", get(disk_overview))
+        .route("/api/disk/overview/cleanable", get(disk_overview_cleanable))
+        .route("/api/disk/overview/live", get(disk_overview_live))
+        .route("/api/disk/autocare", get(autocare_status).post(autocare_update))
+        .route("/api/disk/autocare/run", axum::routing::post(autocare_run))
         .route("/api/disk/processes", get(disk_processes))
         .route("/api/disk/history", get(disk_history))
         .route("/api/disk/desktop", get(disk_desktop))
@@ -928,6 +950,8 @@ async fn main() {
     let bound = listener.local_addr().map(|a| a.port()).unwrap_or(port);
     println!("LISTENING {bound}");
     println!("env-tools-api {} on http://127.0.0.1:{bound}", APP_VERSION);
+    // 自动养护后台任务（默认关闭；开启后按间隔清理 Safe+自动重建缓存）。
+    jharu_autocare::start();
     // 启动预热：local 与 aggregate 各扫一遍（WSL 9P 冷扫 20s+，赶在用户首次
     // 切换/打开看板之前）。scope 级锁保证预热不阻塞其它范围的请求。
     {
@@ -1009,18 +1033,22 @@ async fn disk_scan_full(Query(params): Query<HashMap<String, String>>) -> Json<V
     Json(result)
 }
 
-/// POST /api/disk/clean  body: { "paths": ["C:\..."] }
-/// 移入回收站（PowerShell VisualBasic FileIO）
+/// POST /api/disk/clean  body: { "paths": ["C:\..."] } 或 { "items": [{path,size,source}] }
+/// 移入回收站（trash crate shell 调用）并写入清理日志（trash-log.jsonl）
 async fn disk_clean(
     axum::extract::State(_state): axum::extract::State<AppState>,
     axum::extract::Json(body): axum::extract::Json<Value>,
 ) -> Json<Value> {
-    let paths: Vec<String> = body.get("paths")
-        .and_then(|v| v.as_array())
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
-        .unwrap_or_default();
-    if paths.is_empty() { return Json(serde_json::json!({ "ok": false, "error": "paths required" })); }
-    let result = tokio::task::spawn_blocking(move || jharu_full::move_to_recycle_bin(&paths))
+    let items: Vec<Value> = if let Some(arr) = body.get("items").and_then(|v| v.as_array()) {
+        arr.clone()
+    } else {
+        body.get("paths")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_str().map(|p| serde_json::json!({"path": p}))).collect())
+            .unwrap_or_default()
+    };
+    if items.is_empty() { return Json(serde_json::json!({ "ok": false, "error": "paths required" })); }
+    let result = tokio::task::spawn_blocking(move || jharu_bin::clean_and_journal(&items))
         .await
         .unwrap_or(serde_json::json!({ "ok": false, "error": "clean worker failed" }));
     Json(result)
@@ -1038,18 +1066,98 @@ async fn disk_dupes(Query(p): Query<HashMap<String, String>>) -> Json<Value> {
 }
 async fn disk_projects(Query(p): Query<HashMap<String, String>>) -> Json<Value> {
     let path = p.get("path").cloned().unwrap_or_default();
-    if path.is_empty() { return Json(jharu_extra::system_space()); }
+    if path.is_empty() { return Json(serde_json::json!({ "ok": false, "error": "path required" })); }
     Json(spawn_scan(move || jharu_extra::projects_scan(&path)))
 }
 async fn disk_worktrees(Query(p): Query<HashMap<String, String>>) -> Json<Value> {
     let path = p.get("path").cloned().unwrap_or_default();
     Json(spawn_scan(move || jharu_extra::worktrees_scan(&path)))
 }
-async fn disk_bin() -> Json<Value> { Json(spawn_scan(|| jharu_extra::bin_list())) }
-async fn disk_bin_purge() -> Json<Value> { Json(spawn_scan(|| jharu_extra::bin_purge())) }
-async fn disk_system() -> Json<Value> { Json(spawn_scan(|| jharu_extra::system_space())) }
-async fn disk_startup() -> Json<Value> { Json(spawn_scan(|| jharu_extra::startup_scan())) }
-async fn disk_apps() -> Json<Value> { Json(spawn_scan(|| jharu_extra::apps_list())) }
+async fn disk_bin() -> Json<Value> { Json(spawn_scan(jharu_bin::bin_list)) }
+async fn disk_bin_log() -> Json<Value> { Json(spawn_scan(jharu_bin::bin_log)) }
+async fn disk_bin_purge(axum::extract::Json(body): axum::extract::Json<Value>) -> Json<Value> {
+    // body: { ids?: [{id, deleted}], scope?: "all"|"older"|"app_older", days?: u32, token?: string }
+    let ids: Vec<jharu_bin::PurgeRequest> = body.get("ids").and_then(|v| v.as_array()).map(|a| a.iter()
+        .filter_map(|x| Some(jharu_bin::PurgeRequest {
+            id: x["id"].as_str()?.to_string(),
+            deleted: x["deleted"].as_i64(),
+        })).collect()).unwrap_or_default();
+    let scope = body.get("scope").and_then(|v| v.as_str()).unwrap_or("all").to_string();
+    let days = body.get("days").and_then(|v| v.as_u64()).unwrap_or(0).min(u32::MAX as u64) as u32;
+    let token = body.get("token").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    Json(spawn_scan(move || jharu_bin::bin_purge(&ids, &scope, days, &token)))
+}
+async fn disk_bin_restore(axum::extract::Json(body): axum::extract::Json<Value>) -> Json<Value> {
+    let ids: Vec<String> = body.get("ids").and_then(|v| v.as_array()).map(|a| a.iter()
+        .filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
+    Json(spawn_scan(move || jharu_bin::bin_restore(&ids)))
+}
+async fn disk_bin_cancel(axum::extract::Json(body): axum::extract::Json<Value>) -> Json<Value> {
+    let token = body.get("token").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    Json(jharu_bin::bin_cancel(&token))
+}
+/// POST /api/disk/clean/start body: {items:[{path,size,source}]} → {job}
+/// 后台逐项移入回收站，进度经 /clean/progress 轮询（Electron IPC 无法直连 SSE）。
+async fn disk_clean_start(axum::extract::Json(body): axum::extract::Json<Value>) -> Json<Value> {
+    let items: Vec<Value> = body.get("items").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    if items.is_empty() { return Json(serde_json::json!({ "ok": false, "error": "paths required" })); }
+    Json(jharu_bin::start_clean_job(&items))
+}
+async fn disk_clean_progress(Query(p): Query<HashMap<String, String>>) -> Json<Value> {
+    let Some(job) = p.get("job").and_then(|v| v.parse::<u64>().ok()) else {
+        return Json(serde_json::json!({ "ok": false, "error": "job required" }));
+    };
+    Json(jharu_bin::job_progress(job))
+}
+async fn disk_clean_cancel(axum::extract::Json(body): axum::extract::Json<Value>) -> Json<Value> {
+    let Some(job) = body.get("job").and_then(|v| v.as_u64()) else {
+        return Json(serde_json::json!({ "ok": false, "error": "job required" }));
+    };
+    Json(jharu_bin::cancel_job(job))
+}
+/// POST /api/disk/bin/purge/start body: {ids?, scope?, days?} → {job}
+async fn disk_bin_purge_start(axum::extract::Json(body): axum::extract::Json<Value>) -> Json<Value> {
+    let ids: Vec<jharu_bin::PurgeRequest> = body.get("ids").and_then(|v| v.as_array()).map(|a| a.iter()
+        .filter_map(|x| Some(jharu_bin::PurgeRequest {
+            id: x["id"].as_str()?.to_string(),
+            deleted: x["deleted"].as_i64(),
+        })).collect()).unwrap_or_default();
+    let scope = body.get("scope").and_then(|v| v.as_str()).unwrap_or("all").to_string();
+    let days = body.get("days").and_then(|v| v.as_u64()).unwrap_or(0).min(u32::MAX as u64) as u32;
+    Json(jharu_bin::start_purge_job(&ids, &scope, days))
+}
+async fn disk_system() -> Json<Value> { Json(spawn_scan(jharu_manage::system_space)) }
+async fn disk_system_action(axum::extract::Json(body): axum::extract::Json<Value>) -> Json<Value> {
+    let action = body.get("action").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let shadow = body.get("shadow").and_then(|v| v.as_str()).map(String::from);
+    Json(spawn_scan(move || jharu_manage::system_space_action(&action, shadow.as_deref())))
+}
+async fn disk_startup() -> Json<Value> { Json(spawn_scan(jharu_manage::startup_scan)) }
+async fn disk_startup_set(axum::extract::Json(body): axum::extract::Json<Value>) -> Json<Value> {
+    let ids: Vec<String> = body.get("ids").and_then(|v| v.as_array()).map(|a| a.iter()
+        .filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
+    let enable = body.get("enable").and_then(|v| v.as_bool()).unwrap_or(true);
+    Json(spawn_scan(move || jharu_manage::set_startup_enabled(&ids, enable)))
+}
+async fn disk_apps() -> Json<Value> { Json(spawn_scan(jharu_manage::apps_list)) }
+async fn disk_app_uninstall(axum::extract::Json(body): axum::extract::Json<Value>) -> Json<Value> {
+    let cmd = body.get("command").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    Json(jharu_manage::run_uninstaller(&cmd))
+}
+async fn disk_sandboxes() -> Json<Value> { Json(spawn_scan(jharu_sandbox::sandboxes_scan)) }
+async fn disk_sandbox_cleanable(Query(p): Query<HashMap<String, String>>) -> Json<Value> {
+    let dirname = p.get("pkg").cloned().unwrap_or_default();
+    if dirname.is_empty() { return Json(serde_json::json!({ "ok": false, "error": "pkg required" })); }
+    Json(spawn_scan(move || jharu_sandbox::sandbox_cleanable(&dirname)))
+}
+async fn disk_overview() -> Json<Value> { Json(spawn_scan(jharu_overview::overview_quick)) }
+async fn disk_overview_cleanable() -> Json<Value> { Json(spawn_scan(jharu_overview::overview_cleanable)) }
+async fn disk_overview_live() -> Json<Value> { Json(jharu_overview::system_live()) }
+async fn autocare_status() -> Json<Value> { Json(jharu_autocare::status()) }
+async fn autocare_update(axum::extract::Json(body): axum::extract::Json<Value>) -> Json<Value> {
+    Json(jharu_autocare::update(&body))
+}
+async fn autocare_run() -> Json<Value> { Json(spawn_scan(jharu_autocare::run_now)) }
 async fn disk_processes() -> Json<Value> { Json(spawn_scan(|| jharu_extra::process_list())) }
 async fn disk_history() -> Json<Value> { Json(spawn_scan(|| jharu_extra::history_compare())) }
 async fn disk_desktop() -> Json<Value> { Json(spawn_scan(|| jharu_extra::desktop_scan())) }

@@ -1,6 +1,6 @@
 [package]
 name = "env-tools-api"
-version = "0.7.52"
+version = "0.8.0"
 edition = "2021"
 description = "Env-Tools desktop local API gateway (axum): analytics/usage relay with single-flight caching"
 
@@ -22,6 +22,10 @@ flate2 = { version = "1", default-features = false, features = ["rust_backend"] 
 # sha256 派生串），无替代品只能自实现解密；RustCrypto 纯 Rust 小 crate
 aes-gcm = "0.10"
 sha2 = "0.10"
+# 回收站枚举/永久删除/还原（trash::os_limited，与 Jharu bin.rs 同源方案）
+trash = "5"
+# 启动项 Run 键 / StartupApproved 开关 / 卸载表读取（Jharu startup.rs、apps.rs 同源方案）
+winreg = "0.52"
 
 [profile.release]
 opt-level = 3

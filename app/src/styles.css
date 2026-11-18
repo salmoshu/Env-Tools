@@ -275,7 +275,7 @@ button:focus-visible, [role="button"]:focus-visible, th.sortable:focus-visible {
 }
 .disk-nav-text { display: flex; flex-direction: column; line-height: 1.25; min-width: 0; }
 .disk-nav-label { font-size: 12.5px; font-weight: 500; }
-.disk-nav-sub { font-size: 10.5px; color: var(--faint); }
+.disk-nav-sub { font-size: 10.5px; color: var(--dim); }
 
 /* --- 标题栏 --- */
 .titlebar {
@@ -1605,3 +1605,35 @@ tr.group-row .group-stats { margin-left: 10px; color: var(--faint); font-weight:
 }
 .cred-reauth-btn:hover { background: var(--accent-hover); }
 .cred-reauth-btn:disabled { opacity: 0.55; cursor: default; }
+
+/* ── 通用按钮（磁盘管理页等）：对齐 refresh-inline 的 token 方案 ── */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  height: 30px; padding: 0 14px;
+  border: 1px solid var(--border); background: transparent; color: var(--dim);
+  font: 600 12px/1 var(--font-ui); border-radius: var(--r-sm); cursor: pointer;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease),
+    border-color var(--dur) var(--ease);
+}
+.btn:hover:not(:disabled) { background: var(--hover); color: var(--text); border-color: var(--hairline); }
+.btn:disabled { opacity: 0.5; cursor: default; }
+.btn.btn-primary { background: var(--accent); border-color: transparent; color: var(--on-accent); }
+.btn.btn-primary:hover:not(:disabled) { background: var(--accent-strong); color: var(--on-accent); }
+.btn.btn-primary:disabled { opacity: 0.5; }
+
+/* ── 概览系统盘树图（.ov-map-box）：蓝色梯度随主题，浅档自动换深字 ── */
+.ov-map-box {
+  position: absolute;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  text-align: center; overflow: hidden; padding: 2px;
+  font-size: 10px; color: #fff;
+  border: 1px solid var(--border);
+}
+.ov-map-box.c0 { background: #0F62B4; }
+.ov-map-box.c1 { background: #1783FF; }
+.ov-map-box.c2 { background: #3D9BFF; }
+.ov-map-box.c3 { background: #6FB8FF; color: #0b1522; }
+.ov-map-box.c4 { background: #9CCFFF; color: #0b1522; }
+.ov-map-box.c5 { background: #C9E4FF; color: #0b1522; }
+.ov-map-box.cx { background: var(--track); color: var(--dim); }
+.ov-map-box b { color: inherit; }
