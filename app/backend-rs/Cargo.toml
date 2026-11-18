@@ -22,8 +22,13 @@ flate2 = { version = "1", default-features = false, features = ["rust_backend"] 
 # sha256 派生串），无替代品只能自实现解密；RustCrypto 纯 Rust 小 crate
 aes-gcm = "0.10"
 sha2 = "0.10"
-# 回收站枚举/永久删除/还原（trash::os_limited，与 Jharu bin.rs 同源方案）
+# 回收站枚举/永久删除/还原（trash::os_limited，与 Jharu bin.rs 同源方案）。
+# 跨平台：Linux 走 freedesktop 后端，Windows 走 shell，保持 Linux 构建可用。
 trash = "5"
+
+# winreg 在非 Windows 上会 compile_error!（必须按目标平台声明），否则
+# Linux CI（cargo test --release）直接编译失败。
+[target.'cfg(windows)'.dependencies]
 # 启动项 Run 键 / StartupApproved 开关 / 卸载表读取（Jharu startup.rs、apps.rs 同源方案）
 winreg = "0.52"
 
