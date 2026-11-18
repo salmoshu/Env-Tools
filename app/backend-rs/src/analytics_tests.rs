@@ -20,6 +20,23 @@ fn kimi_line(
     )
 }
 
+/// OMP 行时间戳是 UTC ISO 8601。测试里按"相对 now 的秒数"生成，避免
+/// 在 CI（UTC）或非 UTC+8 机器上落进不同的时间窗 / 本地日期桶。
+fn omp_iso(now: chrono::DateTime<chrono::Local>, secs_ago: i64, millis: u32) -> String {
+    chrono::DateTime::<chrono::Utc>::from_timestamp(now.timestamp() - secs_ago, millis * 1_000_000)
+        .expect("valid timestamp")
+        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+        .to_string()
+}
+
+/// OMP 会话文件名里的时间戳（`2026-11-16T04-00-00-000Z` 形态）。
+fn omp_stamp(now: chrono::DateTime<chrono::Local>, secs_ago: i64) -> String {
+    chrono::DateTime::<chrono::Utc>::from_timestamp(now.timestamp() - secs_ago, 0)
+        .expect("valid timestamp")
+        .format("%Y-%m-%dT%H-%M-%S-000Z")
+        .to_string()
+}
+
 fn codex_token_line(
     input_tokens: i64,
     cached: i64,
@@ -872,12 +889,12 @@ fn rolling_quota_tokens_attributes_sources_and_omp_models() {
     // + deepseek 模型 999 tok（不参与）
     let omp_sess = omp_home.join("agent").join("sessions").join("-p");
     write_file(
-        &omp_sess.join("2026-11-16T03-00-00-000Z_omp-r1.jsonl"),
+        &omp_sess.join(format!("{}_omp-r1.jsonl", omp_stamp(now, 3600))),
         &[
-            r#"{"type":"session","version":3,"id":"omp-r1","timestamp":"2026-11-16T03:00:00.000Z","cwd":"E:/p/a"}"#.to_string(),
-            r#"{"type":"message","id":"m1","timestamp":"2026-11-16T03:59:00.000Z","message":{"role":"assistant","model":"k3-256k","provider":"kimi-code","usage":{"input":200,"output":100,"cacheRead":0,"cacheWrite":0}}}"#.to_string(),
-            r#"{"type":"message","id":"m2","timestamp":"2026-11-16T03:59:30.000Z","message":{"role":"assistant","model":"gpt-6.1-sol","provider":"openai-codex","usage":{"input":600,"output":300,"cacheRead":0,"cacheWrite":0}}}"#.to_string(),
-            r#"{"type":"message","id":"m3","timestamp":"2026-11-16T03:59:45.000Z","message":{"role":"assistant","model":"deepseek-v4-pro","provider":"deepseek","usage":{"input":999,"output":0,"cacheRead":0,"cacheWrite":0}}}"#.to_string(),
+            format!(r#"{{"type":"session","version":3,"id":"omp-r1","timestamp":"{}","cwd":"E:/p/a"}}"#, omp_iso(now, 3600, 0)),
+            format!(r#"{{"type":"message","id":"m1","timestamp":"{}","message":{{"role":"assistant","model":"k3-256k","provider":"kimi-code","usage":{{"input":200,"output":100,"cacheRead":0,"cacheWrite":0}}}}}}"#, omp_iso(now, 60, 0)),
+            format!(r#"{{"type":"message","id":"m2","timestamp":"{}","message":{{"role":"assistant","model":"gpt-6.1-sol","provider":"openai-codex","usage":{{"input":600,"output":300,"cacheRead":0,"cacheWrite":0}}}}}}"#, omp_iso(now, 30, 0)),
+            format!(r#"{{"type":"message","id":"m3","timestamp":"{}","message":{{"role":"assistant","model":"deepseek-v4-pro","provider":"deepseek","usage":{{"input":999,"output":0,"cacheRead":0,"cacheWrite":0}}}}}}"#, omp_iso(now, 15, 0)),
         ],
     );
     let mut state = AnalyticsState::default();
@@ -912,11 +929,11 @@ fn daily_quota_buckets_survive_agent_filter_and_attribute_omp() {
     // omp：gpt 模型 900（归 codex）+ kimi 模型 300（归 kimi）
     let omp_sess = omp_home.join("agent").join("sessions").join("-p");
     write_file(
-        &omp_sess.join("2026-11-16T03-00-00-000Z_omp-dq.jsonl"),
+        &omp_sess.join(format!("{}_omp-dq.jsonl", omp_stamp(now, 3600))),
         &[
-            r#"{"type":"session","version":3,"id":"omp-dq","timestamp":"2026-11-16T03:00:00.000Z","cwd":"E:/p/a"}"#.to_string(),
-            r#"{"type":"message","id":"m1","timestamp":"2026-11-16T03:59:00.000Z","message":{"role":"assistant","model":"gpt-6.1-sol","provider":"openai-codex","usage":{"input":600,"output":300,"cacheRead":0,"cacheWrite":0}}}"#.to_string(),
-            r#"{"type":"message","id":"m2","timestamp":"2026-11-16T03:59:30.000Z","message":{"role":"assistant","model":"k3-256k","provider":"kimi-code","usage":{"input":200,"output":100,"cacheRead":0,"cacheWrite":0}}}"#.to_string(),
+            format!(r#"{{"type":"session","version":3,"id":"omp-dq","timestamp":"{}","cwd":"E:/p/a"}}"#, omp_iso(now, 3600, 0)),
+            format!(r#"{{"type":"message","id":"m1","timestamp":"{}","message":{{"role":"assistant","model":"gpt-6.1-sol","provider":"openai-codex","usage":{{"input":600,"output":300,"cacheRead":0,"cacheWrite":0}}}}}}"#, omp_iso(now, 60, 0)),
+            format!(r#"{{"type":"message","id":"m2","timestamp":"{}","message":{{"role":"assistant","model":"k3-256k","provider":"kimi-code","usage":{{"input":200,"output":100,"cacheRead":0,"cacheWrite":0}}}}}}"#, omp_iso(now, 30, 0)),
         ],
     );
     let mut state = AnalyticsState::default();
