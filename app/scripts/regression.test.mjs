@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import { createRequire } from "node:module";
 import { test } from "node:test";
 import { installTarget, installScope, installConflict } from "../electron/installTarget.js";
 import { resetExpiries } from "../src/resetExpiries.js";
+
+const { zcodeCandidatePaths } = createRequire(import.meta.url)("../electron/zcodeLauncher.js");
 
 let progress;
 globalThis.window = { api: { onInstallProgress: (callback) => { progress = callback; } } };
@@ -76,4 +79,17 @@ test("明确无到期限制与缺失到期时间分别展示", () => {
 test("GLM 日期缺失时保留真实次数并标记未知日期", () => {
   assert.deepEqual(resetExpiries({ reset_cards: { five_hour: [{ expire_at: null, expire_after_seconds: null }] } }),
     [{ label: "5h", at: null }]);
+});
+
+test("ZCode 启动路径支持注册表和环境目录并去重", () => {
+  const paths = zcodeCandidatePaths({
+    ZCODE_EXECUTABLE: "D:\\Tools\\ZCode.exe",
+    LOCALAPPDATA: "C:\\Users\\example\\AppData\\Local",
+    ProgramFiles: "C:\\Program Files",
+  }, ["D:\\Apps\\ZCode"]);
+  assert.equal(paths[0], "D:\\Tools\\ZCode.exe");
+  assert.ok(paths.includes("D:\\Apps\\ZCode\\ZCode.exe"));
+  assert.ok(paths.includes("C:\\Users\\example\\AppData\\Local\\Programs\\ZCode\\ZCode.exe"));
+  assert.ok(paths.includes("C:\\Program Files\\ZCode\\ZCode.exe"));
+  assert.equal(zcodeCandidatePaths({}, ["C:\\ZCode", "c:\\zcode\\ZCODE.EXE"]).length, 1);
 });

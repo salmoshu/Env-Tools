@@ -228,6 +228,15 @@ fn cached_reset_status(data: Option<&Value>, previous: &Value, now: DateTime<Loc
             result[key] = previous[key].clone();
         }
     }
+    let complete_response = data.is_some_and(|data| {
+        ["available_five_hour_resets", "available_week_resets"].iter()
+            .all(|key| data.get(*key).and_then(Value::as_array).is_some())
+    });
+    if complete_response {
+        result["last_success_at"] = Value::from(now.timestamp());
+    } else if let Some(last_success_at) = previous.get("last_success_at") {
+        result["last_success_at"] = last_success_at.clone();
+    }
     Some(result)
 }
 
@@ -265,25 +274,47 @@ pub(crate) fn zcode_headers(jwt: &str, maas: &str) -> [(String, String); 4] {
     ]
 }
 
-/// 查询失败或日期缺失时沿用缓存；无独立绑定、解密失败或禁用时仍跳过。
-pub fn collect_reset_cards(profile: &AccountProfile) -> Option<Value> {
+fn is_auth_rejection(text: &str) -> bool {
+    let lowered = text.to_lowercase();
+    lowered.starts_with("http 401:")
+        || ["unauthorized", "invalid token", "token expired", "expired token"]
+            .iter().any(|needle| lowered.contains(needle))
+}
+
+fn response_auth_rejected(response: &Value) -> bool {
+    response["code"].as_i64() == Some(401)
+        || ["msg", "message"].iter().filter_map(|key| response.get(*key).and_then(Value::as_str))
+            .any(is_auth_rejection)
+}
+
+fn collect_reset_cards_outcome(profile: &AccountProfile) -> (Option<Value>, bool) {
     if !env_enabled("GLM_RESET_CARDS", true) {
-        return None;
+        return (None, false);
     }
-    let (jwt, maas) = load_zcode_credentials(profile)?;
+    let Some((jwt, maas)) = load_zcode_credentials(profile) else {
+        return (None, false);
+    };
     let use_proxy = env_enabled("GLM_USE_PROXY", true);
     let timeout = env_timeout("GLM_RESET_TIMEOUT", 8);
     let headers = zcode_headers(&jwt, &maas);
-    let refs: Vec<(&str, &str)> = headers
-        .iter()
-        .map(|(k, v)| (k.as_str(), v.as_str()))
-        .collect();
-    let response = get_json_headers(&reset_status_url(), &refs, use_proxy, timeout).ok();
-    let data = response.as_ref().filter(|response| response["code"].as_i64() == Some(0))
-        .and_then(|response| response.get("data")).filter(|data| data.is_object());
-    super::reset_cache::update(&reset_cache_path(profile, &jwt, &maas), |previous| {
+    let refs: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let response = match get_json_headers(&reset_status_url(), &refs, use_proxy, timeout) {
+        Ok(response) => response,
+        Err(error) => {
+            let rejected = is_auth_rejection(&error);
+            let cached = super::reset_cache::update(&reset_cache_path(profile, &jwt, &maas), |previous| {
+                cached_reset_status(None, previous, Local::now())
+            });
+            return (cached, rejected);
+        }
+    };
+    let rejected = response_auth_rejected(&response);
+    let data = response.get("data").filter(|_| response["code"].as_i64() == Some(0))
+        .filter(|data| data.is_object());
+    let cached = super::reset_cache::update(&reset_cache_path(profile, &jwt, &maas), |previous| {
         cached_reset_status(data, previous, Local::now())
-    })
+    });
+    (cached, rejected)
 }
 
 /// 使用一张重置卡（POST {base}/use，逆向自 ZCode useCodingPlanReset）。
@@ -494,6 +525,44 @@ mod tests {
         assert_eq!(decrypt_value(&key, "plain-text"), None);
         assert_eq!(decrypt_value(&key, "enc:v1:only.two"), None);
     }
+    fn jwt_with_exp(exp: i64) -> String {
+        format!("x.{}.x", b64url_encode(format!(r#"{{"exp":{exp}}}"#).as_bytes()))
+    }
+
+    #[test]
+    fn credential_expiration_matches_zcode_dual_token_rules() {
+        assert_eq!(parse_jwt_exp(&jwt_with_exp(100)), Some(100));
+        assert_eq!(credential_expiration(&jwt_with_exp(200), &jwt_with_exp(100), 150), (true, Some(100)));
+        assert_eq!(credential_expiration(&jwt_with_exp(200), &jwt_with_exp(300), 150), (false, Some(200)));
+        assert_eq!(credential_expiration(&jwt_with_exp(200), "opaque", 200), (true, Some(200)));
+    }
+
+    #[test]
+    fn server_auth_rejection_is_distinct_from_network_failures() {
+        assert!(is_auth_rejection("HTTP 401: Unauthorized"));
+        assert!(is_auth_rejection("token expired"));
+        assert!(response_auth_rejected(&json!({"code": 401})));
+        assert!(response_auth_rejected(&json!({"code": 1001, "msg": "invalid token"})));
+        assert!(!is_auth_rejection("HTTP 403: Forbidden"));
+        assert!(!is_auth_rejection("Network request failed: timeout"));
+        assert!(!response_auth_rejected(&json!({"code": 500, "msg": "temporary failure"})));
+    }
+
+    #[test]
+    fn cache_age_tracks_last_complete_success_not_replays() {
+        let now = Local.timestamp_opt(1_800_000_000, 0).unwrap();
+        let fresh = cached_reset_status(Some(&json!({
+            "available_five_hour_resets": [],
+            "available_week_resets": [],
+        })), &Value::Null, now).unwrap();
+        assert_eq!(fresh["last_success_at"], now.timestamp());
+        let replayed = cached_reset_status(None, &fresh, now + chrono::Duration::hours(2)).unwrap();
+        assert_eq!(replayed["last_success_at"], now.timestamp());
+        let partial = cached_reset_status(Some(&json!({
+            "available_five_hour_resets": [],
+        })), &fresh, now + chrono::Duration::hours(3)).unwrap();
+        assert_eq!(partial["last_success_at"], now.timestamp());
+    }
 }
 
 // ─── 凭证状态检测（v0.7.55：改善重置卡过期体验） ──────────────────────────
@@ -517,8 +586,18 @@ pub fn credential_mtime(profile: &AccountProfile) -> Option<i64> {
         .map(|d| d.as_secs() as i64)
 }
 
-/// 带凭证状态的重置卡采集：JWT 过期时明确标记（而非静默回退缓存），
-/// 缓存超过 MAX_CACHE_AGE_HOURS 也标记（避免过旧数据长期出现）。
+/// ZCode 官方恢复会话时会同时检查 ZCode JWT 与业务 access token。
+/// 返回是否需要重新授权，以及用于展示的过期/下次到期时间。
+fn credential_expiration(jwt: &str, maas: &str, now_ts: i64) -> (bool, Option<i64>) {
+    let expirations: Vec<i64> = [parse_jwt_exp(jwt), parse_jwt_exp(maas)]
+        .into_iter().flatten().collect();
+    let expired_at = expirations.iter().copied().filter(|exp| *exp <= now_ts).min();
+    let next_exp = expirations.iter().copied().min();
+    (expired_at.is_some(), expired_at.or(next_exp))
+}
+
+/// 带凭证状态的重置卡采集：过期时明确标记（而非静默回退缓存），
+/// 缓存年龄以最后一次完整成功的 API 响应为准。
 const MAX_CACHE_AGE_HOURS: i64 = 72;
 
 pub fn collect_reset_cards_with_status(profile: &AccountProfile) -> Option<Value> {
@@ -528,44 +607,47 @@ pub fn collect_reset_cards_with_status(profile: &AccountProfile) -> Option<Value
     let (jwt, maas) = load_zcode_credentials(profile)?;
     let now = Local::now();
     let now_ts = now.timestamp();
-
-    // 凭证状态
-    let jwt_exp = parse_jwt_exp(&jwt);
-    let credential_expired = jwt_exp.is_some_and(|exp| exp < now_ts);
-    let credential_path = crate::accounts::glm_reset_credentials_path(profile)
-        .map(|p| p.display().to_string()).unwrap_or_default();
+    let (locally_expired, credential_exp) = credential_expiration(&jwt, &maas, now_ts);
     let cred_mtime = credential_mtime(profile);
+    let mut credential_expired = locally_expired;
+    let mut server_rejected = false;
 
-    let mut result = if credential_expired {
-        // JWT 已过期：不调 API（必然 401），直接用缓存并标记
+    let mut result = if locally_expired {
         let cached = super::reset_cache::read(&reset_cache_path(profile, &jwt, &maas));
         cached_reset_status(None, &cached, now)?
     } else {
-        // 正常调用
-        collect_reset_cards(profile)?
+        let (cards, rejected) = collect_reset_cards_outcome(profile);
+        server_rejected = rejected;
+        credential_expired |= rejected;
+        match cards {
+            Some(cards) => cards,
+            None if rejected => cached_reset_status(None, &serde_json::json!({}), now)?,
+            None => return None,
+        }
     };
 
-    // 附加凭证状态信息
     result["credential_status"] = serde_json::json!({
         "expired": credential_expired,
-        "exp": jwt_exp,
-        "exp_human": jwt_exp.map(|e| {
-            chrono::DateTime::from_timestamp(e, 0)
-                .map(|d| d.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string())
+        "server_rejected": server_rejected,
+        "exp": credential_exp,
+        "exp_human": credential_exp.map(|exp| {
+            chrono::DateTime::from_timestamp(exp, 0)
+                .map(|date| date.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string())
                 .unwrap_or_default()
         }),
         "file_mtime": cred_mtime,
-        "file_path": credential_path,
+        "can_open_client": profile.is_default,
     });
 
-    // 缓存期限检查
     if result["stale"].as_bool().unwrap_or(false) {
-        if let Some(mtime) = cred_mtime {
-            let age_hours = (now_ts - mtime) / 3600;
+        if let Some(last_success_at) = result["last_success_at"].as_i64() {
+            let age_hours = (now_ts - last_success_at).max(0) / 3600;
             result["cache_age_hours"] = serde_json::json!(age_hours);
             if age_hours > MAX_CACHE_AGE_HOURS {
                 result["cache_expired"] = serde_json::json!(true);
             }
+        } else {
+            result["cache_age_unknown"] = serde_json::json!(true);
         }
     }
 

@@ -1,10 +1,13 @@
+import { useState } from "react";
 import { t } from "../i18n.js";
+import { showToast } from "../toast.jsx";
 import { nearQuotaLimit, QUOTA_RESET_THRESHOLD, windowUsagePct } from "../utils.js";
 import ResetButton from "./ResetButton.jsx";
 import ResetChancesText from "./ResetChancesText.jsx";
 
 // 主窗口和悬浮看板共用同一份次数、hint 入口及外层按钮门槛。
 export default function ResetChances({ account }) {
+  const [reauthBusy, setReauthBusy] = useState(false);
   const credits = account.rate_limit_reset_credits;
   const cards = account.reset_cards;
   const parts = [];
@@ -37,14 +40,31 @@ export default function ResetChances({ account }) {
       accountId={account.account_id || "default"} accountLabel={account.account_label} what={action.what}
       disabled={!action.available || stale} onRequest={close}>{action.label}</ResetButton>
   );
+  const reauth = async () => {
+    if (reauthBusy) return;
+    setReauthBusy(true);
+    try {
+      const result = await window.api?.openZcode?.();
+      if (!result?.ok) throw new Error(result?.error || "unavailable");
+      showToast(t("dash.credReauthOpened"), "info", 8000);
+    } catch (error) {
+      showToast(`${t("dash.credReauthFailed")}: ${error.message || error}`, "error", 6000);
+    } finally {
+      setReauthBusy(false);
+    }
+  };
   return (
     <div className="limit-resets">
       {credExpired && (
         <div className="cred-expired-warning">
-          <span>{t("dash.credExpired")}{credStatus.exp_human ? `（${credStatus.exp_human}）` : ""}</span>
-          <button type="button" className="cred-reauth-btn" onClick={() => {
-            if (window.api && window.api.openZcode) window.api.openZcode();
-          }}>{t("dash.credReauth")}</button>
+          <span>{t(credStatus.server_rejected ? "dash.credRejected" : "dash.credExpired")}{credStatus.exp_human ? `（${credStatus.exp_human}）` : ""}</span>
+          {credStatus.can_open_client === false ? (
+            <span>{t("dash.credRebind")}</span>
+          ) : (
+            <button type="button" className="cred-reauth-btn" disabled={reauthBusy} onClick={reauth}>
+              {t(reauthBusy ? "dash.credReauthOpening" : "dash.credReauth")}
+            </button>
+          )}
         </div>
       )}
       {!credExpired && cacheExpired && (
@@ -54,7 +74,9 @@ export default function ResetChances({ account }) {
       )}
       <ResetChancesText account={account} renderActions={(close) => <>
         <div className="reset-expiry-actions">{actions.map((action) => button(action, close))}</div>
-        {stale && !credExpired ? <div className="reset-expiry-note">{t("dash.resetStaleHint")}</div> : null}
+        {stale && !credExpired ? <div className="reset-expiry-note">
+          {t(cards?.cache_age_unknown ? "dash.resetStaleUnknownHint" : "dash.resetStaleHint")}
+        </div> : null}
       </>}>
         {t("dash.resetChances")}: {parts.join(" · ")}
       </ResetChancesText>

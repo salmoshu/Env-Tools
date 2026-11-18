@@ -1589,7 +1589,7 @@ tr.group-row .group-stats { margin-left: 10px; color: var(--faint); font-weight:
 
 /* GLM 重置卡凭证过期警告 + 重新授权按钮 */
 .cred-expired-warning {
-  display: flex; align-items: center; gap: 8px;
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
   margin: 2px 0; padding: 3px 8px; border-radius: 6px;
   background: rgba(255, 65, 72, 0.08); border: 1px solid rgba(255, 65, 72, 0.25);
   font-size: 10.5px; color: var(--red);
@@ -1604,3 +1604,4 @@ tr.group-row .group-stats { margin-left: 10px; color: var(--faint); font-weight:
   cursor: pointer; white-space: nowrap;
 }
 .cred-reauth-btn:hover { background: var(--accent-hover); }
+.cred-reauth-btn:disabled { opacity: 0.55; cursor: default; }

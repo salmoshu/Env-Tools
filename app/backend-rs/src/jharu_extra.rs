@@ -242,159 +242,8 @@ fn check_merged(dir: &Path) -> bool {
 
 // ─── 回收站管理 ────────────────────────────────────────────────────────────
 
-pub fn bin_list() -> Value {
-    let output = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-Command",
-            "$shell = New-Object -ComObject Shell.Application; $rb = $shell.Namespace(0xA); $rb.Items() | ForEach-Object { [PSCustomObject]@{ Name = $_.Name; Path = $_.Path; Size = $_.Size; Deleted = $rb.GetDetailsOf($_, 2) } } | ConvertTo-Json"])
-        .output();
-    match output {
-        Ok(o) if o.status.success() => {
-            let text = String::from_utf8_lossy(&o.stdout).to_string();
-            let items: Vec<Value> = serde_json::from_str(&text).unwrap_or(vec![]);
-            let total: u64 = items.iter().filter_map(|i| i["Size"].as_u64()).sum();
-            serde_json::json!({ "ok": true, "total": total, "total_h": hs(total), "items": items })
-        }
-        _ => json_err("failed to list recycle bin")
-    }
-}
-
-pub fn bin_purge() -> Value {
-    let output = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-Command", "Clear-RecycleBin -Force -ErrorAction SilentlyContinue; Write-Output 'OK'"])
-        .output();
-    match output {
-        Ok(o) if o.status.success() => serde_json::json!({ "ok": true }),
-        _ => json_err("failed to purge")
-    }
-}
-
-pub fn bin_restore(path: &str) -> Value {
-    let output = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-Command",
-            &format!("$shell = New-Object -ComObject Shell.Application; $rb = $shell.Namespace(0xA); $rb.Items() | Where-Object {{ $_.Path -eq '{}' }} | ForEach-Object {{ $_.InvokeVerb('Restore') }}", path)])
-        .output();
-    match output {
-        Ok(o) if o.status.success() => serde_json::json!({ "ok": true }),
-        _ => json_err("failed to restore")
-    }
-}
-
-// ─── 系统空间 ──────────────────────────────────────────────────────────────
-
-pub fn system_space() -> Value {
-    let mut items = Vec::new();
-    // 休眠文件
-    let hiber = PathBuf::from(r"C:\hiberfil.sys");
-    if let Ok(m) = hiber.metadata() { items.push(sys_item("hibernation", "休眠文件", m.len(), true)); }
-    // 页面文件
-    for drive in ["C:", "D:", "E:"] {
-        let pf = PathBuf::from(format!("{}\\pagefile.sys", drive));
-        if let Ok(m) = pf.metadata() { items.push(sys_item("pagefile", "页面文件", m.len(), true)); }
-    }
-    // Windows Update 缓存
-    let wu = PathBuf::from(r"C:\Windows\SoftwareDistribution\Download");
-    let (wu_sz, _) = quick_stats(&wu, 2);
-    if wu_sz > 0 { items.push(sys_item("update_cache", "Windows 更新缓存", wu_sz, true)); }
-    // 系统还原点（WMI）
-    let sr_size = get_restore_points_size();
-    if sr_size > 0 { items.push(sys_item("restore_points", "系统还原点", sr_size, true)); }
-    // Docker
-    let docker_data = PathBuf::from(r"C:\ProgramData\Docker");
-    let (dk_sz, _) = quick_stats(&docker_data, 2);
-    if dk_sz > 0 { items.push(sys_item("docker", "Docker 数据", dk_sz, true)); }
-    // 临时文件
-    let temp = std::env::var("TEMP").map(PathBuf::from).unwrap_or_default();
-    let (t_sz, _) = quick_stats(&temp, 2);
-    if t_sz > 0 { items.push(sys_item("temp", "系统临时文件", t_sz, false)); }
-    let total: u64 = items.iter().filter_map(|i| i["size"].as_u64()).sum();
-    serde_json::json!({ "ok": true, "total": total, "total_h": hs(total), "items": items })
-}
-
 fn sys_item(id: &str, label: &str, size: u64, needs_admin: bool) -> Value {
     serde_json::json!({ "id": id, "label": label, "size": size, "size_h": hs(size), "needs_admin": needs_admin })
-}
-
-fn get_restore_points_size() -> u64 {
-    let output = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-Command", "vssadmin list shadowstorage /for=C: 2>$null | Select-String 'Used' | ForEach-Object { if ($_ -match '([\\d.]+)\\s+(GB|MB|B)') { [double]$matches[1] * switch ($matches[2]) { 'GB' { 1GB } 'MB' { 1MB } default { 1 } } } }"])
-        .output();
-    output.ok().and_then(|o| {
-        let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-        s.parse::<f64>().map(|v| v as u64).ok()
-    }).unwrap_or(0)
-}
-
-// ─── 启动项管理 ────────────────────────────────────────────────────────────
-
-pub fn startup_scan() -> Value {
-    let mut items = Vec::new();
-    // 注册表 Run 键
-    for (hive, path) in [
-        ("HKCU", r"Software\Microsoft\Windows\CurrentVersion\Run"),
-        ("HKLM", r"Software\Microsoft\Windows\CurrentVersion\Run"),
-        ("HKLM", r"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run"),
-    ] {
-        let cmd = format!("Get-ItemProperty '{}:\\{}' | Select-Object * -ExcludeProperty PS*", hive, path);
-        if let Ok(o) = std::process::Command::new("powershell").args(["-NoProfile", "-Command", &cmd]).output() {
-            if o.status.success() {
-                let text = String::from_utf8_lossy(&o.stdout).to_string();
-                for line in text.lines().skip(2) { // Skip headers
-                    let parts: Vec<&str> = line.split_whitespace().collect();
-                    if parts.len() >= 2 {
-                        items.push(serde_json::json!({
-                            "name": parts[0], "source": format!("{}:\\{}", hive, path),
-                            "command": parts[1..].join(" "), "enabled": true,
-                        }));
-                    }
-                }
-            }
-        }
-    }
-    // 启动文件夹
-    let startup_dir = std::env::var("APPDATA").map(|a| PathBuf::from(a).join(r"Microsoft\Windows\Start Menu\Programs\Startup")).unwrap_or_default();
-    if let Ok(rd) = std::fs::read_dir(&startup_dir) {
-        for e in rd.flatten() {
-            items.push(serde_json::json!({
-                "name": e.file_name().to_string_lossy(), "source": "startup_folder",
-                "command": e.path().display().to_string(), "enabled": true,
-            }));
-        }
-    }
-    serde_json::json!({ "ok": true, "items": items })
-}
-
-// ─── 卸载器 ────────────────────────────────────────────────────────────────
-
-pub fn apps_list() -> Value {
-    let output = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-Command",
-            "Get-ItemProperty 'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*','HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*','HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*' -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName } | Select-Object DisplayName, DisplayVersion, Publisher, InstallDate, EstimatedSize, UninstallString | Sort-Object DisplayName | ConvertTo-Json"])
-        .output();
-    match output {
-        Ok(o) if o.status.success() => {
-            let text = String::from_utf8_lossy(&o.stdout).to_string();
-            let items: Vec<Value> = serde_json::from_str(&text).unwrap_or(vec![]);
-            serde_json::json!({ "ok": true, "items": items })
-        }
-        _ => json_err("failed to list apps")
-    }
-}
-
-// ─── 进程管理（任务管理器） ────────────────────────────────────────────────
-
-pub fn process_list() -> Value {
-    let output = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-Command",
-            "Get-Process | Sort-Object CPU -Descending | Select-Object -First 50 Id, ProcessName, CPU, @{N='MemMB';E={[math]::Round($_.WorkingSet64/1MB,0)}} | ConvertTo-Json"])
-        .output();
-    match output {
-        Ok(o) if o.status.success() => {
-            let text = String::from_utf8_lossy(&o.stdout).to_string();
-            let items: Vec<Value> = serde_json::from_str(&text).unwrap_or(vec![]);
-            serde_json::json!({ "ok": true, "items": items })
-        }
-        _ => json_err("failed to list processes")
-    }
 }
 
 pub fn process_kill(pid: u32) -> Value {
@@ -489,3 +338,208 @@ fn hs(bytes: u64) -> String {
 }
 
 fn json_err(msg: &str) -> Value { serde_json::json!({ "ok": false, "error": msg }) }
+// --- Safety system: live facts + inference (Jharu safety.rs port) ---
+
+pub struct SafetyFacts {
+    pub running: std::collections::HashSet<String>,
+    pub exes: Vec<PathBuf>,
+}
+
+pub fn gather_facts() -> SafetyFacts {
+    let mut running = std::collections::HashSet::new();
+    let mut exes = Vec::new();
+    if let Ok(output) = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-Command",
+            "Get-Process | Select-Object ProcessName, Path | Where-Object { $_.Path } | ConvertTo-Json"])
+        .output()
+    {
+        if output.status.success() {
+            let text = String::from_utf8_lossy(&output.stdout).to_string();
+            if let Ok(items) = serde_json::from_str::<Vec<Value>>(&text) {
+                for item in items {
+                    if let Some(name) = item["ProcessName"].as_str() {
+                        running.insert(name.to_lowercase());
+                    }
+                    if let Some(path) = item["Path"].as_str() {
+                        exes.push(PathBuf::from(path));
+                    }
+                }
+            }
+        }
+    }
+    SafetyFacts { running, exes }
+}
+
+impl SafetyFacts {
+    pub fn tools_running(&self, tools: &[&str]) -> Vec<String> {
+        tools.iter().filter(|t| self.running.contains(&t.to_lowercase())).map(|t| t.to_string()).collect()
+    }
+    pub fn running_from(&self, dir: &Path) -> Vec<String> {
+        let norm = |p: &Path| p.to_string_lossy().to_lowercase().replace('\\', "/");
+        let dir_s = norm(dir);
+        self.exes.iter()
+            .filter(|e| norm(e).starts_with(&dir_s))
+            .filter_map(|e| e.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .collect()
+    }
+}
+
+/// Live safety inference: takes static rule rating + live facts, returns upgraded rating + reasons
+pub fn infer_safety(rule_safety: &str, tools: &[&str], path: &Path, facts: &SafetyFacts) -> (String, Vec<String>) {
+    let mut reasons = Vec::new();
+    let mut level = rule_safety.to_string();
+    match rule_safety {
+        "safe" => reasons.push("auto-restores on next use".into()),
+        "caution" => reasons.push("needs re-download or manual restore".into()),
+        "risky" => reasons.push("holds irreplaceable data".into()),
+        _ => {}
+    }
+    let running = facts.tools_running(tools);
+    if !running.is_empty() {
+        if level == "safe" { level = "caution".into(); }
+        reasons.push(format!("running now: {}", running.join(", ")));
+    }
+    let from_dir = facts.running_from(path);
+    if !from_dir.is_empty() && from_dir.len() < 5 {
+        reasons.push(format!("programs running from here: {}", from_dir.join(", ")));
+        if level != "risky" { level = "caution".into(); }
+    }
+    (level, reasons)
+}
+
+// --- Full hash duplicate verification (eliminates 4KB-prefix false positives) ---
+
+pub fn dupes_verify(groups: &[Value]) -> Vec<Value> {
+    let mut confirmed = Vec::new();
+    for group in groups {
+        let files = group["files"].as_array().cloned().unwrap_or_default();
+        if files.len() < 2 { continue; }
+        let mut by_hash: HashMap<String, Vec<&Value>> = HashMap::new();
+        for f in &files {
+            let path = f["path"].as_str().unwrap_or_default();
+            if let Some(hash) = full_file_hash(Path::new(path)) {
+                by_hash.entry(hash).or_default().push(f);
+            }
+        }
+        for (_h, paths) in by_hash {
+            if paths.len() < 2 { continue; }
+            let size = group["size"].as_u64().unwrap_or(0);
+            confirmed.push(serde_json::json!({
+                "size": size, "size_h": hs(size), "count": paths.len(),
+                "wasted": size * (paths.len() as u64 - 1), "verified": true,
+                "files": paths.iter().map(|f| serde_json::json!({
+                    "name": f["name"], "path": f["path"], "size_h": f["size_h"],
+                })).collect::<Vec<_>>(),
+            }));
+        }
+    }
+    confirmed.sort_by(|a, b| b["wasted"].as_u64().cmp(&a["wasted"].as_u64()));
+    confirmed
+}
+
+fn full_file_hash(path: &Path) -> Option<String> {
+    use std::io::Read;
+    use sha2::{Digest, Sha256};
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 65536];
+    loop {
+        let n = f.read(&mut buf).ok()?;
+        if n == 0 { break; }
+        hasher.update(&buf[..n]);
+    }
+    Some(hasher.finalize().iter().map(|b| format!("{b:02x}")).collect())
+}
+
+// --- Process safety rating (Jharu processes.rs port) ---
+
+const SYSTEM_PROCESSES: &[&str] = &[
+    "system","registry","smss","csrss","wininit","winlogon","services","lsass",
+    "svchost","dwm","conhost","sihost","taskhostw","ctfmon",
+    "runtimebroker","searchindexer","audiodg","wudfhost","spoolsv",
+];
+
+pub fn process_rated() -> Value {
+    let output = std::process::Command::new("powershell")
+        .args(["-NoProfile","-Command",
+            "Get-Process | Sort-Object CPU -Descending | Select-Object -First 50 Id, ProcessName, CPU, @{N='MemMB';E={[math]::Round($_.WorkingSet64/1MB,0)}}, @{N='Path';E={$_.Path}} | ConvertTo-Json"])
+        .output();
+    match output {
+        Ok(o) if o.status.success() => {
+            let text = String::from_utf8_lossy(&o.stdout).to_string();
+            let items: Vec<Value> = serde_json::from_str(&text).unwrap_or(vec![]);
+            let rated: Vec<Value> = items.iter().map(|p| {
+                let name = p["ProcessName"].as_str().unwrap_or_default().to_lowercase();
+                let path = p["Path"].as_str().unwrap_or_default().to_string();
+                let (safety, reason) = if SYSTEM_PROCESSES.contains(&name.as_str()) {
+                    ("risky", "System process")
+                } else if path.contains("ZCode") || path.contains("env-tools") {
+                    ("risky", "This app or its runtime")
+                } else if path.contains("System32") {
+                    ("caution", "System directory program")
+                } else {
+                    ("safe", "Safe to close")
+                };
+                serde_json::json!({
+                    "Id": p["Id"], "ProcessName": p["ProcessName"],
+                    "CPU": p["CPU"], "MemMB": p["MemMB"], "Path": path,
+                    "safety": safety, "reason": reason,
+                })
+            }).collect();
+            serde_json::json!({"ok":true,"items":rated})
+        }
+        _ => json_err("failed to list processes")
+    }
+}
+
+// --- Directory-level space history ---
+
+pub fn history_dir_compare(root: &str) -> Value {
+    let snaps_path = crate::settings::local_home()
+        .join(".cache").join("ai-usage-monitor").join("dir-history.jsonl");
+    let prev_text = std::fs::read_to_string(&snaps_path).unwrap_or_default();
+    let prev: Option<Value> = prev_text.lines().last().and_then(|l| serde_json::from_str(l).ok());
+    let now_ts = SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let current_entries = scan_level(Path::new(root), 0, 2);
+    let current_map: HashMap<String, u64> = current_entries.iter()
+        .filter_map(|e| Some((e["path"].as_str()?.to_string(), e["size"].as_u64()?))).collect();
+    let mut changes = Vec::new();
+    let mut total_delta: i64 = 0;
+    if let Some(prev_data) = &prev {
+        if let Some(prev_entries) = prev_data["entries"].as_array() {
+            for pe in prev_entries {
+                let p = pe["path"].as_str().unwrap_or_default();
+                let old = pe["size"].as_u64().unwrap_or(0);
+                if let Some(&new) = current_map.get(p) {
+                    let delta = new as i64 - old as i64;
+                    if delta.abs() > 1_000_000 {
+                        total_delta += delta;
+                        changes.push(serde_json::json!({
+                            "path": p, "old": old, "new": new,
+                            "delta": delta, "delta_h": hs(delta.unsigned_abs()),
+                            "direction": if delta > 0 { "grew" } else { "shrank" },
+                        }));
+                    }
+                }
+            }
+        }
+    }
+    changes.sort_by(|a, b| b["delta"].as_i64().unwrap_or(0).abs().cmp(&a["delta"].as_i64().unwrap_or(0).abs()));
+    changes.truncate(30);
+    let snap = serde_json::json!({ "ts": now_ts, "root": root, "entries": current_entries });
+    if let Some(dir) = snaps_path.parent() { let _ = std::fs::create_dir_all(dir); }
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&snaps_path) {
+        let _ = writeln!(f, "{snap}");
+    }
+    serde_json::json!({ "ok": true, "root": root, "changes": changes,
+        "total_delta": total_delta, "total_delta_h": hs(total_delta.unsigned_abs()),
+        "has_previous": prev.is_some() })
+}
+pub fn bin_list() -> Value { json_err("not implemented") }
+pub fn bin_purge() -> Value { json_err("not implemented") }
+pub fn bin_restore(_p: &str) -> Value { json_err("not implemented") }
+pub fn system_space() -> Value { json_err("not implemented") }
+pub fn startup_scan() -> Value { json_err("not implemented") }
+pub fn apps_list() -> Value { json_err("not implemented") }
+pub fn process_list() -> Value { process_rated() }
