@@ -167,3 +167,81 @@ pub fn post_json(
     }
     into_json(request.send_string(body))
 }
+
+/// POST 失败时保留状态码与响应体：Kimi 网页接口会在 401 body 里给出
+/// unauthenticated / Session expired 明细，统一错误映射会把这些信息丢掉。
+pub struct HttpFailure {
+    pub status: Option<u16>,
+    pub message: String,
+}
+
+impl HttpFailure {
+    pub fn is_network(&self) -> bool {
+        self.status.is_none()
+    }
+}
+
+/// 从错误响应体提取可读原因（Kimi 网关：details[].debug.localizedMessage.message）。
+fn reason_from_body(text: &str) -> String {
+    if let Ok(value) = serde_json::from_str::<Value>(text) {
+        let find = |pointer: &str| {
+            value
+                .pointer(pointer)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+        };
+        if let Some(message) = find("/details/0/debug/localizedMessage/message")
+            .or_else(|| find("/debug/localizedMessage/message"))
+            .or_else(|| find("/message"))
+        {
+            return message.to_string();
+        }
+        if let Some(reason) = find("/details/0/debug/reason").or_else(|| find("/debug/reason")) {
+            return reason.to_string();
+        }
+        if let Some(code) = find("/code") {
+            return code.to_string();
+        }
+    }
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        "error".into()
+    } else {
+        trimmed.chars().take(160).collect()
+    }
+}
+
+pub fn post_json_detailed(
+    url: &str,
+    headers: &[(&str, &str)],
+    body: &str,
+    use_proxy: bool,
+    timeout_secs: u64,
+) -> Result<Value, HttpFailure> {
+    let agent = build_agent(use_proxy, timeout_secs);
+    let mut request = agent.post(url);
+    for (name, value) in headers {
+        request = request.set(name, value);
+    }
+    match request.send_string(body) {
+        Ok(response) => {
+            let status = response.status();
+            response.into_json().map_err(|err| HttpFailure {
+                status: Some(status),
+                message: format!("Invalid API response: {err}"),
+            })
+        }
+        Err(ureq::Error::Status(code, response)) => {
+            let text = response.into_string().unwrap_or_default();
+            Err(HttpFailure {
+                status: Some(code),
+                message: format!("HTTP {code}: {}", reason_from_body(&text)),
+            })
+        }
+        Err(err) => Err(HttpFailure {
+            status: None,
+            message: format!("Network request failed: {err}"),
+        }),
+    }
+}

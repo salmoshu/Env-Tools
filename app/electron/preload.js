@@ -29,6 +29,8 @@ contextBridge.exposeInMainWorld("api", {
   diskAiTools: () => ipcRenderer.invoke("disk-ai-tools"),
   diskScanFull: (tab) => ipcRenderer.invoke("disk-scan-full", tab),
   openZcode: () => ipcRenderer.invoke("open-zcode"),
+  saveKimiWebCredential: (body) => ipcRenderer.invoke("save-kimi-web-credential", body),
+  openExternal: (url) => ipcRenderer.invoke("open-external", url),
   diskClean: (items, source) => ipcRenderer.invoke("disk-clean", items, source),
   diskDeep: (path, depth) => ipcRenderer.invoke("disk-deep", path, depth),
   diskDupes: (roots, min) => ipcRenderer.invoke("disk-dupes", roots, min),

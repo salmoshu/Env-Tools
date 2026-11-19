@@ -5,7 +5,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  AGENT_COLORS, AGENT_LABELS, abbrev, abbrev2, activateOnKeys, fmt, fmtPct, fmtReset, fmtSpan, fmtTimestamp,
+  AGENT_COLORS, AGENT_LABELS, abbrev, abbrev2, fmtTokens, activateOnKeys, fmt, fmtPct, fmtReset, fmtSpan, fmtTimestamp,
   isNewerVersion, levelClass, sortByDisplayOrder, timeFractionOf,
 } from "../utils.js";
 import {
@@ -18,6 +18,7 @@ import ResetChances from "../components/ResetChances.jsx";
 import BrandIcon from "../components/BrandIcon.jsx";
 import UpgradeOverlay from "../components/UpgradeOverlay.jsx";
 import AgentAccountControl from "../components/AgentAccountControl.jsx";
+import KimiWebAuth from "../components/KimiWebAuth.jsx";
 import { agentAccountId } from "../components/AgentAccountPicker.jsx";
 import { agentProviderKey, useAgentAccountStates } from "../agentAccounts.js";
 import { t, useLang } from "../i18n.js";
@@ -340,16 +341,16 @@ function QuotaWeeklyCard({ target, weekStart, accounts, estimates }) {
           { color: "var(--c-input)", data: weeks.map((w) => w.total) },
           { color: "var(--c-output)", data: weeks.map((w) => w.peak5h) },
         ]}
-        refLine={limit5h ? { value: limit5h, label: `${t("dash.quotaWeekly5hLimit")} ≈${abbrev(limit5h)}` } : null}
+        refLine={limit5h ? { value: limit5h, label: `${t("dash.quotaWeekly5hLimit")} ≈${fmtTokens(limit5h)}` } : null}
         columnTip={(i) => {
           const w = weeks[i] || {};
           const range = `${mmdd(w.start || "")}–${mmdd(w.end || "")}`;
           const current = i === weeks.length - 1 ? ` · ${t("dash.quotaWeekCurrent")}` : "";
           return `<b>${range}${current}</b>` +
-            `<div class="tt-row"><span class="swatch" style="background:var(--c-input)"></span>${t("dash.quotaWeekly7d")}<span class="tt-val">${fmt(w.total || 0)}</span></div>` +
-            `<div class="tt-row"><span class="swatch" style="background:var(--c-output)"></span>${t("dash.quotaWeekly5h")}<span class="tt-val">${fmt(w.peak5h || 0)}</span></div>` +
+            `<div class="tt-row"><span class="swatch" style="background:var(--c-input)"></span>${t("dash.quotaWeekly7d")}<span class="tt-val">${fmtTokens(w.total || 0)}</span></div>` +
+            `<div class="tt-row"><span class="swatch" style="background:var(--c-output)"></span>${t("dash.quotaWeekly5h")}<span class="tt-val">${fmtTokens(w.peak5h || 0)}</span></div>` +
             (limit5h
-              ? `<div class="tt-row">${t("dash.quotaWeekly5hLimit")}<span class="tt-val">≈${fmt(limit5h)}</span></div>`
+              ? `<div class="tt-row">${t("dash.quotaWeekly5hLimit")}<span class="tt-val">≈${fmtTokens(limit5h)}</span></div>`
               : "");
         }}
       />
@@ -357,7 +358,7 @@ function QuotaWeeklyCard({ target, weekStart, accounts, estimates }) {
   );
 }
 
-function QuotaCard({ account, versions, onUpgrade, upgrading, providerKey, accountState, tokenMode, estimates }) {
+function QuotaCard({ account, versions, onUpgrade, upgrading, providerKey, accountState, tokenMode, estimates, onRefresh }) {
   const updated = account.fetched_at
     ? new Date(account.fetched_at).toLocaleTimeString("en-GB", { hour12: false })
     : "";
@@ -383,7 +384,18 @@ function QuotaCard({ account, versions, onUpgrade, upgrading, providerKey, accou
   const startPlanName = (account.extra_lines || [])
     .find((l) => String(l).startsWith("Start plan:"))?.slice("Start plan: ".length);
   const stats = Array.isArray(account.stats) && account.stats.length > 0 ? account.stats : null;
+  const [webAuthOpen, setWebAuthOpen] = useState(false);
+  // Kimi 会员等级/月额度依赖 kimi.com 网页会话：缺失或过期时直接在卡片内
+  // 引导重新授权，而不是只留一个 plan=unknown。
+  const webSession = account.web_session;
+  const webState = webSession && webSession.state;
+  const showWebNotice = account.provider === "Kimi Code" && webState && webState !== "ok";
+  const webAuthIssue = webState === "expired" || webState === "missing";
+  const webMessage = webAuthIssue
+    ? t(webState === "missing" ? "dash.kimiWebMissing" : "dash.kimiWebExpired")
+    : t(webState === "degraded" ? "dash.kimiWebDegraded" : "dash.kimiWebError");
   return (
+    <>
     <div className="qcard" data-provider-key={providerKey || undefined}>
       <div className="qcard-head">
         <BrandIcon of={account.provider} size={16} />
@@ -434,6 +446,20 @@ function QuotaCard({ account, versions, onUpgrade, upgrading, providerKey, accou
         ) : null}
         <span className="qupdated">{updated}</span>
       </div>
+      {showWebNotice ? (
+        <div className={`kimi-web-notice ${webAuthIssue ? "auth" : "warn"}`} title={webSession.message || ""}>
+          <span className="kimi-web-notice-text">{webMessage}</span>
+          {webAuthIssue ? (
+            <button type="button" className="kimi-web-btn" onClick={() => setWebAuthOpen(true)}>
+              {t("dash.kimiWebReauth")}
+            </button>
+          ) : (
+            <button type="button" className="kimi-web-btn" onClick={() => onRefresh && onRefresh()}>
+              {t("state.retry")}
+            </button>
+          )}
+        </div>
+      ) : null}
       <MembershipLine account={account} />
       {stats ? (
         <div className="qstats">
@@ -522,6 +548,14 @@ function QuotaCard({ account, versions, onUpgrade, upgrading, providerKey, accou
       })()}
       <ResetChances account={account} />
     </div>
+    {webAuthOpen ? (
+      <KimiWebAuth
+        account={account}
+        onClose={() => setWebAuthOpen(false)}
+        onSaved={() => onRefresh && onRefresh()}
+      />
+    ) : null}
+    </>
   );
 }
 
@@ -911,7 +945,9 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
   };
   // agent 筛选联动配额：只看 kimi 时配额区只显示 Kimi
   const agentAccounts = filterByAgent(allAccounts, agent);
-  const agentErrors = filterByAgent(errors, agent);
+  // Kimi 网页会话问题已在卡片内联引导，不再重复生成错误卡（兼容旧后端载荷）
+  const agentErrors = filterByAgent(errors, agent)
+    .filter((err) => !String((err && err.error) || "").includes("kimi_web_"));
   // 再叠加设置页"显示"勾选：未勾选的 provider（如 DeepSeek）配额区同样隐藏；
   // 与看板一致的自愈：勾选把现有 provider 全部过滤掉时回退为显示全部
   const displaySel = readDisplaySelection();
@@ -975,15 +1011,15 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
           `<b>${String(i).padStart(2, "0")}:00 – ${String(i).padStart(2, "0")}:59</b>` +
           SERIES_DEFS.map(([key, name, color]) =>
             `<div class="tt-row"><span class="swatch" style="background:${color}"></span>${name}` +
-            `<span class="tt-val">${fmt(entry[key])}</span></div>`).join("") +
-          `<div class="tt-row">${t("dash.ttTotal")}<span class="tt-val">${fmt(entry.total)}</span></div>` +
+            `<span class="tt-val">${fmtTokens(entry[key])}</span></div>`).join("") +
+          `<div class="tt-row">${t("dash.ttTotal")}<span class="tt-val">${fmtTokens(entry.total)}</span></div>` +
           `<div class="tt-row">${t("dash.ttRequests")}<span class="tt-val">${fmt(entry.requests)}</span></div>`),
       };
     }
     const list = (trendSource && trendSource.day_list) || [];
     const rows = (trendSource && trendSource.daily) || [];
     const tip = (label, value) =>
-      `<b>${label}</b><div class="tt-row">${t("dash.tokens")}<span class="tt-val">${fmt(value || 0)}</span></div>`;
+      `<b>${label}</b><div class="tt-row">${t("dash.tokens")}<span class="tt-val">${fmtTokens(value || 0)}</span></div>`;
     if (trendGran === "day") {
       return {
         labels: list.map(shortDateLabel),
@@ -1044,8 +1080,8 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
         return `<b>${entry.date || ""}</b>` +
           SERIES_DEFS.map(([key, name, color]) =>
             `<div class="tt-row"><span class="swatch" style="background:${color}"></span>${name}` +
-            `<span class="tt-val">${fmt(entry[key])}</span></div>`).join("") +
-          `<div class="tt-row">${t("dash.ttTotal")}<span class="tt-val">${fmt(total)}</span></div>` +
+            `<span class="tt-val">${fmtTokens(entry[key])}</span></div>`).join("") +
+          `<div class="tt-row">${t("dash.ttTotal")}<span class="tt-val">${fmtTokens(total)}</span></div>` +
           `<div class="tt-row">${t("dash.ttRequests")}<span class="tt-val">${fmt(entry.requests)}</span></div>` +
           `<div class="tt-row">${t("dash.ttCacheHit")}<span class="tt-val">${fmtPct(entry.cache_hit_rate)}</span></div>`;
       }}
@@ -1129,20 +1165,22 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
       .sort((a, b) => ((a[sessionsSort.key] || 0) - (b[sessionsSort.key] || 0)) * sessionsSort.dir),
     [sessionsAll, sessionsSort],
   );
-  // 分组：组间按组总 token 降序，组内沿用当前排序键；全局最多渲染 200 行数据
+  // 分组：组间按组内最近活跃时间降序（新建/刚改动的项目置顶），
+  // 同刻再按组总 token、名称排序；组内沿用当前排序键，全局最多渲染 200 行。
   const groupPlan = useMemo(() => {
     if (sessionsGroup === "none") return null;
     const groups = new Map();
     for (const s of sortedRows) {
       const key = sessionsGroup === "project" ? (s.project || "(unknown)") : (s.agent || "?");
-      if (!groups.has(key)) groups.set(key, { key, workDir: s.work_dir || "", rows: [], total: 0 });
+      if (!groups.has(key)) groups.set(key, { key, workDir: s.work_dir || "", rows: [], total: 0, last: 0 });
       const g = groups.get(key);
       g.rows.push(s);
       g.total += s.total || 0;
+      g.last = Math.max(g.last, s.last || 0);
     }
     let left = sessionsRowLimit;
     return [...groups.values()]
-      .sort((a, b) => b.total - a.total || a.key.localeCompare(b.key))
+      .sort((a, b) => b.last - a.last || b.total - a.total || a.key.localeCompare(b.key))
       .map((g) => {
         const shown = g.rows.slice(0, Math.max(0, left));
         left -= shown.length;
@@ -1200,9 +1238,9 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
         </td>
         <td
           className="sess-tokens"
-          title={comps.map(([key, value]) => `${key.replace("_", " ")}: ${fmt(value)}`).join(" · ")}
+          title={comps.map(([key, value]) => `${key.replace("_", " ")}: ${fmtTokens(value)}`).join(" · ")}
         >
-          <b>{fmt(session.total)}</b>
+          <b>{fmtTokens(session.total)}</b>
           <span className="sess-bar">
             {comps.map(([key, value]) => value > 0 ? (
               <i key={key} style={{ width: `${((value / base) * 100).toFixed(1)}%`, background: `var(--c-${key})` }} />
@@ -1287,18 +1325,18 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
       <div className="kpi-row">
         <div className="kpi-card">
           <div className="kpi-label">{t("dash.kpiWeek")}{agent !== "all" ? ` · ${AGENT_LABELS[agent]}` : ""}</div>
-          <div className="kpi-value">{fmt(kpi.week_total)}</div>
+          <div className="kpi-value">{fmtTokens(kpi.week_total)}</div>
           <div className="kpi-sub">
             {wowHtml}
             {wowHtml ? ` ${t("dash.kpiWeekSub")}` : (kpi.prev_week_total > 0 ? "" : t("dash.kpiWeekSub"))}
             {kpi.prev_week_total > 0
-              ? ` · ${t("dash.kpiWeekBase").replace("{v}", abbrev(kpi.prev_week_total))}`
+              ? ` · ${t("dash.kpiWeekBase").replace("{v}", fmtTokens(kpi.prev_week_total))}`
               : ""}
           </div>
         </div>
         <div className="kpi-card">
           <div className="kpi-label">{t("dash.kpiToday")}</div>
-          <div className="kpi-value">{fmt(kpi.today_total)}</div>
+          <div className="kpi-value">{fmtTokens(kpi.today_total)}</div>
         </div>
         <div className="kpi-card">
           <div className="kpi-label">{t("dash.kpiCacheToday")}</div>
@@ -1328,7 +1366,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                   {t("dash.rateActiveSummary")
                     .replace("{p}", String(projects.length))
                     .replace("{n}", String(sessionCount))
-                    .replace("{t}", abbrev(active.tokens || 0))}
+                    .replace("{t}", fmtTokens(active.tokens || 0))}
                 </div>
                 <div className="act-list">
                   {projects.map((proj) => {
@@ -1351,7 +1389,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                         </button>
                         <span className="act-proj-name" title={proj.path || proj.name}>{proj.name}</span>
                         <span className="act-proj-stats">
-                          {fmt(proj.tokens)} {t("dash.tokens")} · {t("dash.sessionsCount").replace("{n}", String((proj.sessions || []).length))}
+                          {fmtTokens(proj.tokens)} {t("dash.tokens")} · {t("dash.sessionsCount").replace("{n}", String((proj.sessions || []).length))}
                         </span>
                       </div>
                       {collapsed ? null : (proj.sessions || []).map((s) => {
@@ -1369,7 +1407,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                             </span>
                             <span className="act-agent"><BrandIcon of={s.agent} size={11} />{AGENT_LABELS[s.agent] || s.agent}</span>
                             <span className="act-meta">
-                              {fmt(s.output)} out · {s.requests} req · {t("dash.rateEndedAgo").replace("{d}", fmtSpan(s.ended_ago_seconds || 0))}
+                              {fmtTokens(s.output)} out · {s.requests} req · {t("dash.rateEndedAgo").replace("{d}", fmtSpan(s.ended_ago_seconds || 0))}
                             </span>
                             <span className="act-rate" title={t(speedMode === "gen" ? "dash.speedHint" : "dash.speedHintThroughput")}>
                               {rateText(latestModel || s)}
@@ -1382,7 +1420,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                                   {rateModelLabel(s.cli || s.agent, m.model)}
                                 </span>
                                 <span className="act-meta">
-                                  {fmt(m.tokens)} {t("dash.tokens")} · {fmt(m.output)} out · {m.requests} req
+                                  {fmtTokens(m.tokens)} {t("dash.tokens")} · {fmtTokens(m.output)} out · {m.requests} req
                                 </span>
                                 <span className="act-rate">{rateText(m)}</span>
                               </div>
@@ -1468,6 +1506,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
               accountState={accountStates[agentProviderKey(account.provider)]}
               tokenMode={quotaTokenMode}
               estimates={quotaEstimates}
+              onRefresh={onRefresh}
             />
           ))}
           {(usagePayload && !usagePayload.error ? shownErrors : []).map((err) => {
@@ -1607,9 +1646,9 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
             return `<b>${date}</b>` +
               models.map((model, j) => perModel[j]
                 ? `<div class="tt-row"><span class="swatch" style="background:${MODEL_PALETTE[j % MODEL_PALETTE.length]}"></span>${model}` +
-                  `<span class="tt-val">${fmt(perModel[j])}</span></div>`
+                  `<span class="tt-val">${fmtTokens(perModel[j])}</span></div>`
                 : "").join("") +
-              `<div class="tt-row">${t("dash.ttTotal")}<span class="tt-val">${fmt(((daily || [])[i] || {}).total || 0)}</span></div>`;
+              `<div class="tt-row">${t("dash.ttTotal")}<span class="tt-val">${fmtTokens(((daily || [])[i] || {}).total || 0)}</span></div>`;
           }}
         />
       </section>
@@ -1699,7 +1738,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                       {sessionsGroup === "agent" ? <BrandIcon of={g.key} size={13} /> : null}
                       {sessionsGroup === "agent" ? (AGENT_LABELS[g.key] || g.key) : g.key}
                       <span className="group-stats">
-                        {t("dash.sessionsCount").replace("{n}", String(g.rows.length))} · {fmt(g.total)} {t("dash.tokens")}
+                        {t("dash.sessionsCount").replace("{n}", String(g.rows.length))} · {fmtTokens(g.total)} {t("dash.tokens")}
                         {sessionsGrand > 0 ? ` · ${((g.total / sessionsGrand) * 100).toFixed(1)}%` : ""}
                       </span>
                     </td>

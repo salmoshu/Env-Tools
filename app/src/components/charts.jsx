@@ -3,7 +3,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
-  abbrev, bindChartClickTooltip, bindChartTooltip, esc, fmt, fmtPct, niceMax, tipRow, tipTitle,
+  abbrev, fmtTokens, bindChartClickTooltip, bindChartTooltip, esc, fmt, fmtPct, niceMax, tipRow, tipTitle,
 } from "../utils.js";
 import { t } from "../i18n.js";
 
@@ -338,7 +338,7 @@ function buildDonut(container, items) {
       svgEl("path", { d: path, fill: item.color, stroke: "var(--card)", "stroke-width": 1.5 }, svg);
       const hit = svgEl("path", { d: path, fill: "transparent" }, svg);
       hit.dataset.tip = tipTitle(item.name) +
-        tipRow("tokens", fmt(item.value)) +
+        tipRow("tokens", fmtTokens(item.value)) +
         tipRow("share", fmtPct(fraction));
       angle += sweep;
     }
@@ -500,7 +500,7 @@ function buildValueLineChart(container, labels, values, valueLabel, toolTips) {
         fill: "transparent",
       }, svg);
       hit.dataset.tip = (toolTips && toolTips[i]) ||
-        tipTitle(labels[i]) + tipRow(valueLabel, fmt(values[i] || 0));
+        tipTitle(labels[i]) + tipRow(valueLabel, fmtTokens(values[i] || 0));
       if (i % labelStep === 0) {
         const text = svgEl("text", {
           x: margin.left + step * (i + 0.5), y: height - 6,
@@ -532,7 +532,7 @@ export function ProjectBars({ items }) {
         <div
           key={`${item.name}\u0000${item.path}`}
           className="proj-row"
-          data-tip={tipTitle(item.path || item.name) + tipRow("tokens", fmt(item.total))}
+          data-tip={tipTitle(item.path || item.name) + tipRow("tokens", fmtTokens(item.total))}
         >
           <span className="proj-name" title={item.name}>{item.name}</span>
           <div className="proj-track">
@@ -621,7 +621,7 @@ export function CalendarHeatmap({ calendar }) {
       // 内嵌阴影画高亮圈：outline 画在格子外侧，最右列会被滚动容器截断 1px
       if (key === todayKey) cell.style.boxShadow = "inset 0 0 0 1px var(--marker)";
       cell.dataset.tip = tipTitle(key) +
-        tipRow("tokens", fmt(entry ? entry[0] : 0)) +
+        tipRow("tokens", fmtTokens(entry ? entry[0] : 0)) +
         tipRow("requests", fmt(entry ? entry[1] : 0));
       cells.appendChild(cell);
     }

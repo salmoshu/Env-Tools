@@ -702,6 +702,33 @@ async fn quota_reset_codex(
     }
 }
 
+/// Kimi 网页会话：保存 refresh_token 并验证。错误码区分“需重新授权”
+///（kimi_web_session_expired / missing_token）与网络临时失败，前端据此引导。
+async fn kimi_web_credential(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    Json(payload): Json<Value>,
+) -> Json<Value> {
+    let result = tokio::task::spawn_blocking(move || quota::save_kimi_web_credential(&payload))
+        .await
+        .unwrap_or_else(|err| {
+            Err(quota::KimiWebError {
+                code: "kimi_web_worker".into(),
+                message: format!("credential worker failed: {err}"),
+            })
+        });
+    match result {
+        Ok(data) => {
+            invalidate_usage_cache(&state).await;
+            Json(serde_json::json!({ "ok": true, "data": data }))
+        }
+        Err(err) => Json(serde_json::json!({
+            "ok": false,
+            "code": err.code,
+            "error": err.message,
+        })),
+    }
+}
+
 async fn backend_status() -> Json<Value> {
     Json(settings::backend_status_payload())
 }
@@ -927,6 +954,7 @@ async fn main() {
         .route("/api/cache-clear", post(cache_clear))
         .route("/api/quota/reset/glm", post(quota_reset_glm))
         .route("/api/quota/reset/codex", post(quota_reset_codex))
+        .route("/api/kimi/web-credential", post(kimi_web_credential))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth_guard,

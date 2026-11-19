@@ -10,6 +10,7 @@ import { useInstallState, setInstallResult, clearInstallLog, busyComponents } fr
 import { t, useLang } from "../i18n.js";
 import { isNewerVersion, activateOnKeys } from "../utils.js";
 import BrandIcon from "../components/BrandIcon.jsx";
+import Select from "../components/Select.jsx";
 import { showToast } from "../toast.jsx";
 
 const CATEGORIES = ["agents", "development", "system"];
@@ -448,38 +449,37 @@ export default function Tools({ lastPayload }) {
         </section>
       )}
 
-      {platformTab === "wsl" && wslDistros && wslDistros.length > 0 && (
-        <div className="wsl-distros">
-          <span className="wsl-distros-label">{t("tools.wslDistros")}</span>
-          {wslDistros.map((distro) => {
-            const selected = distro.name === wslTarget;
-            const clickable = distro.manageable && !selected;
-            const fire = () => {
-              if (!clickable) return;
-              setWslTarget(distro.name);
-              try { localStorage.setItem(WSL_TARGET_KEY, distro.name); } catch {}
-              setDetected(null); // 旧目标的探测结果作废，effect 重探
-            };
-            return (
-              <span
-                key={distro.name}
-                className={`wsl-distro${selected ? " current" : ""}${distro.manageable ? "" : " disabled"}`}
-                role={clickable ? "button" : undefined}
-                tabIndex={clickable ? 0 : undefined}
-                title={!distro.manageable
-                  ? t("tools.wslNotManageable")
-                  : clickable ? t("tools.wslTargetHint") : undefined}
-                onClick={clickable ? fire : undefined}
-                onKeyDown={clickable ? activateOnKeys(fire) : undefined}
-              >
-                <span className="wsl-distro-name">{distro.name}</span>
-                {distro.version ? <span className="wsl-distro-ver">{distro.version}</span> : null}
-                {selected ? <span className="wsl-distro-tag">{t("tools.wslCurrent")}</span> : null}
-              </span>
-            );
-          })}
-        </div>
-      )}
+      {platformTab === "wsl" && (() => {
+        // 发行版可能是十几条：用下拉框代替横排 chip，避免占满首屏。
+        // 只列可管理的发行版（无 bash 的发行版不进入选项）。
+        const manageable = (wslDistros || []).filter((distro) => distro.manageable);
+        if (!manageable.length) return null;
+        const value = manageable.some((distro) => distro.name === wslTarget)
+          ? wslTarget
+          : manageable[0].name;
+        return (
+          <div className="wsl-distros">
+            <label className="wsl-distros-field">
+              <span className="wsl-distros-label">{t("tools.wslDistros")}</span>
+              <Select
+                className="wsl-distro-picker"
+                value={value}
+                ariaLabel={t("tools.wslDistros")}
+                onChange={(next) => {
+                  setWslTarget(next);
+                  try { localStorage.setItem(WSL_TARGET_KEY, next); } catch {}
+                  setDetected(null); // 旧目标的探测结果作废，effect 重探
+                }}
+                options={manageable.map((distro) => [
+                  distro.name,
+                  distro.version ? `${distro.name} · ${distro.version}` : distro.name,
+                ])}
+              />
+            </label>
+            <span className="wsl-distros-hint">{t("tools.wslTargetHint")}</span>
+          </div>
+        );
+      })()}
 
       <div className="tools-categories" role="group" aria-label={t("tools.categories")}>
         {["all", ...CATEGORIES].map((key) => (

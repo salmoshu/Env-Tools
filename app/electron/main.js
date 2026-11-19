@@ -8,7 +8,7 @@
 // 数据链路（v0.7.0）：渲染层只走 IPC；数据全部由原生后端 env-tools-api
 // （Rust + axum，配额/分析/设置全原生）提供，python 引擎已移除。
 
-const { app, BrowserWindow, ipcMain, net } = require("electron");
+const { app, BrowserWindow, ipcMain, net, shell } = require("electron");
 const { spawn, execSync, exec } = require("child_process");
 const os = require("os");
 const path = require("path");
@@ -869,6 +869,21 @@ ipcMain.handle("disk-scan-full", async (_e, tab) => {
   catch (err) { return { ok: false, error: err.message }; }
 });
 ipcMain.handle("open-zcode", () => require("./zcodeLauncher").openZcode());
+// Kimi 网页授权：refresh_token 交后端验证并落盘（Windows 侧凭证优先于 WSL 回退）
+ipcMain.handle("save-kimi-web-credential", async (_e, body) =>
+  backendFetch("/api/kimi/web-credential", 30000, body || {}).catch((err) => ({
+    ok: false,
+    error: err.message,
+  })));
+// 外链只放行 kimi.com 域，避免把任意 URL 交给系统浏览器
+ipcMain.handle("open-external", async (_e, url) => {
+  const target = String(url || "");
+  if (!/^https:\/\/([a-z0-9-]+\.)*kimi\.com(\/|$)/i.test(target)) {
+    return { ok: false, error: "blocked external url" };
+  }
+  await shell.openExternal(target);
+  return { ok: true };
+});
 ipcMain.handle("disk-deep", async (_e, path, depth) => {
   const q = `?path=${encodeURIComponent(path)}&depth=${encodeURIComponent(depth || 2)}`;
   return backendFetch(`/api/disk/deep${q}`).catch(e => ({ ok: false, error: e.message }));

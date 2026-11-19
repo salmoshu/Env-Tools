@@ -104,19 +104,25 @@ ChatGPT 订阅窗口，卡片直接说明，不显示 0% 或无限额度。每�
 - Kimi 月度总量与会员信息（可选）：官网订阅页的「总使用量」（月总量，跨 Kimi
   网页版与 Kimi Code 共享）、会员名称（如 Allegro）与当前周期终止/续费时间，
   只由网页版网关提供，CLI 凭证无法访问（`/coding/v1/usages` 已不再返回会员
-  等级字段）。配置方式：浏览器登录
-  `kimi.com` 后，在开发者工具 Application → Local Storage → `https://www.kimi.com`
-  中复制 `refresh_token` 的值，写入 `~/.kimi-code/credentials/kimi-web.json`：
+  等级字段）。v0.8.1 起优先使用应用内引导：Kimi 卡片出现「重新授权 Kimi」时
+  点击，按弹窗步骤打开 `kimi.com`，在开发者工具 Application → Local Storage →
+  `https://www.kimi.com` 中复制 `refresh_token` 粘贴并验证；后端会先向官网换取
+  新 token、再取会员信息，成功后写入 `~/.kimi-code/credentials/kimi-web.json`
+  （默认账号；读取优先级高于 WSL 回退，权限 0600），也支持 `POST
+  /api/kimi/web-credential`（`{account_id, refresh_token}`）。
+
+  手工写入同样可行：
 
   ```json
   {"refresh_token": "粘贴的值"}
   ```
 
-  之后脚本会用官网同款接口自动刷新该凭证（写回同文件，权限 0600），无需重复
-  复制；网页端退出登录后需重新复制。可用 `KIMI_WEB_CREDENTIALS_PATH` 或
+  之后脚本会用官网同款接口自动刷新该凭证（写回同文件），无需重复复制；
+  网页端退出登录后需重新授权。可用 `KIMI_WEB_CREDENTIALS_PATH` 或
   `--kimi-web-credentials` 指定其他路径，`KIMI_WEB_SUBSCRIPTION_URL` /
   `KIMI_WEB_STATS_URL` 可覆盖接口地址。未配置时自动跳过，不影响其它窗口；
   此时会员名称保持 unknown，到期时间可用设置页 Membership 手动配置。
+  网页接口返回 401 时，卡片会区分「授权过期（需重新登录）」与网络临时失败。
 - Codex：默认读取 `~/.codex/auth.json`。首次使用前执行 `codex login`。
   v0.7.39 起可在桌面应用 **设置 → 智能体 → OpenAI Codex** 中添加多个独立
   profile；默认账号继续使用 `~/.codex`，新增账号使用
@@ -138,8 +144,10 @@ ChatGPT 订阅窗口，卡片直接说明，不显示 0% 或无限额度。每�
   2. 环境变量 `DEEPSEEK_API_KEY`；
   3. 凭证文件 `~/.deepseek/credentials.json`（`{"api_key": "..."}`，权限 0600），
      可用 `DEEPSEEK_CREDENTIALS_PATH` 或 `--deepseek-credentials` 指定其他路径。
-  监控会查询 `GET /user/balance` 显示余额，并以 **50 元为每月上限**按使用量计算占比
-  （`使用量 = 50 − 余额`，小于 0 时按 0 截断），与其它模型的进度条口径保持一致。
+  监控会查询 `GET /user/balance` 显示余额，并按「相邻两次采集的余额净减少量」
+  累计本地消费（充值/赠送造成的负增量不计）。起始日写在
+  `~/.cache/ai-usage-monitor/deepseek-spend.json.started`，只创建一次；状态文件
+  损坏时自动回退 `.bak`，起始日不会退回当天（v0.8.1 修复了该漂移）。
   可用 `DEEPSEEK_USE_PROXY`（默认走系统代理）与 `DEEPSEEK_TIMEOUT`（默认 30 秒）
   调整请求行为，用 `DEEPSEEK_BALANCE_URL` 覆盖接口地址。
 - GLM（智谱 BigModel）：面向 **GLM Coding Plan** 订阅用户，使用 BigModel 平台的

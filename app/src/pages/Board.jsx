@@ -12,6 +12,7 @@ import { useInstallState, setInstallResult, upgradingTargets as getUpgradingTarg
 import ResetChances from "../components/ResetChances.jsx";
 import BrandIcon from "../components/BrandIcon.jsx";
 import UpgradeOverlay from "../components/UpgradeOverlay.jsx";
+import KimiWebAuth from "../components/KimiWebAuth.jsx";
 import AgentAccountControl from "../components/AgentAccountControl.jsx";
 import { agentAccountId } from "../components/AgentAccountPicker.jsx";
 import { agentProviderKey, useAgentAccountStates } from "../agentAccounts.js";
@@ -27,6 +28,7 @@ export default function Board({ lastPayload }) {
   const [dismissedErrors, setDismissedErrors] = useState({});
   const [fatalErrorDismissed, setFatalErrorDismissed] = useState("");
   const [upgradeProvider, setUpgradeProvider] = useState(null);
+  const [kimiAuthAccount, setKimiAuthAccount] = useState(null);
   const install = useInstallState();
   const upgradingTargets = getUpgradingTargets(install, lastPayload?.data);
   const upgrading = upgradingTargets.length ? { targets: upgradingTargets } : null;
@@ -148,6 +150,7 @@ export default function Board({ lastPayload }) {
     ((data && data.errors) || [])
       .filter((error) => selectedProviders.has(error.provider)
         && matchesActiveAccount(error)
+        && !String((error && error.error) || "").includes("kimi_web_")
         && !dismissedErrors[`${error.provider}:${error.account_id || ""}:${error.error}`]),
     (e) => e.provider || "",
   );
@@ -188,6 +191,9 @@ export default function Board({ lastPayload }) {
           const info = versions[account.provider] || {};
           const membership = account.membership;
           const providerKey = agentProviderKey(account.provider);
+          const webSession = account.web_session;
+          const webState = webSession && webSession.state;
+          const webAuthIssue = webState === "expired" || webState === "missing";
           return (
             <div className="provider" key={account.provider} data-provider-key={providerKey || undefined}>
               <div className="provider-head">
@@ -217,6 +223,22 @@ export default function Board({ lastPayload }) {
                 ) : null}
                 <span className="updated">{updated}</span>
               </div>
+              {account.provider === "Kimi Code" && webState && webState !== "ok" ? (
+                <div className={`kimi-web-notice ${webAuthIssue ? "auth" : "warn"}`} title={webSession.message || ""}>
+                  <span className="kimi-web-notice-text">
+                    {webAuthIssue
+                      ? t(webState === "missing" ? "dash.kimiWebMissing" : "dash.kimiWebExpired")
+                      : t(webState === "degraded" ? "dash.kimiWebDegraded" : "dash.kimiWebError")}
+                  </span>
+                  <button
+                    type="button"
+                    className="kimi-web-btn"
+                    onClick={() => (webAuthIssue ? setKimiAuthAccount(account) : window.api.refresh())}
+                  >
+                    {webAuthIssue ? t("dash.kimiWebReauth") : t("state.retry")}
+                  </button>
+                </div>
+              ) : null}
               {membership && membership.error ? (
                 <div className="membership error">{membership.error}</div>
               ) : membership && membership.purchased_at && membership.ends_at ? (
@@ -321,6 +343,13 @@ export default function Board({ lastPayload }) {
           payload={lastPayload || { data: {} }}
           onClose={() => setUpgradeProvider(null)}
           onStart={(targets) => beginUpgrade(targets)}
+        />
+      )}
+      {kimiAuthAccount && (
+        <KimiWebAuth
+          account={kimiAuthAccount}
+          onClose={() => setKimiAuthAccount(null)}
+          onSaved={() => window.api.refresh()}
         />
       )}
     </>

@@ -1,11 +1,12 @@
 //! Kimi Code：CLI OAuth 凭证刷新 + 用量窗口；网页凭证补月总量/会员信息。
 
-use std::path::Path;
+use std::fmt;
+use std::path::{Path, PathBuf};
 
 use chrono::{Local, Utc};
 use serde_json::Value;
 
-use super::http::{get_json, post_json};
+use super::http::{get_json, post_json, post_json_detailed};
 use super::membership::attach_manual_membership;
 use super::util::{
     env_timeout, fetched_now, iso_seconds, monthly_window_seconds, normalize_window, num_of,
@@ -26,6 +27,48 @@ const KIMI_WEB_SUBSCRIPTION_URL: &str =
     "https://www.kimi.com/apiv2/kimi.gateway.membership.v2.MembershipService/GetSubscription";
 /// 与 Python TOKEN_REFRESH_THRESHOLD 一致：剩余寿命低于 5 分钟即刷新
 const TOKEN_REFRESH_THRESHOLD: i64 = 300;
+
+/// 网页会话错误：code 供前端按类型引导（过期 → 重新授权；网络 → 重试），
+/// message 保留服务端明细（如 "Session expired. Please log in again."）。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct KimiWebError {
+    pub code: String,
+    pub message: String,
+}
+
+impl KimiWebError {
+    fn new(code: &str, message: impl Into<String>) -> Self {
+        Self {
+            code: code.to_string(),
+            message: message.into(),
+        }
+    }
+
+    fn is_expired(&self) -> bool {
+        self.code == "kimi_web_session_expired"
+    }
+
+    fn is_auth_missing(&self) -> bool {
+        self.code == "kimi_web_missing_token"
+    }
+}
+
+impl fmt::Display for KimiWebError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+/// 把 HTTP 失败归类为“需要重新登录 / 网络问题 / 其他 HTTP 错误”。
+fn web_failure(failure: super::http::HttpFailure) -> KimiWebError {
+    if failure.is_network() {
+        KimiWebError::new("kimi_web_network", failure.message)
+    } else if failure.status == Some(401) {
+        KimiWebError::new("kimi_web_session_expired", failure.message)
+    } else {
+        KimiWebError::new("kimi_web_http", failure.message)
+    }
+}
 
 /// 不验签读取 JWT 的 exp（秒）。
 fn jwt_expires_at(token: &str) -> i64 {
@@ -276,12 +319,49 @@ const KIMI_WEB_JSON_HEADERS: &[(&str, &str)] = &[
     ("x-msh-platform", "web"),
 ];
 
+/// 用 refresh_token 换新会话；401 与网络故障分开上报（前者要重新授权，
+/// 后者只需重试），并保留服务端 "Session expired..." 明细。
+fn refresh_kimi_web(
+    refresh_token: &str,
+    use_proxy: bool,
+    timeout: u64,
+) -> Result<Value, KimiWebError> {
+    let refresh_token = refresh_token.trim();
+    if refresh_token.is_empty() {
+        return Err(KimiWebError::new(
+            "kimi_web_missing_token",
+            "Kimi web refresh_token is empty; copy it again from kimi.com",
+        ));
+    }
+    let body = serde_json::json!({ "refresh_token": refresh_token }).to_string();
+    let result = post_json_detailed(
+        KIMI_WEB_REFRESH_URL,
+        &[("Content-Type", "application/json"), ("Accept", "application/json")],
+        &body,
+        use_proxy,
+        timeout,
+    )
+    .map_err(web_failure)?;
+    let access_token = result
+        .get("access_token")
+        .or_else(|| result.get("accessToken"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if access_token.is_empty() {
+        return Err(KimiWebError::new(
+            "kimi_web_invalid_response",
+            "Kimi token refresh response missing access_token",
+        ));
+    }
+    Ok(result)
+}
+
 fn kimi_web_access_token(
     path: &Path,
     credentials: &Value,
     use_proxy: bool,
     timeout: u64,
-) -> Result<String, String> {
+) -> Result<String, KimiWebError> {
     let mut credentials = credentials.clone();
     let access_token = credentials
         .get("access_token")
@@ -297,32 +377,18 @@ fn kimi_web_access_token(
         .unwrap_or("")
         .to_string();
     if refresh_token.is_empty() {
-        return Err("refresh_token missing in Kimi web credentials; copy it again from the browser (see docs/usage-monitor.md)".into());
+        return Err(KimiWebError::new(
+            "kimi_web_missing_token",
+            "refresh_token missing in Kimi web credentials; reconnect the Kimi web session",
+        ));
     }
-    let body = serde_json::json!({ "refresh_token": refresh_token }).to_string();
-    let result = post_json(
-        KIMI_WEB_REFRESH_URL,
-        &[("Content-Type", "application/json"), ("Accept", "application/json")],
-        &body,
-        use_proxy,
-        timeout,
-    )
-    .map_err(|err| {
-        if err.starts_with("Network request failed") {
-            err
-        } else {
-            "Failed to refresh Kimi web credentials; copy refresh_token again from the browser (see docs/usage-monitor.md)".to_string()
-        }
-    })?;
+    let result = refresh_kimi_web(&refresh_token, use_proxy, timeout)?;
     let access_token = result
         .get("access_token")
         .or_else(|| result.get("accessToken"))
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    if access_token.is_empty() {
-        return Err("Failed to refresh Kimi web credentials; copy refresh_token again from the browser (see docs/usage-monitor.md)".into());
-    }
     credentials["access_token"] = Value::String(access_token.clone());
     credentials["refresh_token"] = Value::String(
         result
@@ -336,11 +402,134 @@ fn kimi_web_access_token(
     Ok(access_token)
 }
 
-fn kimi_web_post(url: &str, token: &str, use_proxy: bool, timeout: u64) -> Result<Value, String> {
+fn kimi_web_post(
+    url: &str,
+    token: &str,
+    use_proxy: bool,
+    timeout: u64,
+) -> Result<Value, KimiWebError> {
     let mut headers: Vec<(&str, &str)> = Vec::with_capacity(KIMI_WEB_JSON_HEADERS.len() + 1);
     headers.push(("Authorization", token));
     headers.extend_from_slice(KIMI_WEB_JSON_HEADERS);
-    post_json(url, &headers, "{}", use_proxy, timeout)
+    post_json_detailed(url, &headers, "{}", use_proxy, timeout).map_err(web_failure)
+}
+
+/// web_session：前端据此在 Kimi 卡片内展示授权状态与“重新授权”入口。
+fn web_session(
+    configured: bool,
+    state: &str,
+    code: &str,
+    message: &str,
+    path: Option<&Path>,
+) -> Value {
+    serde_json::json!({
+        "configured": configured,
+        "state": state,
+        "code": code,
+        "message": message,
+        "path": path.map(|value| value.display().to_string()),
+    })
+}
+
+/// 保存网页会话的落盘位置：默认账号写 Windows 侧
+/// ~/.kimi-code/credentials/kimi-web.json（读取优先级高于 WSL 回退）；
+/// 额外账号写各自 profile 目录。
+fn kimi_web_write_path(profile: &AccountProfile) -> PathBuf {
+    if profile.is_default {
+        if let Some(explicit) = env_value("KIMI_WEB_CREDENTIALS_PATH") {
+            return PathBuf::from(explicit);
+        }
+        return crate::settings::local_home().join(".kimi-code/credentials/kimi-web.json");
+    }
+    profile.home.join("credentials/kimi-web.json")
+}
+
+/// 前端“重新授权 Kimi 网页”提交 refresh_token：
+/// 先用它换取新 token（验证有效性），再取会员信息，最后落盘。
+pub fn save_kimi_web_credential(payload: &Value) -> Result<Value, KimiWebError> {
+    let account_id = payload
+        .get("account_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("default");
+    let refresh_token = payload
+        .get("refresh_token")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            KimiWebError::new(
+                "kimi_web_missing_token",
+                "refresh_token is required; copy it from kimi.com local storage",
+            )
+        })?;
+    let profile = crate::accounts::account(crate::accounts::Provider::Kimi, account_id)
+        .ok_or_else(|| {
+            KimiWebError::new(
+                "kimi_web_unknown_account",
+                format!("Unknown Kimi account: {account_id}"),
+            )
+        })?;
+    let use_proxy = env_enabled("KIMI_USE_PROXY", false);
+    let timeout = env_timeout("KIMI_TIMEOUT", 30);
+    let refreshed = refresh_kimi_web(refresh_token, use_proxy, timeout)?;
+    let access_token = refreshed
+        .get("access_token")
+        .or_else(|| refreshed.get("accessToken"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let new_refresh = refreshed
+        .get("refresh_token")
+        .or_else(|| refreshed.get("refreshToken"))
+        .and_then(Value::as_str)
+        .unwrap_or(refresh_token)
+        .to_string();
+    // 会员信息是可选增强：刷新已证明会话有效，这里失败不阻断保存
+    let mut plan: Option<String> = None;
+    let mut membership = Value::Null;
+    let mut warning: Option<String> = None;
+    match kimi_web_post(
+        &env_value("KIMI_WEB_SUBSCRIPTION_URL").unwrap_or_else(|| KIMI_WEB_SUBSCRIPTION_URL.into()),
+        &access_token,
+        use_proxy,
+        timeout,
+    ) {
+        Ok(payload) => {
+            if let Some(subscription) = normalize_kimi_subscription(&payload) {
+                plan = subscription
+                    .get("plan")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                membership = subscription.get("membership").cloned().unwrap_or(Value::Null);
+            }
+        }
+        Err(err) if err.is_expired() => return Err(err),
+        Err(err) => warning = Some(err.message),
+    }
+    let path = kimi_web_write_path(&profile);
+    let mut credentials = crate::settings::read_json(&path).unwrap_or_else(|_| serde_json::json!({}));
+    if !credentials.is_object() {
+        credentials = serde_json::json!({});
+    }
+    credentials["access_token"] = Value::String(access_token.clone());
+    credentials["refresh_token"] = Value::String(new_refresh);
+    credentials["expires_at"] = Value::from(jwt_expires_at(&access_token));
+    credentials["saved_at"] = Value::String(Utc::now().to_rfc3339());
+    credentials["saved_by"] = Value::String("env-tools".into());
+    crate::settings::write_private_json(&path, &credentials).map_err(|err| {
+        KimiWebError::new(
+            "kimi_web_write_failed",
+            format!("Cannot write {}: {err}", path.display()),
+        )
+    })?;
+    Ok(serde_json::json!({
+        "plan": plan,
+        "membership": membership,
+        "path": path.display().to_string(),
+        "warning": warning,
+    }))
 }
 
 /// Kimi 卡片：当前 profile 的 CLI 凭证查窗口，网页凭证补月总量/会员名/到期。
@@ -368,21 +557,55 @@ pub fn collect(profile: &AccountProfile, errors: &mut Vec<Value>) -> Option<Valu
     let use_proxy = env_enabled("KIMI_USE_PROXY", false);
     let timeout = env_timeout("KIMI_TIMEOUT", 30);
     let Some(web_path) = crate::accounts::kimi_web_credential_path(profile) else {
+        account["web_session"] = web_session(
+            false,
+            "missing",
+            "kimi_web_not_configured",
+            "Kimi web session is not connected; membership tier and monthly total are unavailable",
+            None,
+        );
         return Some(account);
     };
-    let Ok(credentials) = crate::settings::read_json(&web_path) else {
-        return Some(account);
+    let credentials = match crate::settings::read_json(&web_path) {
+        Ok(credentials) => credentials,
+        Err(err) => {
+            account["web_session"] = web_session(
+                true,
+                "error",
+                "kimi_web_unreadable",
+                &err,
+                Some(&web_path),
+            );
+            return Some(account);
+        }
     };
     let token = match kimi_web_access_token(&web_path, &credentials, use_proxy, timeout) {
         Ok(token) => token,
         Err(err) => {
-            errors.push(serde_json::json!({
-                "provider": "Kimi Monthly Total",
-                "account_id": profile.id,
-                "account_label": profile.label,
-                "error": err,
-            }));
+            let state = if err.is_expired() || err.is_auth_missing() {
+                "expired"
+            } else {
+                "error"
+            };
+            account["web_session"] =
+                web_session(true, state, &err.code, &err.message, Some(&web_path));
             return Some(account);
+        }
+    };
+    // 网页增强失败不再单独堆错误卡：状态挂在 Kimi 卡片上，前端据此引导
+    // “重新授权”（过期）或“重试”（网络）。
+    let mut session_state = "ok";
+    let mut session_code = String::new();
+    let mut session_message = String::new();
+    let mut note_error = |err: &KimiWebError| {
+        if session_code.is_empty() {
+            session_code = err.code.clone();
+            session_message = err.message.clone();
+        }
+        if err.is_expired() {
+            session_state = "expired";
+        } else if session_state == "ok" {
+            session_state = "degraded";
         }
     };
     match kimi_web_post(
@@ -405,31 +628,69 @@ pub fn collect(profile: &AccountProfile, errors: &mut Vec<Value>) -> Option<Valu
                 account["extra_lines"] = Value::Array(lines);
             }
         }
-        Err(err) => errors.push(serde_json::json!({
-            "provider": "Kimi Monthly Total",
-            "account_id": profile.id,
-            "account_label": profile.label,
-            "error": err,
-        })),
+        Err(err) => note_error(&err),
     }
     let mut subscription_membership = None;
-    if let Ok(payload) = kimi_web_post(
+    match kimi_web_post(
         &env_value("KIMI_WEB_SUBSCRIPTION_URL").unwrap_or_else(|| KIMI_WEB_SUBSCRIPTION_URL.into()),
         &token,
         use_proxy,
         timeout,
     ) {
-        if let Some(subscription) = normalize_kimi_subscription(&payload) {
-            if let Some(plan) = subscription.get("plan").and_then(|v| v.as_str()) {
-                account["plan"] = Value::String(plan.to_string());
+        Ok(payload) => {
+            if let Some(subscription) = normalize_kimi_subscription(&payload) {
+                if let Some(plan) = subscription.get("plan").and_then(|v| v.as_str()) {
+                    account["plan"] = Value::String(plan.to_string());
+                }
+                subscription_membership = subscription.get("membership").cloned();
             }
-            subscription_membership = subscription.get("membership").cloned();
         }
+        Err(err) => note_error(&err),
     }
     if !manual_membership {
         if let Some(membership) = subscription_membership {
             account["membership"] = membership;
         }
     }
+    account["web_session"] = web_session(
+        true,
+        session_state,
+        &session_code,
+        &session_message,
+        Some(&web_path),
+    );
     Some(account)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::quota::http::HttpFailure;
+
+    #[test]
+    fn expired_session_keeps_server_detail() {
+        let failure = HttpFailure {
+            status: Some(401),
+            message: "HTTP 401: Session expired. Please log in again.".to_string(),
+        };
+        let err = web_failure(failure);
+        assert_eq!(err.code, "kimi_web_session_expired");
+        assert!(err.message.contains("Session expired"));
+    }
+
+    #[test]
+    fn network_failure_is_distinguished_from_auth() {
+        let failure = HttpFailure {
+            status: None,
+            message: "Network request failed: connection refused".to_string(),
+        };
+        let err = web_failure(failure);
+        assert_eq!(err.code, "kimi_web_network");
+    }
+
+    #[test]
+    fn missing_refresh_token_reports_actionable_code() {
+        let err = refresh_kimi_web("   ", false, 5).unwrap_err();
+        assert_eq!(err.code, "kimi_web_missing_token");
+    }
 }
