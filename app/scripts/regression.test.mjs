@@ -3,6 +3,9 @@ import { createRequire } from "node:module";
 import { test } from "node:test";
 import { installTarget, installScope, installConflict } from "../electron/installTarget.js";
 import { resetExpiries } from "../src/resetExpiries.js";
+import {
+  quotaEstimateLookup, quotaEstimateLookupTotal, quotaEstimateMeta, quotaEstimateStoreKey,
+} from "../src/quotaEstimate.js";
 
 const { zcodeCandidatePaths } = createRequire(import.meta.url)("../electron/zcodeLauncher.js");
 
@@ -79,6 +82,36 @@ test("明确无到期限制与缺失到期时间分别展示", () => {
 test("GLM 日期缺失时保留真实次数并标记未知日期", () => {
   assert.deepEqual(resetExpiries({ reset_cards: { five_hour: [{ expire_at: null, expire_after_seconds: null }] } }),
     [{ label: "5h", at: null }]);
+});
+
+test("Codex 5h/7d 估算按窗口隔离，联合重置时不会共用 7d 历史", () => {
+  const provider = "OpenAI Codex";
+  const w5 = { used_percent: 10, window_seconds: 18000, reset_after_seconds: 16925 };
+  const w7 = { used_percent: 20, window_seconds: 604800, reset_after_seconds: 549561 };
+  assert.equal(quotaEstimateStoreKey(quotaEstimateMeta(provider, w5)), "codex|18000|1800");
+  assert.equal(quotaEstimateStoreKey(quotaEstimateMeta(provider, w7)), "codex|604800|55800");
+  const estimates = {
+    "codex|18000|1800": { tokens: 6434278, history: [64e6] },
+    "codex|604800|55800": { tokens: 62534629, history: [300e6] },
+  };
+  assert.equal(quotaEstimateLookup(estimates, provider, w5), 6434278);
+  assert.equal(quotaEstimateLookup(estimates, provider, w7), 62534629);
+  assert.ok(quotaEstimateLookupTotal(estimates, provider, w7, 62534629)
+    > quotaEstimateLookupTotal(estimates, provider, w5, 6434278));
+
+  // 两个窗口 elapsed 相同（同代重置）：已用 token 相同是真实用量，
+  // 但总额必须各取自己的历史，不能都变成 7d 的中位。
+  const aligned5 = { used_percent: 11, window_seconds: 18000, reset_after_seconds: 0 };
+  const aligned7 = { used_percent: 11, window_seconds: 604800, reset_after_seconds: 586800 };
+  const sameTokens = 7366836;
+  const aligned = {
+    "codex|18000|18000": { tokens: sameTokens, history: [64e6] },
+    "codex|604800|18000": { tokens: sameTokens, history: [300e6] },
+  };
+  assert.notEqual(
+    quotaEstimateLookupTotal(aligned, provider, aligned5, sameTokens),
+    quotaEstimateLookupTotal(aligned, provider, aligned7, sameTokens),
+  );
 });
 
 test("ZCode 启动路径支持注册表和环境目录并去重", () => {

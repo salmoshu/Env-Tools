@@ -36,6 +36,9 @@ export default function UpgradeOverlay({ provider, payload, onClose, onStart }) 
       <div className="dialog-context">
         <strong>{provider}</strong>
         <div className="dialog-versions"><span>v{info.current}</span><span aria-hidden="true">→</span><strong>v{info.latest}</strong></div>
+        {payload?.data?.native_environment === "windows"
+          ? <span>{t("upgrade.bothSidesHint")}</span>
+          : null}
       </div>
     </Dialog>
   );

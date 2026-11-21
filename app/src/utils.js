@@ -9,22 +9,22 @@ export function fmt(value) {
   return value == null ? "-" : Math.round(value).toLocaleString("en-US");
 }
 
-/// token 数量统一为 M/B 单位（1 位小数，整数值去掉 .0）；
-/// <1000 取整。用于 KPI、图表 tooltip 与会话表，避免裸大数字。
+/// token 数量统一为 M/B 单位（保留两位小数）；K 一位小数、<1000 取整。
+/// 用于 KPI、图表 tooltip 与会话表，避免裸大数字。
 export function fmtTokens(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return "-";
   const abs = Math.abs(n);
-  const trim = (text) => text.replace(/\.0$/, "");
-  if (abs >= 1e9) return `${trim((n / 1e9).toFixed(1))}B`;
-  if (abs >= 1e6) return `${trim((n / 1e6).toFixed(1))}M`;
-  if (abs >= 1e3) return `${trim((n / 1e3).toFixed(1))}K`;
+  if (abs >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
+  if (abs >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
+  if (abs >= 1e3) return `${(n / 1e3).toFixed(1).replace(/\.0$/, "")}K`;
   return String(Math.round(n));
 }
 
+/// 图表坐标轴/图例用的紧凑单位：M/B 同样保留两位小数（与 fmtTokens 对齐）
 export function abbrev(value) {
-  if (value >= 1e9) return (value / 1e9).toFixed(1) + "B";
-  if (value >= 1e6) return (value / 1e6).toFixed(1) + "M";
+  if (value >= 1e9) return (value / 1e9).toFixed(2) + "B";
+  if (value >= 1e6) return (value / 1e6).toFixed(2) + "M";
   if (value >= 1e3) return (value / 1e3).toFixed(0) + "K";
   return String(Math.round(value));
 }

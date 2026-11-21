@@ -1733,16 +1733,73 @@ function startInstall(baseKey, spec, meta = {}) {
   });
 }
 
-ipcMain.handle("upgrade-agents", (_event, providers, environment, windowsSetupScript) => {
+// 升级联动：列出 WSL 发行版（--list --quiet 的输出在 Windows 上带 UTF-16
+// 的 NUL 填充，去掉即可；无 WSL/未装发行版返回空数组）
+function listWslDistroNames() {
+  return new Promise((resolve) => {
+    if (process.platform !== "win32") return resolve([]);
+    const child = spawn("wsl.exe", ["--list", "--quiet"],
+      { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
+    let out = "";
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(out.replace(/\0/g, "").split("\n").map((line) => line.trim()).filter(Boolean));
+    };
+    const timer = setTimeout(finish, 8000);
+    child.stdout.on("data", (d) => (out += String(d)));
+    child.on("error", finish);
+    child.on("close", finish);
+  });
+}
+
+// 该发行版里是否装了对应 CLI（交互式 bash 才能看到 NVM/~/.local/bin 的 PATH）
+function wslAgentInstalled(distro, component) {
+  return wslCommand(distro, [`command -v ${component} >/dev/null 2>&1 && echo yes || true`],
+    { timeoutMs: 20000, interactive: true })
+    .then((r) => /yes/.test(String((r && r.stdout) || "")))
+    .catch(() => false);
+}
+
+ipcMain.handle("upgrade-agents", async (_event, providers, environment, windowsSetupScript) => {
   const targets = Array.isArray(providers) ? providers : [];
   const spec = installSpec("upgrade", providers, environment, windowsSetupScript);
-  if (!spec) return Promise.resolve({ ok: false, error: "no upgradable target" });
-  return startInstall(`upgrade:${targets.join(",")}`, spec, {
+  if (!spec) return { ok: false, error: "no upgradable target" };
+  const components = targets.map((p) => UPGRADE_COMPONENTS[p]).filter(Boolean);
+  const jobs = [startInstall(`upgrade:${targets.join(",")}`, spec, {
     label: targets.join(", "),
     kind: "upgrade",
     targets,
-    components: targets.map((p) => UPGRADE_COMPONENTS[p]).filter(Boolean),
-  });
+    components,
+  })];
+  // Windows 本地模式：同一 agent 若也装在 WSL 发行版里，一并更新——
+  // 只更新 Windows 侧会让两边的版本长期漂移（用户仍会收到旧提示）。
+  if (process.platform === "win32" && !WSL_BACKEND && environment === "windows") {
+    for (const distro of await listWslDistroNames()) {
+      const installed = await Promise.all(components.map((c) => wslAgentInstalled(distro, c)));
+      const wanted = components.filter((_, index) => installed[index]);
+      if (!wanted.length) continue;
+      const distroSpec = await localWslScriptSpec(
+        path.join(REPO_ROOT, "linux", "ai-tools", "setup_ai_tools.sh"),
+        wanted.map((c) => COMPONENT_FLAGS[c]),
+        distro,
+      );
+      if (!distroSpec) continue;
+      const distroTargets = targets.filter((t) => wanted.includes(UPGRADE_COMPONENTS[t]));
+      jobs.push(startInstall(`upgrade:${distroTargets.join(",")}`, distroSpec, {
+        label: distroTargets.join(", "),
+        kind: "upgrade",
+        targets: distroTargets,
+        components: wanted,
+      }));
+    }
+  }
+  const results = await Promise.all(jobs);
+  const failed = results.filter((result) => !result || !result.ok);
+  if (!failed.length) return { ok: true };
+  return { ok: false, error: failed.map((result) => (result && result.error) || "upgrade failed").join("; ") };
 });
 ipcMain.handle("run-component", async (_event, component, environment, windowsSetupScript, distro) => {
   // 独立 CLI 组件共用安装引擎；每次只传对应组件的开关，与看板升级同一条链路。

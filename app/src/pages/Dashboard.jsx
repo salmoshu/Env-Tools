@@ -21,6 +21,9 @@ import AgentAccountControl from "../components/AgentAccountControl.jsx";
 import KimiWebAuth from "../components/KimiWebAuth.jsx";
 import { agentAccountId } from "../components/AgentAccountPicker.jsx";
 import { agentProviderKey, useAgentAccountStates } from "../agentAccounts.js";
+import {
+  quotaEstimateLookup, quotaEstimateLookupTotal, quotaEstimateMeta, quotaEstimateStoreKey,
+} from "../quotaEstimate.js";
 import { t, useLang } from "../i18n.js";
 import { useInstallState, setInstallResult, upgradingTargets as getUpgradingTargets } from "../installState.js";
 
@@ -63,6 +66,22 @@ const RATE_COLLAPSED_KEY = "ai-usage-monitor.rate-collapsed";
 // 存储顺序里的旧 "trend" id 因不在默认列表而被自动剔除
 const CARD_ORDER_KEY = "ai-usage-monitor.card-order";
 const CARD_DEFAULT_ORDER = ["daily", "yearly", "share", "dailyModel", "cacheRate", "topProjects", "sessions"];
+// 用量分析左侧边栏（v0.8.2）：与磁盘页同款分组导航，按信息类型切换视图。
+// overview = KPI + 套餐配额 + 周窗口总览；其余视图只渲染对应卡片。
+const ANALYTICS_VIEW_KEY = "ai-usage-monitor.analytics-view";
+const ANALYTICS_VIEWS = ["overview", "trends", "projects", "sessions"];
+const ANALYTICS_NAV = [
+  { group: "", items: [
+    { id: "overview", icon: "◎", labelKey: "dash.navOverview", subKey: "dash.navOverviewSub" },
+  ] },
+  { group: "dash.navGroupUsage", items: [
+    { id: "trends", icon: "↗", labelKey: "dash.navTrends", subKey: "dash.navTrendsSub" },
+    { id: "projects", icon: "▥", labelKey: "dash.navProjects", subKey: "dash.navProjectsSub" },
+  ] },
+  { group: "dash.navGroupDetail", items: [
+    { id: "sessions", icon: "≣", labelKey: "dash.navSessions", subKey: "dash.navSessionsSub" },
+  ] },
+];
 const SESSION_GROUP_OPTIONS = ["none", "project", "agent"];
 const SESSION_ROW_CAP = 200;
 // 默认只渲染前 100 行（可一键展开全部）：长表是分析页滚动/渲染的主要开销
@@ -130,65 +149,7 @@ function MembershipLine({ account }) {
  *  估算总额 = 窗口 elapsed 时段内实际 token 用量 ÷ 窗口已用%
  *  （用量来自分析引擎，omp 会话按底层模型归并计入对应配额）。
  *  区块标题旁的开关切换显示口径：百分比（原样）/ token 额度（已用/≈总） */
-const QUOTA_PROVIDER_KEYS = {
-  "Kimi Code": "kimi",
-  "OpenAI Codex": "codex",
-  GLM: "glm",
-};
 const QUOTA_TOKEN_MODE_KEY = "ai-usage-monitor.quota-token-mode";
-// 估算范围含 5h/7d 与月度（≤32d，Kimi Monthly Total 也支持 token 显示）
-const QUOTA_ESTIMABLE_MAX_SECONDS = 32 * 86400;
-// 拉取桶 30 分钟：倒计时推进不再逐秒/逐5分钟重拉；查询侧带 ±2 桶容差，
-// 桶翻转期间沿用最近一次结果——修复估算时隐时现的闪烁
-const QUOTA_EST_FETCH_BUCKET = 1800;
-
-/** 窗口估算元数据：{ key, bucket(30 分钟桶), elapsed }；不满足估算条件返回 null */
-function quotaEstimateMeta(provider, w) {
-  const key = QUOTA_PROVIDER_KEYS[provider];
-  if (!key) return null;
-  if (!(w.used_percent > 0) || !w.window_seconds
-    || w.window_seconds > QUOTA_ESTIMABLE_MAX_SECONDS || w.reset_after_seconds == null) {
-    return null;
-  }
-  const elapsed = Math.max(600, w.window_seconds - w.reset_after_seconds);
-  return {
-    key,
-    bucket: Math.round(elapsed / QUOTA_EST_FETCH_BUCKET) * QUOTA_EST_FETCH_BUCKET,
-    elapsed,
-    windowSeconds: w.window_seconds,
-  };
-}
-
-/** 容差查询：精确桶 → ±1、±2 桶，命中即返回最近拉取结果 */
-function quotaEstimateLookup(estimates, provider, w) {
-  const meta = quotaEstimateMeta(provider, w);
-  if (!meta) return null;
-  for (const offset of [0, -1, 1, -2, 2]) {
-    const v = estimates[`${meta.key}|${meta.bucket + offset * QUOTA_EST_FETCH_BUCKET}`];
-    if (v != null) return v.tokens;
-  }
-  return null;
-}
-
-/// 查询估算总额（含历史中位）：返回 median(历史各代 + 当前单点) 或 null
-function quotaEstimateLookupTotal(estimates, provider, w, usedTokens) {
-  const meta = quotaEstimateMeta(provider, w);
-  if (!meta) return null;
-  for (const offset of [0, -1, 1, -2, 2]) {
-    const v = estimates[`${meta.key}|${meta.bucket + offset * QUOTA_EST_FETCH_BUCKET}`];
-    if (v != null) {
-      const pct = Math.max(0.01, w.used_percent);
-      const points = [usedTokens / (pct / 100)];
-      if (Array.isArray(v.history)) {
-        points.push(...v.history.filter((x) => Number.isFinite(x) && x > 0));
-      }
-      points.sort((a, b) => a - b);
-      const mid = Math.floor(points.length / 2);
-      return points.length % 2 ? points[mid] : (points[mid - 1] + points[mid]) / 2;
-    }
-  }
-  return null;
-}
 
 /** 拉取各窗口 elapsed 时段的实际 token 用量（随配额 60s 刷新自动更新；
  *  指纹按 5 分钟桶节流，避免倒计时秒级变化反复触发） */
@@ -200,17 +161,17 @@ function useQuotaEstimates(accounts, target) {
         const meta = quotaEstimateMeta(a.provider, w);
         if (!meta) return null;
         const at = a.fetched_at ? Math.floor(new Date(a.fetched_at).getTime() / 1000) : 0;
-        return `${meta.key}|${meta.bucket}|${meta.windowSeconds}|${at}`;
+        return `${quotaEstimateStoreKey(meta)}|${at}`;
       })
       .filter(Boolean))
     .join("&");
   useEffect(() => {
     if (!fingerprint) return;
     let cancelled = false;
-    const wants = new Map(); // 存储键 = key|bucket（与 quotaEstimateLookup 的查询键一致）
+    const wants = new Map(); // 存储键 = provider|window|bucket（与 quotaEstimateLookup 的查询键一致）
     for (const token of fingerprint.split("&")) {
-      const [key, bucket, win, at] = token.split("|");
-      const storeKey = `${key}|${bucket}`;
+      const [key, win, bucket, at] = token.split("|");
+      const storeKey = `${key}|${win}|${bucket}`;
       wants.set(storeKey, { key, elapsed: Number(bucket), win: Number(win), at: Number(at) });
     }
     Promise.all(
@@ -238,21 +199,6 @@ function useQuotaEstimates(accounts, target) {
     return () => { cancelled = true; };
   }, [fingerprint, target]);
   return estimates;
-}
-
-/// 估算总额：median(各代历史高水位估算 + 当前单点)——比单点更稳，
-/// 百分比取整/跨设备覆盖差被多代平滑。无历史时退化为单点。
-function quotaEstimateTotal(estimates, storeKey, usedTokens, pct) {
-  const entry = estimates[storeKey];
-  if (!entry) return usedTokens / (pct / 100);
-  const points = [usedTokens / (pct / 100)];
-  const hist = entry.history;
-  if (Array.isArray(hist) && hist.length > 0) {
-    points.push(...hist.filter((v) => Number.isFinite(v) && v > 0));
-  }
-  points.sort((a, b) => a - b);
-  const mid = Math.floor(points.length / 2);
-  return points.length % 2 ? points[mid] : (points[mid - 1] + points[mid]) / 2;
 }
 
 /** 周窗口 token 统计卡（单厂商）：近 ~13 周的 7d 窗口用量（周柱）与
@@ -639,6 +585,18 @@ function filterByAgent(list, agent) {
 
 export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
   const [analytics, setAnalytics] = useState(null);
+  const [view, setView] = useState(() => {
+    try {
+      const saved = localStorage.getItem(ANALYTICS_VIEW_KEY);
+      return ANALYTICS_VIEWS.includes(saved) ? saved : "overview";
+    } catch { return "overview"; }
+  });
+  const selectView = (next) => {
+    setView(next);
+    // 切换分组时退出铺满，避免下一次进入其它分组时残留旧卡片的展开态
+    setExpandedCard(null);
+    try { localStorage.setItem(ANALYTICS_VIEW_KEY, next); } catch {}
+  };
   const [analyticsError, setAnalyticsError] = useState("");
   const [busy, setBusy] = useState(false);
   const [days] = useState(ANALYTICS_DAYS);
@@ -1265,6 +1223,89 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
     );
   };
 
+  // 会话明细表作为独立视图渲染：useMemo 必须无条件调用，不能放进条件分支
+  const sessionsCard = useMemo(() => sessionsReady ? (
+    <section
+      {...cardMods("sessions")}
+      className={`${cardCls("sessions")} card-w-full${dragCard === "sessions" ? " dragging" : ""}${dropTarget === "sessions" && dragCard && dragCard !== "sessions" ? " drop-target" : ""}`}
+    >
+      <div className="card-head-row">
+        {dragHandle("sessions")}
+        <h2>{t("dash.sessions")}</h2>
+        <div className="card-head-actions">
+          <label className="days-field">{t("dash.groupBy")}
+            <Select
+              value={sessionsGroup}
+              ariaLabel={t("dash.groupBy")}
+              onChange={(value) => {
+                setSessionsGroup(value);
+                try { localStorage.setItem(SESSIONS_GROUP_KEY, value); } catch {}
+              }}
+              options={SESSION_GROUP_OPTIONS.map((value) =>
+                [value, t(`dash.group${value[0].toUpperCase()}${value.slice(1)}`)])}
+            />
+          </label>
+          {expandBtn("sessions")}
+        </div>
+      </div>
+      <div className="table-hint">{t("dash.sessionsHint")}</div>
+      <div className="table-hint" style={{ opacity: 0.7 }}>
+        {speedMode === "gen" ? t("dash.speedHint") : t("dash.speedHintThroughput")}
+      </div>
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              {header("session", "Session", true)}
+              {header("project", "Project", true)}
+              {header("agent", "Agent", true)}
+              {header("models", "Models", true)}
+              {header("total", "Tokens")}
+              {header("share", "Share")}
+              {header("requests", "Reqs")}
+              {header("last", "Activity", true)}
+              {header("rate", "Speed")}
+            </tr>
+          </thead>
+          {sessionsGroup === "none" ? (
+            <tbody>
+              {sortedRows.slice(0, sessionsRowLimit).map(renderSessionRow)}
+            </tbody>
+          ) : (
+            (groupPlan || []).map((g) => (
+              <tbody key={g.key}>
+                <tr className="group-row">
+                  <td className="l" colSpan={9} title={g.workDir || g.key}>
+                    {sessionsGroup === "agent" ? <BrandIcon of={g.key} size={13} /> : null}
+                    {sessionsGroup === "agent" ? (AGENT_LABELS[g.key] || g.key) : g.key}
+                    <span className="group-stats">
+                      {t("dash.sessionsCount").replace("{n}", String(g.rows.length))} · {fmtTokens(g.total)} {t("dash.tokens")}
+                      {sessionsGrand > 0 ? ` · ${((g.total / sessionsGrand) * 100).toFixed(1)}%` : ""}
+                    </span>
+                  </td>
+                </tr>
+                {g.shown.map(renderSessionRow)}
+              </tbody>
+            ))
+          )}
+        </table>
+      </div>
+      {sortedRows.length > SESSION_ROW_DEFAULT ? (
+        <button
+          type="button"
+          className="login-btn sessions-more"
+          onClick={() => setShowAllSessions((value) => !value)}
+        >
+          {showAllSessions
+            ? t("dash.sessionsCollapse")
+            : t("dash.sessionsShowAll").replace("{n}", String(Math.min(sortedRows.length, SESSION_ROW_CAP)))}
+        </button>
+      ) : null}
+    </section>
+  ) : (
+    <section className="card-w-full sessions-placeholder"><div className="status">{t("state.loading")}</div></section>
+  ), [sessionsReady, groupPlan, sortedRows, sessionsGrand, sessionsGroup, sessionsSort, speedMode, lang, dragCard, dropTarget, expandedCard, nowMinute, sessionsRowLimit, showAllSessions]);
+
   return (
     <div className="page page-flex">
       <header className="page-head">
@@ -1317,11 +1358,35 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
         </div>
       </header>
 
-      {/* 页头固定在滚动区外：右侧滚动条只出现在正文区域（header 之下） */}
+      {/* 页头固定在滚动区外：左侧分组导航 + 右侧正文各自滚动（与磁盘页同款） */}
+      <div className="analytics-shell">
+      <aside className="disk-sidebar">
+        {ANALYTICS_NAV.map((group) => (
+          <div key={group.group || "main"} className="disk-nav-group">
+            {group.group ? <span className="disk-nav-title">{t(group.group)}</span> : null}
+            {group.items.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                className={`disk-nav-item${view === item.id ? " active" : ""}`}
+                aria-pressed={view === item.id}
+                onClick={() => selectView(item.id)}
+              >
+                <span className="disk-nav-icon">{item.icon}</span>
+                <span className="disk-nav-text">
+                  <span className="disk-nav-label">{t(item.labelKey)}</span>
+                  <span className="disk-nav-sub">{t(item.subKey)}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        ))}
+      </aside>
       <div className="page-body">
       <div className={`error-card${analyticsError ? "" : " hidden"}`} style={{ margin: "0 0 12px" }}>
         {analyticsError}
       </div>
+      {view === "overview" ? (<>
       <div className="kpi-row">
         <div className="kpi-card">
           <div className="kpi-label">{t("dash.kpiWeek")}{agent !== "all" ? ` · ${AGENT_LABELS[agent]}` : ""}</div>
@@ -1550,9 +1615,10 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
       </section>
 
       <QuotaWeeklyCard target={target} weekStart={weekStart} accounts={accounts} estimates={quotaEstimates} />
+      </>) : null}
 
       <div className="dashboard-cards">
-      <section
+      {view === "trends" ? (<section
         {...cardMods("daily")}
         className={`${cardCls("daily")} card-w-full${dragCard === "daily" ? " dragging" : ""}${dropTarget === "daily" && dragCard && dragCard !== "daily" ? " drop-target" : ""}`}
       >
@@ -1591,9 +1657,9 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
           : trend.labels.length
             ? dailyChart
             : <div className="status">{t("state.noData")}</div>}
-      </section>
+      </section>) : null}
 
-      <section
+      {view === "trends" ? (<section
         {...cardMods("yearly")}
         className={`${cardCls("yearly")} card-w-flex${dragCard === "yearly" ? " dragging" : ""}${dropTarget === "yearly" && dragCard && dragCard !== "yearly" ? " drop-target" : ""}`}
       >
@@ -1603,8 +1669,8 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
             {expandBtn("yearly")}
           </div>
           <CalendarHeatmap calendar={analytics && analytics.calendar} />
-        </section>
-        <section
+        </section>) : null}
+        {view === "projects" ? (<section
           {...cardMods("share")}
           className={`${cardCls("share", "card card-model-share")} card-w-side${dragCard === "share" ? " dragging" : ""}${dropTarget === "share" && dragCard && dragCard !== "share" ? " drop-target" : ""}`}
         >
@@ -1614,9 +1680,9 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
             {expandBtn("share")}
           </div>
           <DonutChart items={pieItems} />
-        </section>
+        </section>) : null}
 
-      <section
+      {view === "trends" ? (<section
         {...cardMods("dailyModel")}
         className={`${cardCls("dailyModel")} card-w-full${dragCard === "dailyModel" ? " dragging" : ""}${dropTarget === "dailyModel" && dragCard && dragCard !== "dailyModel" ? " drop-target" : ""}`}
       >
@@ -1651,9 +1717,9 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
               `<div class="tt-row">${t("dash.ttTotal")}<span class="tt-val">${fmtTokens(((daily || [])[i] || {}).total || 0)}</span></div>`;
           }}
         />
-      </section>
+      </section>) : null}
 
-      <section
+      {view === "trends" ? (<section
         {...cardMods("cacheRate")}
         className={`${cardCls("cacheRate")} card-w-half${dragCard === "cacheRate" ? " dragging" : ""}${dropTarget === "cacheRate" && dragCard && dragCard !== "cacheRate" ? " drop-target" : ""}`}
       >
@@ -1663,8 +1729,8 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
             {expandBtn("cacheRate")}
           </div>
           <LineChart zoomable labels={shortDays} values={(daily || []).map((entry) => entry.cache_hit_rate)} />
-        </section>
-        <section
+        </section>) : null}
+        {view === "projects" ? (<section
           {...cardMods("topProjects")}
           className={`${cardCls("topProjects")} card-w-half${dragCard === "topProjects" ? " dragging" : ""}${dropTarget === "topProjects" && dragCard && dragCard !== "topProjects" ? " drop-target" : ""}`}
         >
@@ -1681,89 +1747,9 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
               ? <ProjectBars items={shown} />
               : <div className="status">{t("state.noData")}</div>;
           })()}
-        </section>
+        </section>) : null}
 
-      {useMemo(() => sessionsReady ? (
-      <section
-        {...cardMods("sessions")}
-        className={`${cardCls("sessions")} card-w-full${dragCard === "sessions" ? " dragging" : ""}${dropTarget === "sessions" && dragCard && dragCard !== "sessions" ? " drop-target" : ""}`}
-      >
-        <div className="card-head-row">
-          {dragHandle("sessions")}
-          <h2>{t("dash.sessions")}</h2>
-          <div className="card-head-actions">
-            <label className="days-field">{t("dash.groupBy")}
-              <Select
-                value={sessionsGroup}
-                ariaLabel={t("dash.groupBy")}
-                onChange={(value) => {
-                  setSessionsGroup(value);
-                  try { localStorage.setItem(SESSIONS_GROUP_KEY, value); } catch {}
-                }}
-                options={SESSION_GROUP_OPTIONS.map((value) =>
-                  [value, t(`dash.group${value[0].toUpperCase()}${value.slice(1)}`)])}
-              />
-            </label>
-            {expandBtn("sessions")}
-          </div>
-        </div>
-        <div className="table-hint">{t("dash.sessionsHint")}</div>
-        <div className="table-hint" style={{ opacity: 0.7 }}>
-          {speedMode === "gen" ? t("dash.speedHint") : t("dash.speedHintThroughput")}
-        </div>
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                {header("session", "Session", true)}
-                {header("project", "Project", true)}
-                {header("agent", "Agent", true)}
-                {header("models", "Models", true)}
-                {header("total", "Tokens")}
-                {header("share", "Share")}
-                {header("requests", "Reqs")}
-                {header("last", "Activity", true)}
-                {header("rate", "Speed")}
-              </tr>
-            </thead>
-            {sessionsGroup === "none" ? (
-              <tbody>
-                {sortedRows.slice(0, sessionsRowLimit).map(renderSessionRow)}
-              </tbody>
-            ) : (
-              (groupPlan || []).map((g) => (
-                <tbody key={g.key}>
-                  <tr className="group-row">
-                    <td className="l" colSpan={9} title={g.workDir || g.key}>
-                      {sessionsGroup === "agent" ? <BrandIcon of={g.key} size={13} /> : null}
-                      {sessionsGroup === "agent" ? (AGENT_LABELS[g.key] || g.key) : g.key}
-                      <span className="group-stats">
-                        {t("dash.sessionsCount").replace("{n}", String(g.rows.length))} · {fmtTokens(g.total)} {t("dash.tokens")}
-                        {sessionsGrand > 0 ? ` · ${((g.total / sessionsGrand) * 100).toFixed(1)}%` : ""}
-                      </span>
-                    </td>
-                  </tr>
-                  {g.shown.map(renderSessionRow)}
-                </tbody>
-              ))
-            )}
-          </table>
-        </div>
-        {sortedRows.length > SESSION_ROW_DEFAULT ? (
-          <button
-            type="button"
-            className="login-btn sessions-more"
-            onClick={() => setShowAllSessions((value) => !value)}
-          >
-            {showAllSessions
-              ? t("dash.sessionsCollapse")
-              : t("dash.sessionsShowAll").replace("{n}", String(Math.min(sortedRows.length, SESSION_ROW_CAP)))}
-          </button>
-        ) : null}
-      </section>
-      ) : (
-        <section className="card-w-full sessions-placeholder"><div className="status">{t("state.loading")}</div></section>
-      ), [sessionsReady, groupPlan, sortedRows, sessionsGrand, sessionsGroup, sessionsSort, speedMode, lang, dragCard, dropTarget, expandedCard, nowMinute, sessionsRowLimit, showAllSessions])}
+      {view === "sessions" ? sessionsCard : null}
       </div>
       {upgradeProvider && (
         <UpgradeOverlay
@@ -1773,6 +1759,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
           onStart={(targets) => beginUpgrade(targets)}
         />
       )}
+      </div>
       </div>
     </div>
   );
