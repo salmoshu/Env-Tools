@@ -49,19 +49,24 @@ pub fn read(path: &Path) -> Vec<Value> {
         .collect()
 }
 
-/// 高水位中位数估算：按 (provider, window_seconds) 过滤 → 以
+/// 高水位中位数估算：按 (provider, account_id, window_seconds) 过滤 → 以
 /// window_start = ts - elapsed 分代 → 每代取 pct 最高的快照（该代最准点）
 /// → estimate = tokens / pct。返回最近 N 代的估算值数组（旧→新），
-/// 前端与当前单点合并取中位数。
+/// 前端与当前单点合并取中位数。旧格式没有账号字段，只归入 default。
 pub fn generation_estimates(
     path: &Path,
     provider: &str,
+    account_id: &str,
     window_seconds: i64,
     max_gens: usize,
 ) -> Vec<f64> {
     let mut rows: Vec<(i64, f64, f64)> = Vec::new(); // (window_start, pct, tokens)
     for snap in read(path) {
         if snap.get("p").and_then(|v| v.as_str()) != Some(provider) {
+            continue;
+        }
+        let snap_account = snap.get("a").and_then(|v| v.as_str()).unwrap_or("default");
+        if snap_account != account_id {
             continue;
         }
         let win = snap.get("win").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -100,4 +105,31 @@ pub fn generation_estimates(
         .into_iter()
         .rev()
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{append, generation_estimates};
+    use serde_json::json;
+
+    #[test]
+    fn generation_estimates_are_isolated_by_account() {
+        let path = std::env::temp_dir().join(format!(
+            "env-tools-quota-history-{}-{:?}.jsonl",
+            std::process::id(),
+            std::thread::current().id(),
+        ));
+        let _ = std::fs::remove_file(&path);
+        for line in [
+            json!({"ts": 100_000, "p": "codex", "a": "default", "win": 18_000, "pct": 10.0, "el": 1_000, "tok": 1_000}),
+            json!({"ts": 100_000, "p": "codex", "a": "work", "win": 18_000, "pct": 10.0, "el": 1_000, "tok": 1_000}),
+            json!({"ts": 100_100, "p": "codex", "a": "work", "win": 18_000, "pct": 20.0, "el": 1_100, "tok": 4_000}),
+        ] {
+            append(&path, &line);
+        }
+        assert_eq!(generation_estimates(&path, "codex", "default", 18_000, 8), vec![10_000.0]);
+        assert_eq!(generation_estimates(&path, "codex", "work", 18_000, 8), vec![20_000.0]);
+        assert!(generation_estimates(&path, "codex", "other", 18_000, 8).is_empty());
+        let _ = std::fs::remove_file(&path);
+    }
 }

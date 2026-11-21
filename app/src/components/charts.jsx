@@ -629,6 +629,23 @@ export function CalendarHeatmap({ calendar }) {
     body.appendChild(cells);
     container.appendChild(monthsRow);
     container.appendChild(body);
+    // 单元格随卡片宽度同时调整宽和高；窄窗口保留 13px 并横向滚动。
+    const resize = () => {
+      const available = Math.max(0, container.clientWidth - 34);
+      const cellSize = Math.max(13, Math.floor((available - (weeks - 1) * 3) / weeks));
+      monthsRow.style.gridTemplateColumns = `repeat(${weeks}, ${cellSize}px)`;
+      weekdays.style.gridTemplateRows = `repeat(7, ${cellSize}px)`;
+      cells.style.gridTemplateRows = `repeat(7, ${cellSize}px)`;
+      cells.style.gridAutoColumns = `${cellSize}px`;
+      for (const span of weekdays.children) span.style.lineHeight = `${cellSize}px`;
+    };
+    resize();
+    let resizeRaf = 0;
+    const observer = new ResizeObserver(() => {
+      cancelAnimationFrame(resizeRaf);
+      resizeRaf = requestAnimationFrame(resize);
+    });
+    observer.observe(container);
     // 默认滚动到最右：优先展示最近月份（有数据的区域），往左滚动查看历史。
     // 仅在时间范围变化（切换范围/目标/筛选）时重新定位；同范围的周期刷新
     // 不打断用户已手动滚到的位置
@@ -639,6 +656,10 @@ export function CalendarHeatmap({ calendar }) {
         container.scrollLeft = container.scrollWidth;
       });
     }
+    return () => {
+      observer.disconnect();
+      cancelAnimationFrame(resizeRaf);
+    };
   }, [calendar]);
   useEffect(() => bindChartTooltip(ref), []);
   return <div className="calendar-scroll" ref={ref} />;

@@ -905,6 +905,15 @@ fn rolling_quota_tokens_attributes_sources_and_omp_models() {
     assert_eq!(state.rolling_quota_tokens("codex", now.timestamp() - 3600), 900);
     // 近 3h：kimi 追加窗口外的 500
     assert_eq!(state.rolling_quota_tokens("kimi", now.timestamp() - 3 * 3600), 1800);
+
+    for file in state.files.values_mut() {
+        file.quota_account = "work".to_string();
+    }
+    assert_eq!(state.rolling_quota_tokens_for_account("kimi", now.timestamp() - 3 * 3600, now.timestamp(), "work"), 1800);
+    assert_eq!(state.rolling_quota_tokens_for_account("codex", now.timestamp() - 3600, now.timestamp(), "work"), 900);
+    assert_eq!(state.rolling_quota_tokens_for_account("kimi", now.timestamp() - 3 * 3600, now.timestamp(), "default"), 0);
+    // 快照前 60 秒截止：排除最后一秒的 1000，只保留 OMP 在边界上的 300。
+    assert_eq!(state.rolling_quota_tokens_for_account("kimi", now.timestamp() - 3600, now.timestamp() - 60, "work"), 300);
 }
 
 /// daily_quota：配额厂商口径逐日桶——不受 agent 筛选影响（选 kimi 时

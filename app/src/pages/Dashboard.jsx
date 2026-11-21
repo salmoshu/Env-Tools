@@ -22,7 +22,7 @@ import KimiWebAuth from "../components/KimiWebAuth.jsx";
 import { agentAccountId } from "../components/AgentAccountPicker.jsx";
 import { agentProviderKey, useAgentAccountStates } from "../agentAccounts.js";
 import {
-  quotaEstimateLookup, quotaEstimateLookupTotal, quotaEstimateMeta, quotaEstimateStoreKey,
+  quotaEstimateLookup, quotaEstimateLookupEntry, quotaEstimateLookupTotal, quotaEstimateMeta, quotaEstimateStoreKey,
 } from "../quotaEstimate.js";
 import { t, useLang } from "../i18n.js";
 import { useInstallState, setInstallResult, upgradingTargets as getUpgradingTargets } from "../installState.js";
@@ -65,7 +65,7 @@ const RATE_COLLAPSED_KEY = "ai-usage-monitor.rate-collapsed";
 // v0.7.34：trend 并入 daily 卡（粒度选择器切换 日=堆叠柱 / 周/年=折线），
 // 存储顺序里的旧 "trend" id 因不在默认列表而被自动剔除
 const CARD_ORDER_KEY = "ai-usage-monitor.card-order";
-const CARD_DEFAULT_ORDER = ["daily", "yearly", "share", "dailyModel", "cacheRate", "topProjects", "sessions"];
+const CARD_DEFAULT_ORDER = ["yearly", "daily", "share", "dailyModel", "cacheRate", "topProjects", "sessions"];
 // 用量分析左侧边栏（v0.8.2）：与磁盘页同款分组导航，按信息类型切换视图。
 // overview = KPI + 套餐配额 + 周窗口总览；其余视图只渲染对应卡片。
 const ANALYTICS_VIEW_KEY = "ai-usage-monitor.analytics-view";
@@ -118,6 +118,17 @@ function shortDateLabel(date) {
   return date.slice(5);
 }
 
+function RateModelLabel({ agent, model }) {
+  const agentLabel = AGENT_LABELS[agent] || agent || "—";
+  if (!model) return agentLabel;
+  return (
+    <>
+      {agent ? <span className="rate-agent-name">{agentLabel}/</span> : null}
+      <span>{model.split("/").pop()}</span>
+    </>
+  );
+}
+
 function MembershipLine({ account }) {
   const membership = account.membership;
   if (!membership || membership.error || !membership.ends_at) return null;
@@ -151,48 +162,55 @@ function MembershipLine({ account }) {
  *  区块标题旁的开关切换显示口径：百分比（原样）/ token 额度（已用/≈总） */
 const QUOTA_TOKEN_MODE_KEY = "ai-usage-monitor.quota-token-mode";
 
-/** 拉取各窗口 elapsed 时段的实际 token 用量（随配额 60s 刷新自动更新；
- *  指纹按 5 分钟桶节流，避免倒计时秒级变化反复触发） */
+/** 以服务端配额快照时间为基准，拉取精确 elapsed 窗口内的请求级增量。
+ *  账号进入存储键与后端查询；全部来源模式合并本机/WSL及已连接 SSH。 */
 function useQuotaEstimates(accounts, target) {
   const [estimates, setEstimates] = useState({});
-  const fingerprint = accounts
-    .flatMap((a) => (a.windows || [])
-      .map((w) => {
-        const meta = quotaEstimateMeta(a.provider, w);
-        if (!meta) return null;
-        const at = a.fetched_at ? Math.floor(new Date(a.fetched_at).getTime() / 1000) : 0;
-        return `${quotaEstimateStoreKey(meta)}|${at}`;
-      })
-      .filter(Boolean))
+  const requests = accounts.flatMap((account) => {
+    const accountId = agentAccountId(account);
+    return (account.windows || []).map((w) => {
+      const meta = quotaEstimateMeta(account.provider, w, accountId);
+      if (!meta) return null;
+      const at = account.fetched_at ? Math.floor(new Date(account.fetched_at).getTime() / 1000) : 0;
+      return {
+        storeKey: quotaEstimateStoreKey(meta),
+        key: meta.key,
+        account: meta.account,
+        elapsed: meta.elapsed,
+        win: meta.windowSeconds,
+        at,
+      };
+    }).filter(Boolean);
+  });
+  const fingerprint = requests
+    .map((query) => `${query.storeKey}|${query.elapsed}|${query.at}`)
     .join("&");
   useEffect(() => {
     if (!fingerprint) return;
     let cancelled = false;
-    const wants = new Map(); // 存储键 = provider|window|bucket（与 quotaEstimateLookup 的查询键一致）
-    for (const token of fingerprint.split("&")) {
-      const [key, win, bucket, at] = token.split("|");
-      const storeKey = `${key}|${win}|${bucket}`;
-      wants.set(storeKey, { key, elapsed: Number(bucket), win: Number(win), at: Number(at) });
-    }
-    Promise.all(
-      [...wants.entries()].map(async ([storeKey, { key, elapsed, win, at }]) => {
-        try {
-          const result = await window.api.getAnalyticsRolling(key, elapsed, target, {
-            at, window: win, history: true,
-          });
-          if (!cancelled && result && result.ok) {
-            return [storeKey, { tokens: result.tokens || 0, history: result.history || null }];
-          }
-        } catch {}
-        return null;
-      }),
-    ).then((rows) => {
+    Promise.all(requests.map(async (query) => {
+      try {
+        const result = await window.api.getAnalyticsRolling(query.key, query.elapsed, target, {
+          at: query.at,
+          window: query.win,
+          account: query.account,
+          history: true,
+        });
+        if (!cancelled && result && result.ok) {
+          return [query.storeKey, {
+            tokens: result.tokens || 0,
+            history: result.history || null,
+            sourceCount: result.sourceCount || 1,
+            failedSources: result.failedSources || 0,
+          }];
+        }
+      } catch {}
+      return null;
+    })).then((rows) => {
       if (cancelled) return;
       setEstimates((prev) => {
         const next = { ...prev };
-        for (const row of rows) {
-          if (row) next[row[0]] = row[1];
-        }
+        for (const row of rows) if (row) next[row[0]] = row[1];
         return next;
       });
     });
@@ -241,13 +259,13 @@ function QuotaWeeklyCard({ target, weekStart, accounts, estimates }) {
     const providerName = { kimi: "Kimi Code", codex: "OpenAI Codex", glm: "GLM" }[provider];
     const candidates = accounts
       .filter((a) => a.provider === providerName)
-      .flatMap((a) => a.windows || [])
-      .filter((w) => w.window_seconds && Math.abs(w.window_seconds - 18000) <= 600
+      .flatMap((a) => (a.windows || []).map((w) => ({ w, accountId: agentAccountId(a) })))
+      .filter(({ w }) => w.window_seconds && Math.abs(w.window_seconds - 18000) <= 600
         && w.used_percent > 0);
-    for (const w5h of candidates) {
-      const used = quotaEstimateLookup(estimates, providerName, w5h);
+    for (const { w: w5h, accountId } of candidates) {
+      const used = quotaEstimateLookup(estimates, providerName, w5h, accountId);
       if (used != null) {
-        const total = quotaEstimateLookupTotal(estimates, providerName, w5h, used);
+        const total = quotaEstimateLookupTotal(estimates, providerName, w5h, used, accountId);
         if (total != null) return total;
       }
     }
@@ -430,34 +448,46 @@ function QuotaCard({ account, versions, onUpgrade, upgrading, providerKey, accou
           : (showUsage
             ? <span className="reset">Usage {w.usage}</span>
             : null);
-        // token 额度口径：百分比替换为 已用/≈总（无估算数据的窗口回退百分比显示）
+        // token 额度口径：账号隔离的服务端百分比快照 + 请求级增量。
+        // 无本地增量时保留百分比，不用 0 反推出虚假总额；来源不完整时明确标注。
         let pctText = `${pct.toFixed(1)}%`;
         let pctTitle = undefined;
         if (tokenMode === "tokens") {
-          const meta = quotaEstimateMeta(account.provider, w);
-          const usedTokens = quotaEstimateLookup(estimates, account.provider, w);
-          if (usedTokens != null) {
+          const accountId = agentAccountId(account);
+          const meta = quotaEstimateMeta(account.provider, w, accountId);
+          const estimate = quotaEstimateLookupEntry(estimates, account.provider, w, accountId);
+          const usedTokens = estimate && Number.isFinite(estimate.tokens) ? estimate.tokens : null;
+          if (usedTokens > 0) {
             // Kimi 月度为家庭共享额度（w.sub 带 "Kimi Code share: xx.xx%"）：
-            // 本地只覆盖 Kimi Code 份额，按 share 校正有效已用比例再反推总额
+            // 已连接来源只覆盖 Kimi Code 份额，按 share 校正有效已用比例再反推总额
             let effectivePct = pct;
             const shareMatch = String(w.sub || "").match(/([\d.]+)\s*%/);
             const share = shareMatch ? Number(shareMatch[1]) : null;
             if (share && share > 0 && share < 100) effectivePct = pct * share / 100;
-            const meta = quotaEstimateMeta(account.provider, w);
-            const storeKey = meta ? `${meta.key}|${meta.bucket}` : null;
-            const totalTokens = quotaEstimateLookupTotal(estimates, account.provider, w, usedTokens)
-              ?? (usedTokens / (effectivePct / 100));
-            pctText = `${abbrev2(usedTokens)} / ≈${abbrev2(totalTokens)}`;
-            pctTitle = (share && share > 0 && share < 100)
-              ? t("dash.quotaEstimateTipShared")
-                .replace("{used}", abbrev2(usedTokens))
-                .replace("{pct}", effectivePct.toFixed(2))
-                .replace("{share}", share.toFixed(2))
-              : t("dash.quotaEstimateTip")
-                .replace("{used}", abbrev2(usedTokens))
-                .replace("{pct}", pct.toFixed(0));
+            const estimateWindow = effectivePct === pct ? w : { ...w, used_percent: effectivePct };
+            const totalTokens = quotaEstimateLookupTotal(
+              estimates, account.provider, estimateWindow, usedTokens, accountId,
+            );
+            if (totalTokens != null) {
+              pctText = `${abbrev2(usedTokens)} / ≈${abbrev2(totalTokens)}`;
+              const basis = (share && share > 0 && share < 100)
+                ? t("dash.quotaEstimateTipShared")
+                  .replace("{used}", abbrev2(usedTokens))
+                  .replace("{pct}", effectivePct.toFixed(2))
+                  .replace("{share}", share.toFixed(2))
+                : t("dash.quotaEstimateTip")
+                  .replace("{used}", abbrev2(usedTokens))
+                  .replace("{pct}", pct.toFixed(0));
+              const coverage = t("dash.quotaEstimateSources").replace("{n}", String(estimate.sourceCount || 1));
+              const failed = estimate.failedSources > 0
+                ? `\n${t("dash.quotaEstimatePartial").replace("{n}", String(estimate.failedSources))}`
+                : "";
+              pctTitle = `${basis}\n${coverage}${failed}`;
+            } else if (meta) {
+              pctTitle = t("dash.quotaEstimatePending");
+            }
           } else if (meta) {
-            pctTitle = t("dash.quotaEstimatePending");
+            pctTitle = usedTokens === 0 ? t("dash.quotaEstimateNoUsage") : t("dash.quotaEstimatePending");
           }
         }
         return (
@@ -653,6 +683,8 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
       if (Array.isArray(stored)) {
         const next = stored.filter((id) => CARD_DEFAULT_ORDER.includes(id));
         for (const id of CARD_DEFAULT_ORDER) if (!next.includes(id)) next.push(id);
+        const yearlyAt = next.indexOf("yearly");
+        if (yearlyAt > 0) next.unshift(...next.splice(yearlyAt, 1));
         return next;
       }
     } catch {}
@@ -1309,7 +1341,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
   // 速率 KPI 卡：hook 必须无条件调用。此前嵌在 view === "overview" 的条件 JSX 里，
   // 切分组时 hook 数量变化会触发 React #300，整页被错误边界接管后数据需重新加载。
   const rateCard = useMemo(() => (
-    <div className={cardCls("rate", "kpi-card")}>
+    <div className={cardCls("rate", "kpi-card rate-card")}>
       <div className="kpi-label rate-label">
         <span className="rate-label-text">
           {lang === "zh"
@@ -1383,7 +1415,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                         {models.map((m) => (
                           <div className="act-model-row" key={m.model}>
                             <span className="mono act-model-name" title={`${s.agent}/${m.model}`}>
-                              {rateModelLabel(s.cli || s.agent, m.model)}
+                              <RateModelLabel agent={s.cli || s.agent} model={m.model} />
                             </span>
                             <span className="act-meta">
                               {fmtTokens(m.tokens)} {t("dash.tokens")} · {fmtTokens(m.output)} out · {m.requests} req
@@ -1426,7 +1458,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                   {tag ? <span className="rate-tag">{tag}</span> : null}
                   <span className="rate-model" title={item.model || item.agent || ""}>
                     <BrandIcon of={item.cli || item.agent} size={12} />
-                    {rateModelLabel(item.cli || item.agent, item.model)}
+                    <RateModelLabel agent={item.cli || item.agent} model={item.model} />
                   </span>
                   <span className="rate-val">{rateText(item)}</span>
                 </div>
@@ -1440,6 +1472,30 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
 
   return (
     <div className="page page-flex">
+      <div className="analytics-shell">
+      <aside className="disk-sidebar">
+        {ANALYTICS_NAV.map((group) => (
+          <div key={group.group || "main"} className="disk-nav-group">
+            {group.group ? <span className="disk-nav-title">{t(group.group)}</span> : null}
+            {group.items.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                className={`disk-nav-item${view === item.id ? " active" : ""}`}
+                aria-pressed={view === item.id}
+                onClick={() => selectView(item.id)}
+              >
+                <span className="disk-nav-icon">{item.icon}</span>
+                <span className="disk-nav-text">
+                  <span className="disk-nav-label">{t(item.labelKey)}</span>
+                  <span className="disk-nav-sub">{t(item.subKey)}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        ))}
+      </aside>
+      <div className="analytics-content">
       <header className="page-head">
         <div>
           <h1>{t("nav.analytics")}</h1>
@@ -1489,31 +1545,6 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
           </button>
         </div>
       </header>
-
-      {/* 页头固定在滚动区外：左侧分组导航 + 右侧正文各自滚动（与磁盘页同款） */}
-      <div className="analytics-shell">
-      <aside className="disk-sidebar">
-        {ANALYTICS_NAV.map((group) => (
-          <div key={group.group || "main"} className="disk-nav-group">
-            {group.group ? <span className="disk-nav-title">{t(group.group)}</span> : null}
-            {group.items.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                className={`disk-nav-item${view === item.id ? " active" : ""}`}
-                aria-pressed={view === item.id}
-                onClick={() => selectView(item.id)}
-              >
-                <span className="disk-nav-icon">{item.icon}</span>
-                <span className="disk-nav-text">
-                  <span className="disk-nav-label">{t(item.labelKey)}</span>
-                  <span className="disk-nav-sub">{t(item.subKey)}</span>
-                </span>
-              </button>
-            ))}
-          </div>
-        ))}
-      </aside>
       <div className="page-body">
       <div className={`error-card${analyticsError ? "" : " hidden"}`} style={{ margin: "0 0 12px" }}>
         {analyticsError}
@@ -1764,6 +1795,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
           onStart={(targets) => beginUpgrade(targets)}
         />
       )}
+      </div>
       </div>
       </div>
     </div>

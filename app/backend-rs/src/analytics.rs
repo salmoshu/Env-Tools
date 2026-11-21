@@ -78,6 +78,9 @@ pub struct FileState {
     /// (unknown)。随扫描缓存落盘，进程重启续扫也不断档
     #[serde(default)]
     pub current_model: String,
+    /// 配额估算按账号隔离；无法从共享日志识别的旧记录回退 default。
+    #[serde(default)]
+    pub quota_account: String,
 }
 
 /// 进程内增量状态：跨请求累积，重复调用只读取各文件新增字节。
@@ -162,13 +165,27 @@ impl AnalyticsState {
 
     /// 滚动窗口 token 汇总（额度估算用）：cutoff_ts（秒）起的
     /// input+output+cache_read+cache_creation 总量，按配额厂商归因
-    ///（见 quota_provider_of）。前端用法量反推窗口总额：
-    /// 估算总额 = 本值 ÷ 窗口已用百分比
+    ///（见 quota_provider_of）。
     pub fn rolling_quota_tokens(&self, provider: &str, cutoff_ts: i64) -> i64 {
+        self.rolling_quota_tokens_for_account(provider, cutoff_ts, i64::MAX, "")
+    }
+
+    /// account_id 非空时只汇总该账号的请求级增量；空值供全账号分析使用。
+    /// end_ts 与配额快照对齐，避免把快照之后的新请求算进旧百分比。
+    pub fn rolling_quota_tokens_for_account(
+        &self,
+        provider: &str,
+        cutoff_ts: i64,
+        end_ts: i64,
+        account_id: &str,
+    ) -> i64 {
         let mut total: i64 = 0;
         for state in self.files.values() {
+            if !account_id.is_empty() && state.quota_account != account_id {
+                continue;
+            }
             for record in &state.records {
-                if record.ts < cutoff_ts {
+                if record.ts < cutoff_ts || record.ts > end_ts {
                     continue;
                 }
                 if quota_provider_of(state.source, &record.model) == Some(provider) {
@@ -887,6 +904,19 @@ pub fn quota_provider_of(source: Source, model: &str) -> Option<&'static str> {
     }
 }
 
+fn quota_account_for_home(source: Source, home: &Path) -> String {
+    let provider = match source {
+        Source::Kimi => crate::accounts::Provider::Kimi,
+        Source::Codex => crate::accounts::Provider::Codex,
+        _ => return "default".to_string(),
+    };
+    crate::accounts::profiles(provider)
+        .into_iter()
+        .find(|profile| profile.home == home)
+        .map(|profile| profile.id)
+        .unwrap_or_else(|| "default".to_string())
+}
+
 #[derive(Default, Clone)]
 struct Bucket {
     input: i64,
@@ -992,11 +1022,12 @@ impl AnalyticsState {
             }
         }
 
-        let mut sources: Vec<(Source, PathBuf, fn(&Path) -> String, fn(&str) -> bool)> = Vec::new();
+        let mut sources: Vec<(Source, PathBuf, String, fn(&Path) -> String, fn(&str) -> bool)> = Vec::new();
         for home in kimi_homes {
             sources.push((
                 Source::Kimi,
                 home.join("sessions"),
+                quota_account_for_home(Source::Kimi, home),
                 kimi_session_id as fn(&Path) -> String,
                 (|name: &str| name == "wire.jsonl") as fn(&str) -> bool,
             ));
@@ -1005,6 +1036,7 @@ impl AnalyticsState {
             sources.push((
                 Source::KimiWork,
                 home.join("sessions"),
+                quota_account_for_home(Source::KimiWork, home),
                 kimi_session_id as fn(&Path) -> String,
                 (|name: &str| name == "wire.jsonl") as fn(&str) -> bool,
             ));
@@ -1013,6 +1045,7 @@ impl AnalyticsState {
             sources.push((
                 Source::Codex,
                 home.join("sessions"),
+                quota_account_for_home(Source::Codex, home),
                 codex_default_session_id as fn(&Path) -> String,
                 (|name: &str| name.starts_with("rollout-") && name.ends_with(".jsonl"))
                     as fn(&str) -> bool,
@@ -1022,12 +1055,13 @@ impl AnalyticsState {
             sources.push((
                 Source::Omp,
                 home.join("agent").join("sessions"),
+                quota_account_for_home(Source::Omp, home),
                 omp_session_id as fn(&Path) -> String,
                 (|name: &str| name.ends_with(".jsonl")) as fn(&str) -> bool,
             ));
         }
 
-        for (source, root, session_id_of, selector) in sources {
+        for (source, root, quota_account, session_id_of, selector) in sources {
             let files = wire_files(&root, selector);
             // HashSet：已登记文件 × 现存文件逐个 contains 是 O(n²)
             let live: HashSet<String> = files
@@ -1049,6 +1083,7 @@ impl AnalyticsState {
                             offset: 0,
                             records: Vec::new(),
                             source,
+                            quota_account: quota_account.clone(),
                             cwds: HashMap::new(),
                             pending_llm_ms: 0,
                             codex_boundary_ms: 0,
@@ -1059,6 +1094,10 @@ impl AnalyticsState {
                     dirty = true;
                 }
                 let state = self.files.get_mut(&key).unwrap();
+                if state.quota_account != quota_account {
+                    state.quota_account = quota_account.clone();
+                    dirty = true;
+                }
                 if state.offset == -1 {
                     state.offset = 0;
                     state.records.clear();
@@ -1187,6 +1226,7 @@ impl AnalyticsState {
                         offset: 0,
                         records: Vec::new(),
                         source: Source::ZCode,
+                        quota_account: "default".to_string(),
                         cwds: HashMap::new(),
                         pending_llm_ms: 0,
                         codex_boundary_ms: 0,
@@ -1200,6 +1240,10 @@ impl AnalyticsState {
             match scan_zcode_db(&db_path, watermark) {
                 Ok((new_watermark, cwds, records)) => {
                     let state = self.files.get_mut(&key).unwrap();
+                    if state.quota_account.is_empty() {
+                        state.quota_account = "default".to_string();
+                        dirty = true;
+                    }
                     if state.offset == 0 && !records.is_empty() {
                         dirty = true;
                     }

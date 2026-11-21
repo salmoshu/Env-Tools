@@ -1016,9 +1016,38 @@ ipcMain.handle("get-analytics-rolling", async (_event, agent, seconds, targetId,
     `${aggregate ? "&aggregate=1" : ""}`;
   if (extra.at) query += `&at=${encodeURIComponent(extra.at)}`;
   if (extra.window) query += `&window=${encodeURIComponent(extra.window)}`;
+  if (extra.account) query += `&account_id=${encodeURIComponent(extra.account)}`;
   if (extra.history) query += "&history=1";
+  const remoteRolling = async (host) => {
+    const session = sshSessions.get(host);
+    if (!session) throw new Error(`SSH target ${host} is not connected`);
+    const res = await fetchWithTimeout(`http://127.0.0.1:${session.localPort}/api/analytics/rolling${query}`, {
+      headers: { "x-env-token": session.token },
+      timeoutMs: ANALYTICS_TIMEOUT_MS,
+    });
+    if (!res.ok) throw new Error(`Rolling engine returned ${res.status}`);
+    const result = await res.json();
+    if (!result || !result.ok) throw new Error((result && result.error) || "Rolling engine unavailable");
+    return result;
+  };
   try {
-    return await backendFetch(`/api/analytics/rolling${query}`);
+    if (targetId && targetId.startsWith("ssh:")) {
+      const result = await remoteRolling(targetId.slice(4));
+      return { ...result, sourceCount: 1, failedSources: 0 };
+    }
+    const local = await backendFetch(`/api/analytics/rolling${query}`);
+    if (!local || !local.ok) return local;
+    if (!aggregate || sshSessions.size === 0) return { ...local, sourceCount: 1, failedSources: 0 };
+    const remote = await Promise.all([...sshSessions.keys()].map(async (host) => {
+      try { return await remoteRolling(host); } catch { return null; }
+    }));
+    const available = remote.filter(Boolean);
+    return {
+      ...local,
+      tokens: Number(local.tokens || 0) + available.reduce((sum, result) => sum + Number(result.tokens || 0), 0),
+      sourceCount: 1 + available.length,
+      failedSources: remote.length - available.length,
+    };
   } catch (err) {
     return { ok: false, error: `Rolling engine unavailable: ${err.message}` };
   }

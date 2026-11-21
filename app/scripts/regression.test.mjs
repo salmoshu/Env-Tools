@@ -88,11 +88,11 @@ test("Codex 5h/7d 估算按窗口隔离，联合重置时不会共用 7d 历史"
   const provider = "OpenAI Codex";
   const w5 = { used_percent: 10, window_seconds: 18000, reset_after_seconds: 16925 };
   const w7 = { used_percent: 20, window_seconds: 604800, reset_after_seconds: 549561 };
-  assert.equal(quotaEstimateStoreKey(quotaEstimateMeta(provider, w5)), "codex|18000|1800");
-  assert.equal(quotaEstimateStoreKey(quotaEstimateMeta(provider, w7)), "codex|604800|55800");
+  assert.equal(quotaEstimateStoreKey(quotaEstimateMeta(provider, w5)), "codex|default|18000|1800");
+  assert.equal(quotaEstimateStoreKey(quotaEstimateMeta(provider, w7)), "codex|default|604800|55800");
   const estimates = {
-    "codex|18000|1800": { tokens: 6434278, history: [64e6] },
-    "codex|604800|55800": { tokens: 62534629, history: [300e6] },
+    "codex|default|18000|1800": { tokens: 6434278, history: [64e6] },
+    "codex|default|604800|55800": { tokens: 62534629, history: [300e6] },
   };
   assert.equal(quotaEstimateLookup(estimates, provider, w5), 6434278);
   assert.equal(quotaEstimateLookup(estimates, provider, w7), 62534629);
@@ -105,13 +105,34 @@ test("Codex 5h/7d 估算按窗口隔离，联合重置时不会共用 7d 历史"
   const aligned7 = { used_percent: 11, window_seconds: 604800, reset_after_seconds: 586800 };
   const sameTokens = 7366836;
   const aligned = {
-    "codex|18000|18000": { tokens: sameTokens, history: [64e6] },
-    "codex|604800|18000": { tokens: sameTokens, history: [300e6] },
+    "codex|default|18000|18000": { tokens: sameTokens, history: [64e6] },
+    "codex|default|604800|18000": { tokens: sameTokens, history: [300e6] },
   };
   assert.notEqual(
     quotaEstimateLookupTotal(aligned, provider, aligned5, sameTokens),
     quotaEstimateLookupTotal(aligned, provider, aligned7, sameTokens),
   );
+});
+
+test("额度估算按账号隔离，保留精确窗口且零增量不反推", () => {
+  const provider = "OpenAI Codex";
+  const w = { used_percent: 10, window_seconds: 18000, reset_after_seconds: 16925 };
+  const defaultMeta = quotaEstimateMeta(provider, w, "default");
+  const workMeta = quotaEstimateMeta(provider, w, "work");
+  assert.equal(defaultMeta.elapsed, 1075);
+  assert.equal(defaultMeta.bucket, 1800);
+  assert.equal(quotaEstimateStoreKey(defaultMeta), "codex|default|18000|1800");
+  assert.equal(quotaEstimateStoreKey(workMeta), "codex|work|18000|1800");
+  const estimates = {
+    "codex|default|18000|1800": { tokens: 1000, history: [10000] },
+    "codex|work|18000|1800": { tokens: 2000, history: [22000] },
+  };
+  assert.equal(quotaEstimateLookup(estimates, provider, w, "default"), 1000);
+  assert.equal(quotaEstimateLookup(estimates, provider, w, "work"), 2000);
+  assert.equal(quotaEstimateLookup(estimates, provider, w, "other"), null);
+  assert.equal(quotaEstimateLookupTotal(estimates, provider, w, 1000, "default"), 10000);
+  assert.equal(quotaEstimateLookupTotal(estimates, provider, w, 2000, "work"), 21000);
+  assert.equal(quotaEstimateLookupTotal(estimates, provider, w, 0, "default"), null);
 });
 
 test("ZCode 启动路径支持注册表和环境目录并去重", () => {

@@ -277,8 +277,12 @@ button:focus-visible, [role="button"]:focus-visible, th.sortable:focus-visible {
 .disk-nav-label { font-size: 12.5px; font-weight: 500; }
 .disk-nav-sub { font-size: 10.5px; color: var(--dim); }
 
-/* 用量分析：复用磁盘页侧栏，正文独立滚动（页头仍通栏固定） */
+/* 用量分析：左侧分组导航从页头高度之外开始；页头与正文同属右侧内容列 */
 .analytics-shell { flex: 1; min-height: 0; display: flex; }
+.analytics-content {
+  position: relative; flex: 1; min-width: 0; min-height: 0;
+  display: flex; flex-direction: column;
+}
 .analytics-shell .page-body { flex: 1; min-width: 0; }
 
 /* --- 标题栏 --- */
@@ -1321,10 +1325,10 @@ td b { font-weight: 600; }
 .card-head-row h2 { margin: 0 auto 0 0; text-align: left; }
 .card-head-actions { display: flex; align-items: center; gap: 8px; }
 
-/* 卡片铺满视图：铺满标题栏（44px）以下、侧边栏（148px）以右的主体区域 */
+/* 卡片铺满视图：相对右侧内容列定位，左侧分析导航和上方主导航保持可见 */
 .card-expanded {
-  position: fixed;
-  top: 44px; left: 148px; right: 0; bottom: 0;
+  position: absolute;
+  inset: 0;
   z-index: 40;
   margin: 0;
   /* v0.7.34：清掉常规布局的 max-width（如 .card-w-side 的 500px），
@@ -1517,6 +1521,11 @@ td b { font-weight: 600; }
 @media (prefers-reduced-motion: reduce) { .overlay, .dialog, .app-toast { animation: none; } }
 
 /* --- 速率卡内的最新会话列表（项目 / 会话 id / 模型 / 速率） --- */
+.rate-card { container-type: inline-size; }
+.rate-agent-name { display: none; }
+@container (min-width: 250px) {
+  .rate-card .rate-agent-name { display: inline; }
+}
 .rate-rows { margin-top: 8px; display: grid; gap: 4px; min-width: 0; }
 .rate-row {
   display: flex; align-items: center; justify-content: space-between;

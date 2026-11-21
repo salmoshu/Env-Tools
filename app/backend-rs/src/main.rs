@@ -439,9 +439,9 @@ async fn analytics(
     Json(value)
 }
 
-/// /api/analytics/rolling：额度估算用——provider（kimi/codex/glm）在近
-/// seconds 秒内的 token 总量（按配额厂商归因，omp 底层模型归并计入）。
-/// 前端以 窗口内实际用量 ÷ 窗口已用% 反推 5h/7d 窗口的 token 总额。
+/// /api/analytics/rolling：额度估算用——provider + account 在
+/// [at-seconds, at] 内的请求级 token 增量（omp 按底层模型归并）。
+/// 前端以服务端百分比快照为基准，用该增量反推 5h/7d 窗口的 token 总额。
 /// 独立 rolling scope：与主分析互不干扰，扫描节流与主视图一致
 async fn analytics_rolling(
     axum::extract::State(state): axum::extract::State<AppState>,
@@ -452,6 +452,12 @@ async fn analytics_rolling(
         .map(String::as_str)
         .filter(|raw| ["kimi", "codex", "glm"].contains(raw))
         .unwrap_or("kimi")
+        .to_string();
+    let account_id = params
+        .get("account_id")
+        .map(String::as_str)
+        .filter(|raw| !raw.is_empty())
+        .unwrap_or("default")
         .to_string();
     let seconds: i64 = params
         .get("seconds")
@@ -506,7 +512,7 @@ async fn analytics_rolling(
     let tokens = engine_arc
         .lock()
         .unwrap()
-        .rolling_quota_tokens(&provider, at - seconds);
+        .rolling_quota_tokens_for_account(&provider, at - seconds, at, &account_id);
     // 历史估算：各代高水位点的 tokens/pct 数组（旧→新），前端与当前单点合并取中位
     let history = if with_history {
         match window_seconds {
@@ -514,6 +520,7 @@ async fn analytics_rolling(
                 let vals = quota_history::generation_estimates(
                     &settings::quota_history_path(),
                     &provider,
+                    &account_id,
                     win,
                     8,
                 );
@@ -527,6 +534,7 @@ async fn analytics_rolling(
     Json(serde_json::json!({
         "ok": true,
         "agent": provider,
+        "account_id": account_id,
         "seconds": seconds,
         "at": at,
         "tokens": tokens,
@@ -543,7 +551,7 @@ async fn usage(axum::extract::State(state): axum::extract::State<AppState>) -> J
             tokio::task::spawn_blocking(|| {
                 let (accounts, errors) = quota::collect_all();
                 // 配额快照落盘（额度估算精度）：pct/代际变化才落一行。
-                // tokens 经 rolling 引擎按窗口 elapsed 取本机（含 WSL）用量
+                // tokens 经 rolling 引擎按窗口 elapsed 取本机对应账号用量
                 record_quota_snapshots(&accounts);
                 let versions = settings::collect_versions();
                 let settings = settings::load_settings();
@@ -564,8 +572,8 @@ async fn usage(axum::extract::State(state): axum::extract::State<AppState>) -> J
     Json(value)
 }
 
-/// 配额快照（额度估算精度）：对每个厂商窗口，pct 或代际变化时落一行
-/// {ts, p, win, pct, ra, el, tok}。tok 用 rolling 引擎按 elapsed 取本机
+/// 配额快照（额度估算精度）：对每个账号窗口，pct 或代际变化时落一行
+/// {ts, p, a, win, pct, ra, el, tok}。tok 用 rolling 引擎按 elapsed 取本机
 /// （local，配额凭证本就仅本机）用量；引擎独立 scope 不与主分析争锁。
 fn record_quota_snapshots(accounts: &[Value]) {
     static LAST: std::sync::OnceLock<
@@ -580,6 +588,11 @@ fn record_quota_snapshots(accounts: &[Value]) {
     let now_sec = chrono::Local::now().timestamp();
     for account in accounts {
         let Some(key) = key_of(account.get("provider").and_then(|v| v.as_str()).unwrap_or("")) else { continue };
+        let account_id = account
+            .get("account_id")
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.is_empty())
+            .unwrap_or("default");
         for w in account.get("windows").and_then(|v| v.as_array()).unwrap_or(&Vec::new()) {
             let pct = w.get("used_percent").and_then(|v| v.as_f64()).unwrap_or(0.0);
             let win = w.get("window_seconds").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -589,7 +602,7 @@ fn record_quota_snapshots(accounts: &[Value]) {
             }
             let elapsed = win - ra;
             let gen = now_sec - elapsed; // 窗口起点 = 代际标识
-            let map_key = format!("{key}|{win}");
+            let map_key = format!("{key}|{account_id}|{win}");
             let mut last = LAST.get_or_init(Default::default).lock().unwrap();
             if let Some((last_gen, last_pct)) = last.get(&map_key) {
                 if *last_gen == gen && (*last_pct - pct).abs() < 0.5 {
@@ -619,12 +632,12 @@ fn record_quota_snapshots(accounts: &[Value]) {
                 engine.last_scan_secs = now_sec;
                 engine.save_cache(&settings::scan_cache_path(&scope));
             }
-            let tokens = engine.rolling_quota_tokens(key, now_sec - elapsed);
+            let tokens = engine.rolling_quota_tokens_for_account(key, now_sec - elapsed, now_sec, account_id);
             drop(engine);
             quota_history::append(
                 &settings::quota_history_path(),
                 &serde_json::json!({
-                    "ts": now_sec, "p": key, "win": win,
+                    "ts": now_sec, "p": key, "a": account_id, "win": win,
                     "pct": pct, "ra": ra, "el": elapsed, "tok": tokens,
                 }),
             );
