@@ -1306,6 +1306,138 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
     <section className="card-w-full sessions-placeholder"><div className="status">{t("state.loading")}</div></section>
   ), [sessionsReady, groupPlan, sortedRows, sessionsGrand, sessionsGroup, sessionsSort, speedMode, lang, dragCard, dropTarget, expandedCard, nowMinute, sessionsRowLimit, showAllSessions]);
 
+  // 速率 KPI 卡：hook 必须无条件调用。此前嵌在 view === "overview" 的条件 JSX 里，
+  // 切分组时 hook 数量变化会触发 React #300，整页被错误边界接管后数据需重新加载。
+  const rateCard = useMemo(() => (
+    <div className={cardCls("rate", "kpi-card")}>
+      <div className="kpi-label rate-label">
+        <span className="rate-label-text">
+          {lang === "zh"
+            ? `${t("dash.kpiRate")}（${expandedCard === "rate" ? t("dash.rateActive1d") : t("dash.rateLatestHint")}）`
+            : `${t("dash.kpiRate")} (${expandedCard === "rate" ? t("dash.rateActive1d") : t("dash.rateLatestHint")})`}
+        </span>
+        {expandBtn("rate")}
+      </div>
+      {expandedCard === "rate" ? (() => {
+        // 全屏：近 1 天活跃明细（项目 → 会话 → 模型），旧版远端后端无此字段时回退空态
+        const active = (kpi.rate || {}).active_1d;
+        const projects = (active && active.projects) || [];
+        if (!projects.length) {
+          return <div className="status">{t("state.noData")}</div>;
+        }
+        const sessionCount = projects.reduce((n, p) => n + (p.sessions || []).length, 0);
+        return (
+          <>
+            <div className="table-hint">
+              {t("dash.rateActiveSummary")
+                .replace("{p}", String(projects.length))
+                .replace("{n}", String(sessionCount))
+                .replace("{t}", fmtTokens(active.tokens || 0))}
+            </div>
+            <div className="act-list">
+              {projects.map((proj) => {
+                const collapsed = rateCollapsed.has(proj.name);
+                return (
+                <div className="act-proj" key={proj.name}>
+                  <div className="act-proj-head">
+                    {/* v0.7.32：头部恢复 0.7.30 原样式（名称左、统计右、无整头点击态），
+                        折叠收放改为独立按钮并加大尺寸 */}
+                    <button
+                      type="button"
+                      className={`act-proj-toggle${collapsed ? " closed" : ""}`}
+                      aria-expanded={!collapsed}
+                      title={collapsed ? t("dash.rateExpandProject") : t("dash.rateCollapseProject")}
+                      onClick={() => toggleRateProject(proj.name)}
+                    >
+                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M2.5 4.5 6 8l3.5-3.5" />
+                      </svg>
+                    </button>
+                    <span className="act-proj-name" title={proj.path || proj.name}>{proj.name}</span>
+                    <span className="act-proj-stats">
+                      {fmtTokens(proj.tokens)} {t("dash.tokens")} · {t("dash.sessionsCount").replace("{n}", String((proj.sessions || []).length))}
+                    </span>
+                  </div>
+                  {collapsed ? null : (proj.sessions || []).map((s) => {
+                    // 最新用过的模型置顶；会话头速率取该模型自己的速率，
+                    // 与顶部模型行保持一致（不再显示整段会话的加权平均）
+                    const models = (s.models || []).slice().sort(
+                      (a, b) => (b.last || 0) - (a.last || 0) || (b.tokens || 0) - (a.tokens || 0),
+                    );
+                    const latestModel = models[0];
+                    return (
+                    <div className="act-session" key={s.session_id}>
+                      <div className="act-session-row">
+                        <span className="mono act-sid" title={s.session_id}>
+                          {String(s.session_id).replace("session_", "").replace(/^codex-/, "").slice(0, 8)}…
+                        </span>
+                        <span className="act-agent"><BrandIcon of={s.agent} size={11} />{AGENT_LABELS[s.agent] || s.agent}</span>
+                        <span className="act-meta">
+                          {fmtTokens(s.output)} out · {s.requests} req · {t("dash.rateEndedAgo").replace("{d}", fmtSpan(s.ended_ago_seconds || 0))}
+                        </span>
+                        <span className="act-rate" title={t(speedMode === "gen" ? "dash.speedHint" : "dash.speedHintThroughput")}>
+                          {rateText(latestModel || s)}
+                        </span>
+                      </div>
+                      <div className="act-models">
+                        {models.map((m) => (
+                          <div className="act-model-row" key={m.model}>
+                            <span className="mono act-model-name" title={`${s.agent}/${m.model}`}>
+                              {rateModelLabel(s.cli || s.agent, m.model)}
+                            </span>
+                            <span className="act-meta">
+                              {fmtTokens(m.tokens)} {t("dash.tokens")} · {fmtTokens(m.output)} out · {m.requests} req
+                            </span>
+                            <span className="act-rate">{rateText(m)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    );
+                  })}
+                </div>
+                );
+              })}
+            </div>
+          </>
+        );
+      })() : (() => {
+        const latest = (kpi.rate || {}).latest_sessions || [];
+        if (!latest.length) {
+          return <div className="kpi-sub">{t("state.noData")}</div>;
+        }
+        // 同名项目出现多次时用 #1/#2/#3 区分（按最近活跃排序，#1 最新）；
+        // 完整会话 id 在悬浮提示里，行内不再占空间
+        const projCount = {};
+        for (const item of latest) projCount[item.project] = (projCount[item.project] || 0) + 1;
+        const projSeen = {};
+        return (
+          <div className="rate-rows">
+            {latest.map((item) => {
+              const dupIdx = (projSeen[item.project] = (projSeen[item.project] || 0) + 1);
+              const tag = projCount[item.project] > 1 ? `#${dupIdx}` : null;
+              return (
+                <div
+                  className="rate-row"
+                  key={item.session_id || `${item.project}#${dupIdx}`}
+                  title={`${item.project} · ${item.session_id || "?"} · ${item.model || item.agent} · ${t("dash.rateEndedAgo").replace("{d}", fmtSpan(item.ended_ago_seconds || 0))}`}
+                >
+                  <span className="rate-name">{item.project}</span>
+                  {tag ? <span className="rate-tag">{tag}</span> : null}
+                  <span className="rate-model" title={item.model || item.agent || ""}>
+                    <BrandIcon of={item.cli || item.agent} size={12} />
+                    {rateModelLabel(item.cli || item.agent, item.model)}
+                  </span>
+                  <span className="rate-val">{rateText(item)}</span>
+                </div>
+              );
+            })}
+          </div>
+        );
+      })()}
+    </div>
+  ), [kpi.rate, expandedCard, speedMode, rateCollapsed, lang, dragCard, dropTarget, nowMinute, refreshing, onRefresh]);
+
   return (
     <div className="page page-flex">
       <header className="page-head">
@@ -1386,7 +1518,8 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
       <div className={`error-card${analyticsError ? "" : " hidden"}`} style={{ margin: "0 0 12px" }}>
         {analyticsError}
       </div>
-      {view === "overview" ? (<>
+      {/* 概览保持挂载、仅切换显示：QuotaWeeklyCard 自取 90 天数据，卸载重挂会重新拉取 */}
+      <div className="analytics-view" style={{ display: view === "overview" ? undefined : "none" }}>
       <div className="kpi-row">
         <div className="kpi-card">
           <div className="kpi-label">{t("dash.kpiWeek")}{agent !== "all" ? ` · ${AGENT_LABELS[agent]}` : ""}</div>
@@ -1407,135 +1540,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
           <div className="kpi-label">{t("dash.kpiCacheToday")}</div>
           <div className="kpi-value">{fmtPct(todayCacheRate)}</div>
         </div>
-        {useMemo(() => (
-        <div className={cardCls("rate", "kpi-card")}>
-          <div className="kpi-label rate-label">
-            <span className="rate-label-text">
-              {lang === "zh"
-                ? `${t("dash.kpiRate")}（${expandedCard === "rate" ? t("dash.rateActive1d") : t("dash.rateLatestHint")}）`
-                : `${t("dash.kpiRate")} (${expandedCard === "rate" ? t("dash.rateActive1d") : t("dash.rateLatestHint")})`}
-            </span>
-            {expandBtn("rate")}
-          </div>
-          {expandedCard === "rate" ? (() => {
-            // 全屏：近 1 天活跃明细（项目 → 会话 → 模型），旧版远端后端无此字段时回退空态
-            const active = (kpi.rate || {}).active_1d;
-            const projects = (active && active.projects) || [];
-            if (!projects.length) {
-              return <div className="status">{t("state.noData")}</div>;
-            }
-            const sessionCount = projects.reduce((n, p) => n + (p.sessions || []).length, 0);
-            return (
-              <>
-                <div className="table-hint">
-                  {t("dash.rateActiveSummary")
-                    .replace("{p}", String(projects.length))
-                    .replace("{n}", String(sessionCount))
-                    .replace("{t}", fmtTokens(active.tokens || 0))}
-                </div>
-                <div className="act-list">
-                  {projects.map((proj) => {
-                    const collapsed = rateCollapsed.has(proj.name);
-                    return (
-                    <div className="act-proj" key={proj.name}>
-                      <div className="act-proj-head">
-                        {/* v0.7.32：头部恢复 0.7.30 原样式（名称左、统计右、无整头点击态），
-                            折叠收放改为独立按钮并加大尺寸 */}
-                        <button
-                          type="button"
-                          className={`act-proj-toggle${collapsed ? " closed" : ""}`}
-                          aria-expanded={!collapsed}
-                          title={collapsed ? t("dash.rateExpandProject") : t("dash.rateCollapseProject")}
-                          onClick={() => toggleRateProject(proj.name)}
-                        >
-                          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M2.5 4.5 6 8l3.5-3.5" />
-                          </svg>
-                        </button>
-                        <span className="act-proj-name" title={proj.path || proj.name}>{proj.name}</span>
-                        <span className="act-proj-stats">
-                          {fmtTokens(proj.tokens)} {t("dash.tokens")} · {t("dash.sessionsCount").replace("{n}", String((proj.sessions || []).length))}
-                        </span>
-                      </div>
-                      {collapsed ? null : (proj.sessions || []).map((s) => {
-                        // 最新用过的模型置顶；会话头速率取该模型自己的速率，
-                        // 与顶部模型行保持一致（不再显示整段会话的加权平均）
-                        const models = (s.models || []).slice().sort(
-                          (a, b) => (b.last || 0) - (a.last || 0) || (b.tokens || 0) - (a.tokens || 0),
-                        );
-                        const latestModel = models[0];
-                        return (
-                        <div className="act-session" key={s.session_id}>
-                          <div className="act-session-row">
-                            <span className="mono act-sid" title={s.session_id}>
-                              {String(s.session_id).replace("session_", "").replace(/^codex-/, "").slice(0, 8)}…
-                            </span>
-                            <span className="act-agent"><BrandIcon of={s.agent} size={11} />{AGENT_LABELS[s.agent] || s.agent}</span>
-                            <span className="act-meta">
-                              {fmtTokens(s.output)} out · {s.requests} req · {t("dash.rateEndedAgo").replace("{d}", fmtSpan(s.ended_ago_seconds || 0))}
-                            </span>
-                            <span className="act-rate" title={t(speedMode === "gen" ? "dash.speedHint" : "dash.speedHintThroughput")}>
-                              {rateText(latestModel || s)}
-                            </span>
-                          </div>
-                          <div className="act-models">
-                            {models.map((m) => (
-                              <div className="act-model-row" key={m.model}>
-                                <span className="mono act-model-name" title={`${s.agent}/${m.model}`}>
-                                  {rateModelLabel(s.cli || s.agent, m.model)}
-                                </span>
-                                <span className="act-meta">
-                                  {fmtTokens(m.tokens)} {t("dash.tokens")} · {fmtTokens(m.output)} out · {m.requests} req
-                                </span>
-                                <span className="act-rate">{rateText(m)}</span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                        );
-                      })}
-                    </div>
-                    );
-                  })}
-                </div>
-              </>
-            );
-          })() : (() => {
-            const latest = (kpi.rate || {}).latest_sessions || [];
-            if (!latest.length) {
-              return <div className="kpi-sub">{t("state.noData")}</div>;
-            }
-            // 同名项目出现多次时用 #1/#2/#3 区分（按最近活跃排序，#1 最新）；
-            // 完整会话 id 在悬浮提示里，行内不再占空间
-            const projCount = {};
-            for (const item of latest) projCount[item.project] = (projCount[item.project] || 0) + 1;
-            const projSeen = {};
-            return (
-              <div className="rate-rows">
-                {latest.map((item) => {
-                  const dupIdx = (projSeen[item.project] = (projSeen[item.project] || 0) + 1);
-                  const tag = projCount[item.project] > 1 ? `#${dupIdx}` : null;
-                  return (
-                    <div
-                      className="rate-row"
-                      key={item.session_id || `${item.project}#${dupIdx}`}
-                      title={`${item.project} · ${item.session_id || "?"} · ${item.model || item.agent} · ${t("dash.rateEndedAgo").replace("{d}", fmtSpan(item.ended_ago_seconds || 0))}`}
-                    >
-                      <span className="rate-name">{item.project}</span>
-                      {tag ? <span className="rate-tag">{tag}</span> : null}
-                      <span className="rate-model" title={item.model || item.agent || ""}>
-                        <BrandIcon of={item.cli || item.agent} size={12} />
-                        {rateModelLabel(item.cli || item.agent, item.model)}
-                      </span>
-                      <span className="rate-val">{rateText(item)}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            );
-          })()}
-        </div>
-        ), [kpi.rate, expandedCard, speedMode, rateCollapsed, lang, dragCard, dropTarget, nowMinute])}
+        {rateCard}
       </div>
 
       <section className="block">
@@ -1615,7 +1620,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
       </section>
 
       <QuotaWeeklyCard target={target} weekStart={weekStart} accounts={accounts} estimates={quotaEstimates} />
-      </>) : null}
+      </div>
 
       <div className="dashboard-cards">
       {view === "trends" ? (<section
