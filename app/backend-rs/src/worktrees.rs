@@ -88,6 +88,23 @@ pub struct WorktreeReport {
 
 // ---------------------------------------------------------------- git
 
+fn absolute_program(candidate: &Path) -> PathBuf {
+    if candidate.is_absolute() {
+        return candidate.to_path_buf();
+    }
+    if let Some(path) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path) {
+            for name in ["git", "git.exe"] {
+                let full = dir.join(name);
+                if full.is_file() {
+                    return full;
+                }
+            }
+        }
+    }
+    candidate.to_path_buf()
+}
+
 fn git_binary() -> Option<&'static PathBuf> {
     static GIT: OnceLock<Option<PathBuf>> = OnceLock::new();
     GIT.get_or_init(|| {
@@ -107,8 +124,11 @@ fn git_binary() -> Option<&'static PathBuf> {
                 candidates.push(PathBuf::from(p));
             }
         }
-        #[cfg(not(target_os = "macos"))]
-        candidates.push(PathBuf::from("git"));
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            candidates.push(PathBuf::from("/usr/bin/git"));
+            candidates.push(PathBuf::from("/usr/local/bin/git"));
+        }
         #[cfg(target_os = "windows")]
         {
             if let Some(exe_dir) = std::env::var_os("EXEPATH").map(PathBuf::from) {
@@ -129,6 +149,8 @@ fn git_binary() -> Option<&'static PathBuf> {
                 candidates.push(local.join(r"Programs\Git\cmd\git.exe"));
             }
         }
+        #[cfg(not(target_os = "macos"))]
+        candidates.push(PathBuf::from("git"));
         candidates.into_iter().find(|c| {
             git_command(c)
                 .arg("--version")
@@ -136,6 +158,7 @@ fn git_binary() -> Option<&'static PathBuf> {
                 .map(|o| o.status.success())
                 .unwrap_or(false)
         })
+        .map(|path| absolute_program(&path))
     })
     .as_ref()
 }

@@ -1066,7 +1066,11 @@ fn still_alive(members: &[Member]) -> Vec<u32> {
     sys.refresh_processes_specifics(ProcessesToUpdate::Some(&pids), true, ProcessRefreshKind::nothing());
     members
         .iter()
-        .filter(|m| sys.process(Pid::from_u32(m.pid)).is_some_and(|p| p.start_time() == m.start))
+        .filter(|m| {
+            sys.process(Pid::from_u32(m.pid)).is_some_and(|p| {
+                p.start_time() == m.start && p.status() != sysinfo::ProcessStatus::Zombie
+            })
+        })
         .map(|m| m.pid)
         .collect()
 }
@@ -1228,7 +1232,13 @@ fn force_in(
                         format!(
                             "{} did not end: {}.",
                             plural(still.len(), "process", "processes"),
-                            if errors.is_empty() { "Windows has not finished ending it".to_string() } else { errors.join("; ") }
+                            if !errors.is_empty() {
+                                errors.join("; ")
+                            } else if cfg!(target_os = "windows") {
+                                "Windows has not finished ending it".to_string()
+                            } else {
+                                "the operating system has not finished ending it".to_string()
+                            }
                         ),
                     )
                 };

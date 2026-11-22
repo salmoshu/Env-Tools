@@ -304,6 +304,11 @@ fn command(program: &Path) -> Command {
 /// cannot fill a pipe and stall.
 fn run_cmd(mut cmd: Command, timeout: Option<Duration>, cancel: Option<&AtomicBool>) -> Result<CmdOut, String> {
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
     let mut child = cmd.spawn().map_err(|e| e.to_string())?;
     let mut out_pipe = child.stdout.take().ok_or("no stdout")?;
     let mut err_pipe = child.stderr.take().ok_or("no stderr")?;
@@ -318,6 +323,16 @@ fn run_cmd(mut cmd: Command, timeout: Option<Duration>, cancel: Option<&AtomicBo
         buf
     });
 
+    let stop = |child: &mut std::process::Child| {
+        #[cfg(unix)]
+        unsafe {
+            // process_group(0) above gives this command its own group, so shell
+            // children holding the output pipes are terminated as well.
+            libc::kill(-(child.id() as i32), libc::SIGKILL);
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+    };
     let start = Instant::now();
     let (mut code, mut timed_out, mut cancelled) = (None, false, false);
     loop {
@@ -330,14 +345,12 @@ fn run_cmd(mut cmd: Command, timeout: Option<Duration>, cancel: Option<&AtomicBo
             Err(e) => return Err(e.to_string()),
         }
         if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
-            let _ = child.kill();
-            let _ = child.wait();
+            stop(&mut child);
             cancelled = true;
             break;
         }
         if timeout.is_some_and(|t| start.elapsed() > t) {
-            let _ = child.kill();
-            let _ = child.wait();
+            stop(&mut child);
             timed_out = true;
             break;
         }
@@ -2381,7 +2394,7 @@ mod tests {
         };
         #[cfg(not(windows))]
         let shell = |script: &str| {
-            let mut c = command(Path::new("sh"));
+            let mut c = command(Path::new("/bin/sh"));
             c.args(["-c", script]);
             c
         };
