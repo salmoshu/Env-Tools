@@ -8,7 +8,7 @@
 // 数据链路（v0.7.0）：渲染层只走 IPC；数据全部由原生后端 env-tools-api
 // （Rust + axum，配额/分析/设置全原生）提供，python 引擎已移除。
 
-const { app, BrowserWindow, ipcMain, net, shell } = require("electron");
+const { app, BrowserWindow, ipcMain, net, shell, screen, Notification } = require("electron");
 const { spawn, execSync, exec } = require("child_process");
 const os = require("os");
 const path = require("path");
@@ -53,6 +53,8 @@ if (process.platform === "win32") {
 
 let mainWin = null;
 let boardWin = null;
+let gadgetWin = null;
+let gadgetPositionTimer = null;
 let refreshTimer = null;
 let usageFetchPromise = null;
 // Rust 后端（axum）状态：Electron 只负责拉起与健康探测；后端不可用时
@@ -167,6 +169,9 @@ function startBackend() {
         if (match) {
           backendPort = Number(match[1]);
           console.log(`[backend] env-tools-api listening on 127.0.0.1:${backendPort}`);
+          setTimeout(() => restoreDiskGadget(), 0);
+        } else if (line.startsWith("ENVTOOLS_NOTIFICATION ")) {
+          try { showDesktopNotification(JSON.parse(line.slice("ENVTOOLS_NOTIFICATION ".length))); } catch {}
         }
       }
     };
@@ -219,13 +224,34 @@ async function backendJson(pathname, body = null, timeoutMs = SETTINGS_TIMEOUT_M
   }
 }
 
+async function diskInvoke(command, args = {}) {
+  const result = await backendFetch("/api/disk/invoke", 60 * 60 * 1000, { command, args });
+  if (!result || !result.ok) throw new Error(result?.error || `disk command failed: ${command}`);
+  return result.result;
+}
+
+function showDesktopNotification(payload) {
+  if (!Notification.isSupported()) return;
+  const notification = new Notification({ title: String(payload.title || "Env-Tools"), body: String(payload.body || "") });
+  notification.on("click", async () => {
+    const window = await focusWindow(() => mainWin, createDashboardWindow);
+    if (window) window.webContents.send("navigate", "disk");
+  });
+  notification.show();
+}
+
 // 带超时的 fetch：只负责拿到响应（不解析 body），超时/网络错误一律抛错，
 // 由调用方决定降级文案；SSH 隧道/agent 探测与更新检查共用
-async function fetchWithTimeout(url, { headers = {}, timeoutMs }) {
+async function fetchWithTimeout(url, { headers = {}, timeoutMs, method = "GET", body = null } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, { headers, signal: controller.signal });
+    return await fetch(url, {
+      headers,
+      signal: controller.signal,
+      method,
+      ...(body == null ? {} : { body: typeof body === "string" ? body : JSON.stringify(body) }),
+    });
   } finally {
     clearTimeout(timer);
   }
@@ -431,6 +457,99 @@ function createBoardWindow() {
     }
     if (!programmaticResize) manualHeight = true;
   });
+}
+
+const DISK_GADGET_SIZES = { bar: [470, 44], card: [276, 360] };
+
+function diskGadgetBounds(settings, width, height) {
+  const primary = screen.getPrimaryDisplay().workArea;
+  let right = Number.isFinite(settings.right) ? settings.right : primary.x + primary.width - 18;
+  let y = Number.isFinite(settings.y) ? settings.y : primary.y + 18;
+  const visible = screen.getAllDisplays().some(display => {
+    const area = display.workArea;
+    return right - width >= area.x - 20 && y >= area.y - 20 && right <= area.x + area.width + 20 && y <= area.y + area.height - 30;
+  });
+  if (!visible) {
+    right = primary.x + primary.width - 18;
+    y = primary.y + 18;
+  }
+  return { x: Math.round(right - width), y: Math.round(y), width, height };
+}
+
+function saveDiskGadgetPosition() {
+  if (!gadgetWin || gadgetWin.isDestroyed()) return;
+  clearTimeout(gadgetPositionTimer);
+  gadgetPositionTimer = setTimeout(() => {
+    if (!gadgetWin || gadgetWin.isDestroyed()) return;
+    const bounds = gadgetWin.getContentBounds();
+    diskInvoke("gadget_position", { right: bounds.x + bounds.width, y: bounds.y }).catch(() => {});
+  }, 250);
+}
+
+function resizeDiskGadget(width, height) {
+  if (!gadgetWin || gadgetWin.isDestroyed()) return;
+  const w = Math.ceil(Math.max(40, Math.min(800, width)));
+  const h = Math.ceil(Math.max(40, Math.min(800, height)));
+  const before = gadgetWin.getContentBounds();
+  gadgetWin.setContentBounds({ x: before.x + before.width - w, y: before.y, width: w, height: h });
+}
+
+function createDiskGadgetWindow(settings) {
+  if (gadgetWin && !gadgetWin.isDestroyed()) return gadgetWin;
+  const [width, height] = DISK_GADGET_SIZES[settings.mode] || DISK_GADGET_SIZES.bar;
+  gadgetWin = new BrowserWindow({
+    ...diskGadgetBounds(settings, width, height),
+    useContentSize: true,
+    frame: false,
+    transparent: true,
+    backgroundColor: "#00000000",
+    alwaysOnTop: true,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    hasShadow: false,
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      backgroundThrottling: false,
+    },
+  });
+  gadgetWin.setAlwaysOnTop(true);
+  if (process.platform === "darwin") gadgetWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  if (DEV_SERVER_URL) gadgetWin.loadURL(`${DEV_SERVER_URL}#disk-gadget`);
+  else gadgetWin.loadFile(path.join(__dirname, "..", "dist", "index.html"), { hash: "disk-gadget" });
+  gadgetWin.once("ready-to-show", () => gadgetWin && !gadgetWin.isDestroyed() && gadgetWin.showInactive());
+  gadgetWin.on("move", saveDiskGadgetPosition);
+  gadgetWin.on("closed", () => {
+    clearTimeout(gadgetPositionTimer);
+    gadgetWin = null;
+  });
+  return gadgetWin;
+}
+
+async function restoreDiskGadget() {
+  try {
+    const settings = await diskInvoke("gadget_get");
+    if (settings.enabled) createDiskGadgetWindow(settings);
+  } catch {}
+}
+
+async function setDiskGadget(enabled, mode) {
+  const settings = await diskInvoke("gadget_set", { enabled, mode });
+  if (!enabled) {
+    if (gadgetWin && !gadgetWin.isDestroyed()) gadgetWin.close();
+  } else if (gadgetWin && !gadgetWin.isDestroyed()) {
+    const [width, height] = DISK_GADGET_SIZES[mode] || DISK_GADGET_SIZES.bar;
+    resizeDiskGadget(width, height);
+    gadgetWin.showInactive();
+  } else {
+    createDiskGadgetWindow(settings);
+  }
+  return settings;
 }
 
 async function focusWindow(getter, creator) {
@@ -851,21 +970,37 @@ ipcMain.handle("quota-reset", async (_event, provider, resetType, accountId) => 
   return result;
 });
 
+// Jharu 磁盘命令桥：渲染层保持 invoke/listen 语义，Electron 只承担原生窗口操作。
+ipcMain.handle("disk-invoke", async (_event, command, args) => diskInvoke(command, args || {}));
+ipcMain.handle("disk-events", async (_event, after) => backendFetch(`/api/disk/events?after=${encodeURIComponent(after || 0)}`, 15000));
+ipcMain.handle("disk-reveal", async (_event, target) => {
+  const value = String(target || "");
+  if (!value || !fs.existsSync(value)) throw new Error(`path does not exist: ${value}`);
+  shell.showItemInFolder(value);
+});
+ipcMain.handle("disk-open-url", async (_event, raw) => {
+  const url = new URL(String(raw || ""));
+  if (!["https:", "http:"].includes(url.protocol)) throw new Error("only HTTP(S) URLs can be opened");
+  await shell.openExternal(url.toString());
+});
+ipcMain.handle("disk-open-access-settings", async () => {
+  if (process.platform === "darwin") {
+    await shell.openExternal("x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles");
+  }
+});
+ipcMain.handle("disk-gadget-set", async (_event, enabled, mode) => setDiskGadget(Boolean(enabled), mode === "card" ? "card" : "bar"));
+ipcMain.handle("disk-gadget-fit", async (event, width, height) => {
+  if (senderWindow(event) !== gadgetWin) return;
+  resizeDiskGadget(Number(width), Number(height));
+});
+ipcMain.handle("disk-gadget-open-main", async () => {
+  const window = await focusWindow(() => mainWin, createDashboardWindow);
+  if (window) window.webContents.send("navigate", "disk");
+});
+
 // 额度估算：provider 近 N 秒 token 总量（本地/汇总目标；远端目标不支持）
 ipcMain.handle("get-disk-drives", async () => {
   try { return await backendFetch("/api/disk/drives"); }
-  catch (err) { return { ok: false, error: err.message }; }
-});
-ipcMain.handle("disk-dev-scan", async () => {
-  try { return await backendFetch("/api/disk/dev"); }
-  catch (err) { return { ok: false, error: err.message }; }
-});
-ipcMain.handle("disk-ai-tools", async () => {
-  try { return await backendFetch("/api/disk/ai-tools"); }
-  catch (err) { return { ok: false, error: err.message }; }
-});
-ipcMain.handle("disk-scan-full", async (_e, tab) => {
-  try { return await backendFetch(`/api/disk/scan-full?tab=${encodeURIComponent(tab)}`); }
   catch (err) { return { ok: false, error: err.message }; }
 });
 ipcMain.handle("open-zcode", () => require("./zcodeLauncher").openZcode());
@@ -884,125 +1019,6 @@ ipcMain.handle("open-external", async (_e, url) => {
   await shell.openExternal(target);
   return { ok: true };
 });
-ipcMain.handle("disk-deep", async (_e, path, depth) => {
-  const q = `?path=${encodeURIComponent(path)}&depth=${encodeURIComponent(depth || 2)}`;
-  return backendFetch(`/api/disk/deep${q}`).catch(e => ({ ok: false, error: e.message }));
-});
-ipcMain.handle("disk-dupes", async (_e, roots, min) => {
-  const q = `?roots=${encodeURIComponent((roots || []).join("|"))}&min=${encodeURIComponent(min || 10000000)}`;
-  return backendFetch(`/api/disk/dupes${q}`).catch(e => ({ ok: false, error: e.message }));
-});
-ipcMain.handle("disk-projects", async (_e, path) => {
-  const q = `?path=${encodeURIComponent(path || "")}`;
-  return backendFetch(`/api/disk/projects${q}`).catch(e => ({ ok: false, error: e.message }));
-});
-ipcMain.handle("disk-worktrees", async (_e, path) => {
-  const q = `?path=${encodeURIComponent(path || "")}`;
-  return backendFetch(`/api/disk/worktrees${q}`).catch(e => ({ ok: false, error: e.message }));
-});
-ipcMain.handle("disk-bin", async () => backendFetch("/api/disk/bin").catch(e => ({ ok: false, error: e.message })));
-ipcMain.handle("disk-bin-log", async () => backendFetch("/api/disk/bin/log").catch(e => ({ ok: false, error: e.message })));
-ipcMain.handle("disk-bin-purge", async (_e, body) => {
-  try {
-    return await backendFetch("/api/disk/bin/purge", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body || {}),
-    });
-  } catch (err) { return { ok: false, error: err.message }; }
-});
-ipcMain.handle("disk-bin-restore", async (_e, ids) => {
-  try {
-    return await backendFetch("/api/disk/bin/restore", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ids }),
-    });
-  } catch (err) { return { ok: false, error: err.message }; }
-});
-ipcMain.handle("disk-system", async () => backendFetch("/api/disk/system").catch(e => ({ ok: false, error: e.message })));
-ipcMain.handle("disk-system-action", async (_e, action, shadow) => {
-  try {
-    return await backendFetch("/api/disk/system/action", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action, shadow }),
-    });
-  } catch (err) { return { ok: false, error: err.message }; }
-});
-ipcMain.handle("disk-startup", async () => backendFetch("/api/disk/startup").catch(e => ({ ok: false, error: e.message })));
-ipcMain.handle("disk-startup-set", async (_e, ids, enable) => {
-  try {
-    return await backendFetch("/api/disk/startup/set", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ids, enable }),
-    });
-  } catch (err) { return { ok: false, error: err.message }; }
-});
-ipcMain.handle("disk-apps", async () => backendFetch("/api/disk/apps").catch(e => ({ ok: false, error: e.message })));
-ipcMain.handle("disk-app-uninstall", async (_e, command) => {
-  try {
-    return await backendFetch("/api/disk/apps/uninstall", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ command }),
-    });
-  } catch (err) { return { ok: false, error: err.message }; }
-});
-ipcMain.handle("disk-sandboxes", async () => backendFetch("/api/disk/sandboxes").catch(e => ({ ok: false, error: e.message })));
-// 清理任务（后台 job + 进度轮询；IPC 桥无法直连 SSE，轮询是等价形态）
-ipcMain.handle("clean-start", async (_e, items, source) => {
-  const norm = (items || []).map(it => typeof it === "string"
-    ? { path: it, source: source || "清理" }
-    : { path: it.path, size: it.size, source: it.source || source || "清理" });
-  try {
-    return await backendFetch("/api/disk/clean/start", 15000, { items: norm });
-  } catch (err) { return { ok: false, error: err.message }; }
-});
-ipcMain.handle("clean-progress", async (_e, job) => {
-  try { return await backendFetch(`/api/disk/clean/progress?job=${encodeURIComponent(job)}`); }
-  catch (err) { return { ok: false, error: err.message }; }
-});
-ipcMain.handle("clean-cancel", async (_e, job) => {
-  try { return await backendFetch("/api/disk/clean/cancel", 15000, { job }); }
-  catch (err) { return { ok: false, error: err.message }; }
-});
-ipcMain.handle("disk-bin-purge-start", async (_e, body) => {
-  try { return await backendFetch("/api/disk/bin/purge/start", 15000, body || {}); }
-  catch (err) { return { ok: false, error: err.message }; }
-});
-ipcMain.handle("disk-overview", async () => backendFetch("/api/disk/overview").catch(e => ({ ok: false, error: e.message })));
-ipcMain.handle("disk-overview-cleanable", async () => backendFetch("/api/disk/overview/cleanable", 180000).catch(e => ({ ok: false, error: e.message })));
-ipcMain.handle("disk-overview-live", async () => backendFetch("/api/disk/overview/live").catch(e => ({ ok: false, error: e.message })));
-ipcMain.handle("disk-autocare", async () => backendFetch("/api/disk/autocare").catch(e => ({ ok: false, error: e.message })));
-ipcMain.handle("disk-autocare-update", async (_e, patch) => {
-  try {
-    return await backendFetch("/api/disk/autocare", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(patch || {}),
-    });
-  } catch (err) { return { ok: false, error: err.message }; }
-});
-ipcMain.handle("disk-autocare-run", async () => backendFetch("/api/disk/autocare/run", { method: "POST" }).catch(e => ({ ok: false, error: e.message })));
-ipcMain.handle("disk-processes", async () => backendFetch("/api/disk/processes").catch(e => ({ ok: false, error: e.message })));
-ipcMain.handle("disk-history", async () => backendFetch("/api/disk/history").catch(e => ({ ok: false, error: e.message })));
-ipcMain.handle("disk-desktop", async () => backendFetch("/api/disk/desktop").catch(e => ({ ok: false, error: e.message })));
-ipcMain.handle("disk-clean", async (_e, items, source) => {
-  // items: 字符串数组（兼容旧调用）或 {path,size} 对象数组；source: 来源标签（写日志）
-  try {
-    const norm = (items || []).map(it => typeof it === "string"
-      ? { path: it, source: source || "清理" }
-      : { path: it.path, size: it.size, source: it.source || source || "清理" });
-    const res = await backendFetch("/api/disk/clean", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ items: norm }),
-    });
-    return res;
-  } catch (err) { return { ok: false, error: err.message }; }
-});
 ipcMain.handle("disk-scan", async (_e, path, top, depth) => {
   const q = `?path=${encodeURIComponent(path)}&top=${encodeURIComponent(top || 30)}&depth=${encodeURIComponent(depth || 2)}`;
   try { return await backendFetch(`/api/disk/scan${q}`); }
@@ -1011,13 +1027,17 @@ ipcMain.handle("disk-scan", async (_e, path, top, depth) => {
 
 ipcMain.handle("get-analytics-rolling", async (_event, agent, seconds, targetId, opts) => {
   const aggregate = targetId === "aggregate";
+  const target = targetId || "local";
   const extra = opts || {};
   let query = `?agent=${encodeURIComponent(agent || "kimi")}&seconds=${encodeURIComponent(seconds || 3600)}` +
-    `${aggregate ? "&aggregate=1" : ""}`;
+    `${aggregate ? "&aggregate=1" : ""}&scope=${encodeURIComponent(target)}`;
   if (extra.at) query += `&at=${encodeURIComponent(extra.at)}`;
   if (extra.window) query += `&window=${encodeURIComponent(extra.window)}`;
   if (extra.account) query += `&account_id=${encodeURIComponent(extra.account)}`;
   if (extra.history) query += "&history=1";
+  if (Number.isFinite(Number(extra.pct))) query += `&pct=${encodeURIComponent(extra.pct)}`;
+  if (extra.plan) query += `&plan=${encodeURIComponent(extra.plan)}`;
+  if (target.startsWith("wsl:")) query += `&wsl_distro=${encodeURIComponent(target.slice(4))}`;
   const remoteRolling = async (host) => {
     const session = sshSessions.get(host);
     if (!session) throw new Error(`SSH target ${host} is not connected`);
@@ -1030,24 +1050,58 @@ ipcMain.handle("get-analytics-rolling", async (_event, agent, seconds, targetId,
     if (!result || !result.ok) throw new Error((result && result.error) || "Rolling engine unavailable");
     return result;
   };
+  const recordAssessment = async (result, host = null) => {
+    if (!result || !result.ok || !Number.isFinite(Number(extra.pct)) || !extra.window) return result;
+    const complete = result.coverageComplete !== false && !(result.failedSources > 0);
+    const payload = {
+      provider: agent,
+      account: extra.account || "default",
+      window: Number(extra.window),
+      scope: target,
+      plan: extra.plan || "",
+      at: Number(extra.at || result.at),
+      elapsed: Number(seconds),
+      pct: Number(extra.pct),
+      tokens: Number(result.tokens || 0),
+      complete,
+    };
+    try {
+      const assessment = host
+        ? await (await fetchWithTimeout(`http://127.0.0.1:${sshSessions.get(host).localPort}/api/quota/history/record`, {
+          method: "POST", headers: { "x-env-token": sshSessions.get(host).token, "Content-Type": "application/json" },
+          body: JSON.stringify(payload), timeoutMs: SETTINGS_TIMEOUT_MS,
+        })).json()
+        : await backendFetch("/api/quota/history/record", SETTINGS_TIMEOUT_MS, payload);
+      return assessment && Array.isArray(assessment.history)
+        ? { ...result, ...assessment, coverageComplete: complete }
+        : { ...result, coverageComplete: complete };
+    } catch {
+      return { ...result, coverageComplete: complete };
+    }
+  };
   try {
-    if (targetId && targetId.startsWith("ssh:")) {
-      const result = await remoteRolling(targetId.slice(4));
-      return { ...result, sourceCount: 1, failedSources: 0 };
+    if (target.startsWith("ssh:")) {
+      const host = target.slice(4);
+      const result = await remoteRolling(host);
+      const assessed = await recordAssessment({ ...result, sourceCount: 1, failedSources: 0 }, host);
+      return { ...assessed, sourceCount: 1, failedSources: 0 };
     }
     const local = await backendFetch(`/api/analytics/rolling${query}`);
     if (!local || !local.ok) return local;
-    if (!aggregate || sshSessions.size === 0) return { ...local, sourceCount: 1, failedSources: 0 };
+    if (!aggregate || sshSessions.size === 0) return recordAssessment(local);
     const remote = await Promise.all([...sshSessions.keys()].map(async (host) => {
       try { return await remoteRolling(host); } catch { return null; }
     }));
     const available = remote.filter(Boolean);
-    return {
+    const failedSources = Number(local.failedSources || 0) + remote.length - available.length;
+    const combined = {
       ...local,
       tokens: Number(local.tokens || 0) + available.reduce((sum, result) => sum + Number(result.tokens || 0), 0),
-      sourceCount: 1 + available.length,
-      failedSources: remote.length - available.length,
+      sourceCount: Number(local.sourceCount || 1) + available.length,
+      failedSources,
+      coverageComplete: local.coverageComplete !== false && available.every(result => result.coverageComplete !== false),
     };
+    return recordAssessment(combined);
   } catch (err) {
     return { ok: false, error: `Rolling engine unavailable: ${err.message}` };
   }

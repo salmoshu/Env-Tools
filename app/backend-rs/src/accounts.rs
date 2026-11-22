@@ -263,6 +263,10 @@ pub fn account(provider: Provider, account_id: &str) -> Option<AccountProfile> {
         .find(|profile| profile.id == account_id)
 }
 
+pub fn active_account_id(provider: Provider) -> Option<String> {
+    effective_active(provider, &load_registry(provider))
+}
+
 fn fallback_active(provider: Provider, config: &Value) -> Option<String> {
     profiles_from_config(provider, config)
         .first()

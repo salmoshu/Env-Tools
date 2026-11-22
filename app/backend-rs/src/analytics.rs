@@ -42,6 +42,9 @@ pub struct TurnRecord {
     pub cache_read: i64,
     pub cache_creation: i64,
     pub sid: String,
+    /// 请求级配额账号；空值回退到文件级 home 归因。
+    #[serde(default)]
+    pub quota_account: Option<String>,
     /// 该次请求的纯生成时长（秒）。ZCode（SQLite duration−TTFT）与
     /// kimi（usage.record − llm.request）逐请求可得；codex 由
     /// token_usage_record 与边界事件（工具产出/用户消息/上一响应完成）
@@ -78,7 +81,7 @@ pub struct FileState {
     /// (unknown)。随扫描缓存落盘，进程重启续扫也不断档
     #[serde(default)]
     pub current_model: String,
-    /// 配额估算按账号隔离；无法从共享日志识别的旧记录回退 default。
+    /// 配额估算按账号隔离；旧缓存无请求级账号时回退到文件级归因。
     #[serde(default)]
     pub quota_account: String,
 }
@@ -117,7 +120,8 @@ struct ScanCache {
 // v4：kimi 新事件体系（k3.1+）TPOT 配对——llm.request 消失，改由
 // step.begin 配对；旧缓存里新版会话 gen_seconds 恒为 0（gen_rate=null
 // 回退墙钟口径），触发一次冷扫重建
-const SCAN_CACHE_VERSION: u32 = 4;
+// v5：请求级配额账号归因，旧文件级 default/OMP 数据需重扫。
+const SCAN_CACHE_VERSION: u32 = 5;
 
 impl AnalyticsState {
     /// 首轮扫描前从磁盘水合增量缓存（只生效一次）。水合后首轮扫描照常跑：
@@ -181,10 +185,13 @@ impl AnalyticsState {
     ) -> i64 {
         let mut total: i64 = 0;
         for state in self.files.values() {
-            if !account_id.is_empty() && state.quota_account != account_id {
-                continue;
-            }
             for record in &state.records {
+                if !account_id.is_empty() {
+                    let record_account = record.quota_account.as_deref().unwrap_or(state.quota_account.as_str());
+                    if record_account != account_id {
+                        continue;
+                    }
+                }
                 if record.ts < cutoff_ts || record.ts > end_ts {
                     continue;
                 }
@@ -256,6 +263,7 @@ pub(crate) fn parse_kimi_line_with_pending(
         cache_read: count_field(&usage, "inputCacheRead"),
         cache_creation: count_field(&usage, "inputCacheCreation"),
         sid: String::new(), // 由调用方填文件级会话标识
+        quota_account: None,
         // 请求时长 = usage.record 时刻 − llm.request 起始时刻（毫秒差）
         gen_seconds: if pending_llm_start_ms > 0 && raw_time_ms > pending_llm_start_ms {
             (raw_time_ms - pending_llm_start_ms) as f64 / 1000.0
@@ -369,6 +377,7 @@ pub(crate) fn parse_codex_token_line(line: &str, model: &str, sid: &str) -> Opti
         cache_read: cached,
         cache_creation: count_field(usage, "cache_write_input_tokens"),
         sid: sid.to_string(),
+        quota_account: None,
         gen_seconds: 0.0,
     })
 }
@@ -473,6 +482,7 @@ pub(crate) fn parse_omp_line(line: &str, sid: &str) -> Option<TurnRecord> {
         cache_read: count_field(usage, "cacheRead"),
         cache_creation: count_field(usage, "cacheWrite"),
         sid: sid.to_string(),
+        quota_account: None,
         gen_seconds,
     })
 }
@@ -705,6 +715,7 @@ fn scan_zcode_db(
                 cache_read: cache_read.max(0),
                 cache_creation: cache_creation.max(0),
                 sid,
+                quota_account: None,
                 gen_seconds: gen_ms / 1000.0,
             });
             if rowid > new_watermark {
@@ -906,15 +917,24 @@ pub fn quota_provider_of(source: Source, model: &str) -> Option<&'static str> {
 
 fn quota_account_for_home(source: Source, home: &Path) -> String {
     let provider = match source {
-        Source::Kimi => crate::accounts::Provider::Kimi,
+        Source::Kimi | Source::KimiWork => crate::accounts::Provider::Kimi,
         Source::Codex => crate::accounts::Provider::Codex,
-        _ => return "default".to_string(),
+        Source::ZCode => crate::accounts::Provider::Glm,
+        Source::Omp => return "unknown".to_string(),
     };
     crate::accounts::profiles(provider)
         .into_iter()
         .find(|profile| profile.home == home)
         .map(|profile| profile.id)
-        .unwrap_or_else(|| "default".to_string())
+        .or_else(|| crate::accounts::active_account_id(provider))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn quota_active_account(provider: &str) -> String {
+    let provider = crate::accounts::Provider::parse(provider);
+    provider
+        .and_then(crate::accounts::active_account_id)
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 #[derive(Default, Clone)]
@@ -1160,7 +1180,10 @@ impl AnalyticsState {
                             state.cwds.insert(session_id.clone(), cwd);
                             dirty = true;
                         }
-                        if let Some(record) = parse_omp_line(line, &session_id) {
+                        if let Some(mut record) = parse_omp_line(line, &session_id) {
+                            if let Some(provider) = quota_provider_of(source, &record.model) {
+                                record.quota_account = Some(quota_active_account(provider));
+                            }
                             state.records.push(record);
                             dirty = true;
                         }
@@ -1226,7 +1249,7 @@ impl AnalyticsState {
                         offset: 0,
                         records: Vec::new(),
                         source: Source::ZCode,
-                        quota_account: "default".to_string(),
+                        quota_account: quota_account_for_home(Source::ZCode, &home),
                         cwds: HashMap::new(),
                         pending_llm_ms: 0,
                         codex_boundary_ms: 0,
@@ -1238,10 +1261,11 @@ impl AnalyticsState {
             }
             let watermark = self.files.get(&key).unwrap().offset;
             match scan_zcode_db(&db_path, watermark) {
-                Ok((new_watermark, cwds, records)) => {
+                Ok((new_watermark, cwds, mut records)) => {
                     let state = self.files.get_mut(&key).unwrap();
-                    if state.quota_account.is_empty() {
-                        state.quota_account = "default".to_string();
+                    let quota_account = quota_account_for_home(Source::ZCode, &home);
+                    if state.quota_account != quota_account {
+                        state.quota_account = quota_account.clone();
                         dirty = true;
                     }
                     if state.offset == 0 && !records.is_empty() {
@@ -1251,6 +1275,11 @@ impl AnalyticsState {
                         state.cwds.insert(sid, dir);
                     }
                     if !records.is_empty() {
+                        for record in &mut records {
+                            if record.quota_account.is_none() {
+                                record.quota_account = Some(quota_account.clone());
+                            }
+                        }
                         state.records.extend(records);
                         dirty = true;
                     }

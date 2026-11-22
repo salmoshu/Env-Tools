@@ -1,79 +1,60 @@
 # Jharu 功能对齐清单（Env-Tools 磁盘管理）
 
-对照 [github.com/riponcm/Jharu](https://github.com/riponcm/Jharu)（Apache 2.0，
-源码参考 `tmp/jharu-ref`）逐模块核对。✅ 已对齐 · ⚠️ 简化实现 · ❌ 未做。
+对照 Jharu v1.0.0 参考源码（`tmp/jharu-ref`，基线提交 `62c0aa0`，Apache 2.0）。
+当前磁盘页采用同源专用实现，不再以通用表格和通用路径删除模拟各模块。
 
-## 后端（app/backend-rs/src）
+## 架构
 
-| Jharu 模块 | Env-Tools 实现 | 状态 |
-|---|---|---|
-| rules.rs 开发缓存规则 | `jharu.rs::dev_rules`（25+ 规则 + 运行降级） | ✅ |
-| ai_tools.rs AI 工具痕迹 | `jharu.rs::ai_tool_locations` | ✅ |
-| models.rs ML 模型 | `jharu_full.rs::scan_models`（HF/Ollama/检查点，引用计数共享层，用过判定） | ✅ |
-| python.rs 环境与包 | `jharu_full.rs::python_scan` | ✅ |
-| browsers.rs 浏览器 | `jharu_full.rs::browser_scan`（清理走通用链路） | ✅ |
-| junk.rs 垃圾文件 | `jharu_full.rs::junk_scan` | ✅ |
-| deep.rs 深度分类 | `jharu_extra.rs::deep_scan`（classify_path 五级分类） | ✅ |
-| dupes.rs 重复文件 | `jharu_extra.rs::dupes_scan`（4KB 头指纹 + SHA-256 全文件确认） | ✅ |
-| projects.rs 构建产物 | `jharu_extra.rs::projects_scan` | ✅ |
-| worktrees.rs | `jharu_extra.rs::worktrees_scan`（分支/已合并判定） | ✅ |
-| processes.rs 进程评级 | `jharu_extra.rs::process_rated`（系统进程保护表） | ✅ |
-| safety.rs 运行时推断 | `jharu_extra.rs::infer_safety`（Facts/gather/工具在跑） | ✅ |
-| scanner.rs 扫描缓存 | scan-cache v4 增量 | ✅ |
-| health.rs 健康预测 | `jharu_full.rs::space_forecast`（线性回归） | ✅ |
-| history.rs 目录历史 | `jharu_extra.rs::history_dir_compare` | ✅ |
-| overview.rs 驱动器 | `disk.rs::drives` + 前端 Ring | ✅ |
-| overview.rs 概览聚合 | `jharu_overview.rs`（quick：驱动器+预测+逐日趋势+已释放统计+最近批次；cleanable：各源 safe/caution/risky 堆叠含休眠与回收站；live：CPU/内存 2s 轮询；system_map：深度扫描顶层快照持久化→树图） | ✅ 新增 |
-| trashlog.rs 清理日志 | `jharu_bin.rs`（trash-log.jsonl，2 万条裁剪） | ✅ 新增 |
-| bin.rs 回收站 | `jharu_bin.rs`（$I 元数据真名还原/日志匹配评级/范围清空/还原/取消令牌） | ✅ 新增 |
-| apps.rs 卸载器 | `jharu_manage.rs::apps_list`（3 个卸载键 + EstimatedSize + AppData 数据量）+ `run_uninstaller` | ✅ 新增 |
-| startup.rs 启动项 | `jharu_manage.rs`（Run/Run32/RunOnce/Startup 文件夹/登录计划任务；StartupApproved 读写与任务管理器一致；受保护项拒绝关闭） | ⚠️ 机器级条目写 HKLM 需管理员时报错，无 UAC 提权重试 |
-| protected.rs 保护表 | `jharu_manage.rs` 内联（安全软件/驱动/系统组件） | ✅ 新增 |
-| system_space.rs 系统空间 | `jharu_manage.rs`（休眠/页面文件/还原点/WinSxS/Docker；固定 id 白名单 + 临时 .ps1 + RunAs 提权） | ⚠️ 无 DISM 中途取消（Jharu 同样标记不可取消）；还原点删除未在提权脚本内二次核对"仍是最旧/最新" |
-| sandboxes.rs 应用沙箱 | `jharu_sandbox.rs`（Packages 128 包扫描、临时区/应用数据/LocalCache 分级、遗留包识别） | ⚠️ LocalCache 的开发缓存映射取常见子集，非全量规则 |
-| autocare.rs 自动养护 | `jharu_autocare.rs`（Safe+自动重建+未用天数+体积阈值；锁外执行；事件日志持久化） | ⚠️ 低空间提醒进事件日志而非系统通知；无空闲检测 |
-| cleaning.rs 清理引擎 | `jharu_bin.rs`：clean_core/purge_core 逐项回调+取消；任务注册表（start/progress/cancel 三端点，前端 400ms 轮询——IPC 桥无法直连 SSE 的等价形态）；进度条+当前项+取消按钮已接入清理条与回收站清空 | ⚠️ 无管理员清理助手进程（受保护目录清理仍需提权另行处理） |
-| codesign.rs 签名校验 | `jharu_manage.rs::verify_signatures`（Get-AuthenticodeSignature，底层 WinVerifyTrust 证书链校验）。注：Jharu 的 codesign.rs 是 macOS 专用（Mach-O 团队 ID），Windows 侧它同样不验签；此项为超出 Jharu 的 Windows 增强——启动项评级给出签名结论，自称大厂但未签名 → Risky（实测 ctfmon=Microsoft Windows 有效、Fences 未签名、25/32 项有结论） | ✅（增强） |
-| access.rs / usage.rs 文件使用追踪 | 模型 atime / worktree 判定内联 | ⚠️ 无独立 Seen 索引 |
-| places.rs 常用位置 | junk/desktop 内联 | ⚠️ |
-| gadget.rs 悬浮挂件 | — | ❌ |
+- `app/backend-rs/src`：复用 Jharu 的扫描、安全评级、删除复核、历史和管理模块。
+- `jharu_api.rs`：把原 Tauri command 映射为本地 HTTP 命令，参数和返回值保持原结构。
+- `jharu_host.rs`：以事件队列替代 Tauri 事件，以 Electron 系统通知替代通知插件。
+- `app/electron/main.js` / `preload.js`：提供命令、进度事件、文件定位、外链和挂件窗口 IPC。
+- `app/src/disk`：复用 Jharu 各专用 React 视图；`adapter.js` 保留 `invoke/listen` 语义。
+- `app/src/disk/jharu.css`：同源样式限定在 `.jharu-root` 内，不影响 Env-Tools 其它页面。
+- 原 `jharu.rs`、`jharu_extra.rs`、`jharu_bin.rs` 等简化实现及其旧 IPC/HTTP 入口已移除。
 
-## 前端（app/src/pages/DiskPage.jsx）
+## 功能矩阵
 
-- 20 → 22 个子标签页（新增 应用沙箱、自动养护）。
-- **概览仪表盘（本轮对齐 Jharu Overview.tsx）**：四统计 tile（系统盘可用+趋势线 /
-  本应用已释放+六周柱 / 现在可安全清理 / 实时负载 CPU+内存）、驱动器环+
-  满盘预测+“先满”、可清理量按安全性堆叠条（点击跳页）、系统盘 squarify
-  树图（复用最近深度扫描）、最近清理批次（含来源与时间）、快捷动作条。
-- 清理链路：扫描 → 勾选 → 清理选中（→回收站+日志）→ 自动重扫，9 个扫描页可用。
-- 回收站页：应用/自有分类汇总、范围清空（全部/超30天/仅本应用）、单项还原、清理日志还原。
-- 卸载器页：程序+数据双体积、卸载按钮（运行程序自带卸载命令）。
-- 启动项页：影响估计、开关（受保护禁用）、已开/已关筛选。
-- 系统空间页：事实卡 + 管理员检查（还原点/组件仓库）+ 动作（成本/理由悬停说明、UAC 提权）。
-- 未对齐：悬浮挂件（gadget，用户确认不需要）。其余全部对齐。
+| 模块 | 同源能力 |
+|---|---|
+| 概览 | 驱动器、已释放统计、可清理量分级、实时负载、系统盘地图、最近清理 |
+| 开发缓存 | 完整规则、运行态评级、锁检测、不可读报告、子项体积、硬链接实际释放量 |
+| ML 模型 | HF/Ollama/Whisper/PyTorch/Keras、从未加载筛选、Ollama 共享层与独占体积 |
+| Python | 环境发现、包明细、跨环境重复包与浪费空间、环境删除确认 |
+| 构建产物 | 项目证据、完整类型、源码时间、排序筛选、自定义根目录、重建命令、占用/锁检查 |
+| Git worktrees | 默认分支、未合入提交、未提交文件、CRLF、会话所有者、失效记录、prune |
+| AI 工具 | 缓存/历史/状态/扩展分类、按年龄裁剪、项目存续判断、运行态与删除复核 |
+| 深度清理 | 流式 Map/List、逐层进入、不可读项、云占位/共享空间、系统位置保护 |
+| 重复文件 | 首尾抽样 + BLAKE3 全文件确认、保留副本选择、硬链接/云文件、删除前重新哈希 |
+| 应用沙箱 | MSIX/macOS 容器扫描、区域评级、遗留包、目录内容清理、进度取消与复核 |
+| 系统空间 | 休眠、页面文件、还原点、WinSxS、Docker（含 volumes）、固定动作提权助手 |
+| 垃圾文件 | 安装包/归档、陈旧大文件、Windows 系统残留、Prefetch 只读、管理员内容清理 |
+| 桌面 | 截图识别、类型/年龄筛选、默认归档、重名不覆盖、另选移入回收站 |
+| 浏览器 | 按浏览器/配置文件明细、安全与需核查分类、安全缓存清理 |
+| 回收站 | 真名与原路径、日志匹配、范围清空、逐项复核、取消、单项/批量恢复 |
+| 卸载器 | 程序与数据体积、卸载命令、遗留发现、置信度选择与清扫 |
+| Speed | 实时总量、程序分组、CPU/内存/磁盘、评级、优雅关闭、强退、PID 重用防护 |
+| 启动项 | 来源扫描、影响与评级、批量开关/撤销、StartupApproved、机器级提权 |
+| 驱动器健康 | 容量、卷信息、趋势与预测；SMART/smartctl 保持上游平台能力 |
+| 空间历史 | 后台读数、目录快照、增长/缩小、基线选择、评级、90 天保留、稳健预测 |
+| 自动养护 | 预览后执行、调度、空闲检查、扫描/清理互斥、低空间系统通知与测试通知 |
+| 悬浮挂件 | 条/卡片、置顶拖动、位置记忆、最忙进程、预测、预览确认后安全清理 |
 
-## 本次新增文件
+## 有意的非功能差异
 
-- `app/backend-rs/src/jharu_bin.rs` — trashlog + 回收站四操作
-- `app/backend-rs/src/jharu_manage.rs` — 卸载器/启动项/系统空间
-- `app/backend-rs/src/jharu_sandbox.rs` — 应用沙箱
-- `app/backend-rs/src/jharu_autocare.rs` — 自动养护
-- `app/backend-rs/src/jharu_overview.rs` — 概览聚合（quick/cleanable/live/system_map）
-- `app/src/components/squarify.js` — 树图布局（Jharu squarify.ts 1:1 移植）
-- 依赖新增：`trash = "5"`、`winreg = "0.52"`（Jharu 同源方案，替代 PowerShell 转义地狱）
+- 不移植 Jharu 的 GitHub Star 推广卡、产品链接和品牌文案。
+- 应用版本与更新继续使用 Env-Tools 原有设置和更新链路。
+- 本地数据写入 `Env-Tools` 数据目录；回收站日志沿用 `Env-Tools/trash-log.jsonl`。
+- 首次启动迁移旧 `autocare.json` 设置、上次运行时间和驱动器容量历史；新文件已存在时不覆盖。
+- Windows 是当前实际验收平台。上游 macOS 平台代码保留，但本机未做 macOS 运行验收。
 
-## 已验证（2026-11-18 本机）
+## 验证
 
-- 回收站：真实列表（$I 还原原路径）→ 清理入站带日志 → by_app 评级 Safe → 还原文件内容完整。
-- 清空：范围选择 + 逐项核对（deleted 时间戳不符即跳过）。
-- 启动项：45 项（25 系统任务隐藏）、ctfmon 正确判 Risky、开关往返后注册表字节 02/03+FILETIME 与任务管理器一致。
-- 卸载器：VS2022 7.3GB 等真实列表 + 卸载命令。
-- 系统空间：页面文件 WMI 用量、休眠注册表状态、还原点/组件仓库等待管理员检查。
-- 沙箱：128 包 1.7GB，OpenAI.Codex 等正确识别。
-- 自动养护：启用/立即运行/事件日志（修复了两处锁死锁：tick 持锁清理、update→status 重入）。
-- 概览视觉对齐应用设计系统（qcard token 卡片、树图蓝色梯度随主题、新增通用 .btn/
-  .btn-primary 按钮类修复全页原生按钮、侧栏副标题对比度）；经 CDP 截图两轮验收。
-- 概览：quick（3 驱动器+系统盘标记+trashlog 统计+批次聚合）、cleanable（开发缓存 2.9G safe/
-  11.7G risky、垃圾 15.6G safe、回收站 63M 等）、live（CPU 34%、内存 20/42G）、
-  深扫 C:\ 后 system_map 树图（Windows 42.3G / Program Files 4.6G / 其余 3.0G）。
-  已随 v0.8.0 发布。
+最新结果：Rust **294 通过 / 0 失败 / 16 忽略**；Node **9 通过 / 0 失败**；前端生产构建和 Electron 语法检查通过。隔离 HTTP 烟测通过：同头异内容文件不误判、完整哈希分组、桌面/垃圾路径、构建扫描、D 盘 Git、深度/构建/重复文件事件、历史、挂件、进程、驱动器和只读养护预览。
+
+- `cargo check`
+- `cargo test --release -- --test-threads=1`（Git Bash 下需把 POSIX PATH 转为 Windows PATH）
+- `npm test`
+- `node --check electron/main.js && node --check electron/preload.js`
+- `npm run build`
+- 本地 HTTP 命令烟测：以临时用户目录和 `ENVTOOLS_DATA_DIR` 隔离数据，覆盖只读扫描、重复文件反例、进度事件与历史接口；不执行真实系统清理或提权动作。

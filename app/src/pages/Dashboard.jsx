@@ -22,7 +22,7 @@ import KimiWebAuth from "../components/KimiWebAuth.jsx";
 import { agentAccountId } from "../components/AgentAccountPicker.jsx";
 import { agentProviderKey, useAgentAccountStates } from "../agentAccounts.js";
 import {
-  quotaEstimateLookup, quotaEstimateLookupEntry, quotaEstimateLookupTotal, quotaEstimateMeta, quotaEstimateStoreKey,
+  quotaEstimateLookup, quotaEstimateLookupEntry, quotaEstimateLookupTotal, quotaEstimateMeta, quotaEstimateStoreKey, quotaEstimateQuality,
 } from "../quotaEstimate.js";
 import { t, useLang } from "../i18n.js";
 import { useInstallState, setInstallResult, upgradingTargets as getUpgradingTargets } from "../installState.js";
@@ -179,6 +179,8 @@ function useQuotaEstimates(accounts, target) {
         elapsed: meta.elapsed,
         win: meta.windowSeconds,
         at,
+        pct: w.used_percent,
+        plan: account.plan || "",
       };
     }).filter(Boolean);
   });
@@ -195,6 +197,8 @@ function useQuotaEstimates(accounts, target) {
           window: query.win,
           account: query.account,
           history: true,
+          pct: query.pct,
+          plan: query.plan,
         });
         if (!cancelled && result && result.ok) {
           return [query.storeKey, {
@@ -202,6 +206,11 @@ function useQuotaEstimates(accounts, target) {
             history: result.history || null,
             sourceCount: result.sourceCount || 1,
             failedSources: result.failedSources || 0,
+            coverageComplete: result.coverageComplete !== false,
+            externalActivity: Boolean(result.externalActivity),
+            usable: result.usable !== false,
+            quality: result.quality || "medium",
+            reason: result.reason || "",
           }];
         }
       } catch {}
@@ -457,6 +466,12 @@ function QuotaCard({ account, versions, onUpgrade, upgrading, providerKey, accou
           const meta = quotaEstimateMeta(account.provider, w, accountId);
           const estimate = quotaEstimateLookupEntry(estimates, account.provider, w, accountId);
           const usedTokens = estimate && Number.isFinite(estimate.tokens) ? estimate.tokens : null;
+          const quality = quotaEstimateQuality(estimate);
+          const qualityTip = quality === "external"
+            ? t("dash.quotaEstimateExternal")
+            : quality === "incomplete"
+              ? t("dash.quotaEstimateIncomplete")
+              : quality === "low_quality" ? t("dash.quotaEstimateLowQuality") : "";
           if (usedTokens > 0) {
             // Kimi 月度为家庭共享额度（w.sub 带 "Kimi Code share: xx.xx%"）：
             // 已连接来源只覆盖 Kimi Code 份额，按 share 校正有效已用比例再反推总额
@@ -482,12 +497,12 @@ function QuotaCard({ account, versions, onUpgrade, upgrading, providerKey, accou
               const failed = estimate.failedSources > 0
                 ? `\n${t("dash.quotaEstimatePartial").replace("{n}", String(estimate.failedSources))}`
                 : "";
-              pctTitle = `${basis}\n${coverage}${failed}`;
+              pctTitle = `${basis}${qualityTip ? `\n${qualityTip}` : ""}\n${coverage}${failed}`;
             } else if (meta) {
-              pctTitle = t("dash.quotaEstimatePending");
+              pctTitle = qualityTip || t("dash.quotaEstimatePending");
             }
           } else if (meta) {
-            pctTitle = usedTokens === 0 ? t("dash.quotaEstimateNoUsage") : t("dash.quotaEstimatePending");
+            pctTitle = qualityTip || (usedTokens === 0 ? t("dash.quotaEstimateNoUsage") : t("dash.quotaEstimatePending"));
           }
         }
         return (

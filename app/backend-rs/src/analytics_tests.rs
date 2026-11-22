@@ -908,12 +908,25 @@ fn rolling_quota_tokens_attributes_sources_and_omp_models() {
 
     for file in state.files.values_mut() {
         file.quota_account = "work".to_string();
+        for record in &mut file.records {
+            if record.quota_account.is_some() {
+                record.quota_account = Some("work".into());
+            }
+        }
     }
     assert_eq!(state.rolling_quota_tokens_for_account("kimi", now.timestamp() - 3 * 3600, now.timestamp(), "work"), 1800);
     assert_eq!(state.rolling_quota_tokens_for_account("codex", now.timestamp() - 3600, now.timestamp(), "work"), 900);
     assert_eq!(state.rolling_quota_tokens_for_account("kimi", now.timestamp() - 3 * 3600, now.timestamp(), "default"), 0);
     // 快照前 60 秒截止：排除最后一秒的 1000，只保留 OMP 在边界上的 300。
     assert_eq!(state.rolling_quota_tokens_for_account("kimi", now.timestamp() - 3600, now.timestamp() - 60, "work"), 300);
+    // 请求级账号优先于文件级 home 归因，未知/其他账号不会混入 work。
+    for file in state.files.values_mut().filter(|file| file.source == Source::Kimi) {
+        if let Some(record) = file.records.iter_mut().find(|record| record.input + record.output == 1000) {
+            record.quota_account = Some("other".into());
+        }
+    }
+    assert_eq!(state.rolling_quota_tokens_for_account("kimi", now.timestamp() - 3 * 3600, now.timestamp(), "work"), 800);
+    assert_eq!(state.rolling_quota_tokens_for_account("kimi", now.timestamp() - 3 * 3600, now.timestamp(), "other"), 1000);
 }
 
 /// daily_quota：配额厂商口径逐日桶——不受 agent 筛选影响（选 kimi 时

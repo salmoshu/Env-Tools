@@ -37,14 +37,41 @@ use tokio::sync::Mutex;
 
 mod accounts;
 mod disk;
-mod jharu;
-mod jharu_full;
-mod jharu_extra;
-mod jharu_bin;
-mod jharu_manage;
-mod jharu_sandbox;
-mod jharu_autocare;
-mod jharu_overview;
+mod ai_tools;
+mod apps;
+mod autocare;
+mod bin;
+mod browsers;
+mod cleaning;
+mod codesign;
+mod deep;
+mod desktop;
+mod dupes;
+mod gadget;
+mod health;
+mod history;
+mod jharu_api;
+mod jharu_host;
+mod jharu_migration;
+mod junk;
+mod models;
+mod overview;
+mod places;
+mod processes;
+mod projects;
+mod protected;
+mod python;
+mod rules;
+mod safety;
+mod sandboxes;
+mod scanner;
+mod spacehistory;
+mod startup;
+mod system_space;
+mod trashlog;
+mod usage;
+mod walk;
+mod worktrees;
 mod analytics;
 mod apply_update;
 mod quota;
@@ -440,8 +467,8 @@ async fn analytics(
 }
 
 /// /api/analytics/rolling：额度估算用——provider + account 在
-/// [at-seconds, at] 内的请求级 token 增量（omp 按底层模型归并）。
-/// 前端以服务端百分比快照为基准，用该增量反推 5h/7d 窗口的 token 总额。
+/// [at-seconds, at] 内同来源范围的请求级 token 总量（omp 按底层模型归并）。
+/// 服务端百分比、覆盖状态和历史质量评估共同决定该点是否可用于反推。
 /// 独立 rolling scope：与主分析互不干扰，扫描节流与主视图一致
 async fn analytics_rolling(
     axum::extract::State(state): axum::extract::State<AppState>,
@@ -463,11 +490,16 @@ async fn analytics_rolling(
         .get("seconds")
         .and_then(|raw| raw.parse().ok())
         .unwrap_or(3600)
-        .clamp(300, 60 * 86400);
+        .clamp(1, 60 * 86400);
     let aggregate = params
         .get("aggregate")
         .map(|v| v == "1" || v == "true")
         .unwrap_or(false);
+    let wsl_distro = params
+        .get("wsl_distro")
+        .map(String::as_str)
+        .filter(|raw| !raw.is_empty())
+        .map(String::from);
     // 时钟对齐：cutoff 以配额 fetched_at 时刻为基准（百分比与 token 同一时刻），
     // 默认退化为 now（容错：配额时间戳缺失时）
     let at = params
@@ -483,7 +515,24 @@ async fn analytics_rolling(
         .get("history")
         .map(|v| v == "1" || v == "true")
         .unwrap_or(false);
-    let scope = if aggregate {
+    let observed_pct = params.get("pct").and_then(|raw| raw.parse::<f64>().ok());
+    let plan = params.get("plan").and_then(|raw| raw.parse::<String>().ok()).unwrap_or_default();
+    let estimate_scope = params
+        .get("scope")
+        .filter(|raw| !raw.is_empty() && raw.len() <= 128)
+        .cloned()
+        .unwrap_or_else(|| {
+            if let Some(distro) = wsl_distro.as_deref() {
+                format!("wsl:{distro}")
+            } else if aggregate {
+                "aggregate".into()
+            } else {
+                "local".into()
+            }
+        });
+    let scope = if let Some(distro) = wsl_distro.as_deref() {
+        format!("rolling:wsl:{distro}")
+    } else if aggregate {
         "rolling:aggregate".to_string()
     } else {
         "rolling:local".to_string()
@@ -495,42 +544,48 @@ async fn analytics_rolling(
     let mut engine = engine_arc.lock().unwrap();
     engine.hydrate_once(&settings::scan_cache_path(&scope));
     let now_sec = chrono::Local::now().timestamp();
-    let scan_gap = if aggregate { SCAN_GAP_WSL } else { SCAN_GAP_LOCAL };
+    let scan_gap = if aggregate || wsl_distro.is_some() { SCAN_GAP_WSL } else { SCAN_GAP_LOCAL };
     if now_sec - engine.last_scan_secs >= scan_gap {
         engine.scan_all(
-            &kimi_homes(aggregate, None),
-            &codex_homes(aggregate, None),
-            &zcode_homes(aggregate, None),
-            &omp_homes(aggregate, None),
-            &kimi_work_homes(None),
+            &kimi_homes(aggregate, wsl_distro.as_deref()),
+            &codex_homes(aggregate, wsl_distro.as_deref()),
+            &zcode_homes(aggregate, wsl_distro.as_deref()),
+            &omp_homes(aggregate, wsl_distro.as_deref()),
+            &kimi_work_homes(wsl_distro.as_deref()),
             now_sec,
         );
         engine.last_scan_secs = now_sec;
         engine.save_cache(&settings::scan_cache_path(&scope));
     }
+    let scanned_through = engine.last_scan_secs;
     drop(engine);
     let tokens = engine_arc
         .lock()
         .unwrap()
         .rolling_quota_tokens_for_account(&provider, at - seconds, at, &account_id);
-    // 历史估算：各代高水位点的 tokens/pct 数组（旧→新），前端与当前单点合并取中位
+    let coverage_complete = scanned_through >= at;
+    let assessment = match (window_seconds, observed_pct) {
+        (Some(win), Some(pct)) => quota_history::evaluate(
+            &settings::quota_history_path(),
+            &provider,
+            &account_id,
+            win,
+            &estimate_scope,
+            &plan,
+            at,
+            seconds,
+            pct,
+            tokens as f64,
+            coverage_complete,
+        ),
+        _ => Value::Null,
+    };
     let history = if with_history {
-        match window_seconds {
-            Some(win) => {
-                let vals = quota_history::generation_estimates(
-                    &settings::quota_history_path(),
-                    &provider,
-                    &account_id,
-                    win,
-                    8,
-                );
-                if vals.is_empty() { Value::Null } else { serde_json::json!(vals) }
-            }
-            None => Value::Null,
-        }
+        assessment.get("history").cloned().unwrap_or(Value::Null)
     } else {
         Value::Null
     };
+    let source_count = if aggregate { 1 + settings::wsl_homes().len() } else { 1 };
     Json(serde_json::json!({
         "ok": true,
         "agent": provider,
@@ -539,6 +594,14 @@ async fn analytics_rolling(
         "at": at,
         "tokens": tokens,
         "history": history,
+        "sourceCount": source_count,
+        "failedSources": 0,
+        "coverageComplete": coverage_complete,
+        "coverageEnd": scanned_through.min(at),
+        "externalActivity": assessment.get("externalActivity").and_then(Value::as_bool).unwrap_or(false),
+        "usable": assessment.get("usable").and_then(Value::as_bool).unwrap_or(false),
+        "quality": assessment.get("quality").and_then(Value::as_str).unwrap_or("low"),
+        "reason": assessment.get("reason").and_then(Value::as_str).unwrap_or("missing_percentage"),
     }))
 }
 
@@ -572,12 +635,11 @@ async fn usage(axum::extract::State(state): axum::extract::State<AppState>) -> J
     Json(value)
 }
 
-/// 配额快照（额度估算精度）：对每个账号窗口，pct 或代际变化时落一行
-/// {ts, p, a, win, pct, ra, el, tok}。tok 用 rolling 引擎按 elapsed 取本机
-/// （local，配额凭证本就仅本机）用量；引擎独立 scope 不与主分析争锁。
+/// 配额快照：按账号自己的 fetched_at 对齐；百分比变化、代际变化或持续
+/// token 增长均可形成样本，是否写入历史由质量评估决定。
 fn record_quota_snapshots(accounts: &[Value]) {
     static LAST: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::HashMap<String, (i64, f64)>>,
+        std::sync::Mutex<std::collections::HashMap<String, (i64, f64, i64, i64)>>,
     > = std::sync::OnceLock::new();
     let key_of = |provider: &str| match provider {
         "Kimi Code" => Some("kimi"),
@@ -593,23 +655,26 @@ fn record_quota_snapshots(accounts: &[Value]) {
             .and_then(|v| v.as_str())
             .filter(|v| !v.is_empty())
             .unwrap_or("default");
+        let at = account
+            .get("fetched_at")
+            .and_then(Value::as_str)
+            .and_then(|raw| chrono::DateTime::parse_from_rfc3339(raw).ok())
+            .map(|time| time.timestamp())
+            .unwrap_or(now_sec);
+        let plan = account.get("plan").and_then(Value::as_str).unwrap_or("");
         for w in account.get("windows").and_then(|v| v.as_array()).unwrap_or(&Vec::new()) {
             let pct = w.get("used_percent").and_then(|v| v.as_f64()).unwrap_or(0.0);
             let win = w.get("window_seconds").and_then(|v| v.as_i64()).unwrap_or(0);
-            let ra = w.get("reset_after_seconds").and_then(|v| v.as_i64()).unwrap_or(0);
-            if pct <= 0.0 || win <= 0 || win > 32 * 86400 || ra <= 0 {
+            let Some(ra) = w.get("reset_after_seconds").and_then(|v| v.as_i64()) else { continue };
+            if pct <= 0.0 || win <= 0 || win > 32 * 86400 {
                 continue;
             }
             let elapsed = win - ra;
-            let gen = now_sec - elapsed; // 窗口起点 = 代际标识
-            let map_key = format!("{key}|{account_id}|{win}");
-            let mut last = LAST.get_or_init(Default::default).lock().unwrap();
-            if let Some((last_gen, last_pct)) = last.get(&map_key) {
-                if *last_gen == gen && (*last_pct - pct).abs() < 0.5 {
-                    continue; // 同代且 pct 未变（<0.5 即取整粒度内）——不落盘
-                }
+            if elapsed <= 0 {
+                continue;
             }
-            // 取本机 elapsed 时段 token（独立引擎；扫描节流 30s）
+            let gen = at - elapsed;
+            let map_key = format!("{key}|{account_id}|{win}");
             let scope = "quota-history".to_string();
             let engine_arc = SNAP_ENGINES
                 .get_or_init(Default::default)
@@ -632,18 +697,61 @@ fn record_quota_snapshots(accounts: &[Value]) {
                 engine.last_scan_secs = now_sec;
                 engine.save_cache(&settings::scan_cache_path(&scope));
             }
-            let tokens = engine.rolling_quota_tokens_for_account(key, now_sec - elapsed, now_sec, account_id);
+            let complete = engine.last_scan_secs >= at;
+            let tokens = engine.rolling_quota_tokens_for_account(key, at - elapsed, at, account_id);
             drop(engine);
-            quota_history::append(
+            let mut last = LAST.get_or_init(Default::default).lock().unwrap();
+            if let Some((last_gen, last_pct, last_tok, last_at)) = last.get(&map_key) {
+                let same_gen = (gen - last_gen).abs() <= 120;
+                if same_gen
+                    && (*last_pct - pct).abs() < 0.1
+                    && (*last_tok == tokens || at - *last_at < 300)
+                {
+                    continue;
+                }
+            }
+            quota_history::record(
                 &settings::quota_history_path(),
-                &serde_json::json!({
-                    "ts": now_sec, "p": key, "a": account_id, "win": win,
-                    "pct": pct, "ra": ra, "el": elapsed, "tok": tokens,
-                }),
+                key,
+                account_id,
+                win,
+                "local",
+                plan,
+                at,
+                elapsed,
+                pct,
+                tokens as f64,
+                complete,
             );
-            last.insert(map_key, (gen, pct));
+            last.insert(map_key, (gen, pct, tokens, at));
         }
     }
+}
+
+/// 保存一个已完成的当前来源范围样本；评估结果同时供前端做质量门控。
+async fn quota_history_record(axum::extract::Json(body): axum::extract::Json<Value>) -> Json<Value> {
+    let result = tokio::task::spawn_blocking(move || {
+        let provider = body.get("provider").and_then(Value::as_str).unwrap_or("").to_string();
+        let account = body.get("account").and_then(Value::as_str).unwrap_or("default").to_string();
+        let scope = body.get("scope").and_then(Value::as_str).unwrap_or("local").to_string();
+        let plan = body.get("plan").and_then(Value::as_str).unwrap_or("").to_string();
+        let window = body.get("window").and_then(Value::as_i64).unwrap_or(0);
+        let at = body.get("at").and_then(Value::as_i64).unwrap_or(0);
+        let elapsed = body.get("elapsed").and_then(Value::as_i64).unwrap_or(0);
+        let pct = body.get("pct").and_then(Value::as_f64).unwrap_or(0.0);
+        let tokens = body.get("tokens").and_then(Value::as_f64).unwrap_or(0.0);
+        let complete = body.get("complete").and_then(Value::as_bool).unwrap_or(false);
+        if provider.is_empty() || window <= 0 || at <= 0 || elapsed <= 0 {
+            return error_payload("invalid quota history sample".into());
+        }
+        quota_history::record(
+            &settings::quota_history_path(), &provider, &account, window, &scope, &plan,
+            at, elapsed, pct, tokens, complete,
+        )
+    })
+    .await
+    .unwrap_or_else(|err| error_payload(format!("quota history worker failed: {err}")));
+    Json(result)
 }
 
 /// 手动刷新：清空分析/配额缓存，下次请求强制增量重扫
@@ -856,6 +964,17 @@ async fn update_codex_accounts(
 
 #[tokio::main]
 async fn main() {
+    // 固定动作提权助手：只执行 Jharu 白名单中的清理、启动项和系统空间动作。
+    let process_args: Vec<String> = std::env::args().collect();
+    if let Some(code) = cleaning::helper_main(&process_args) {
+        std::process::exit(code);
+    }
+    if let Some(code) = startup::helper_main(&process_args) {
+        std::process::exit(code);
+    }
+    if let Some(code) = system_space::helper_main(&process_args) {
+        std::process::exit(code);
+    }
     // apply-update 子命令：自升级解压/交换（Electron 退出前 detached 拉起），
     // 处理完直接退出，不起 server（不影响 LISTENING 探测协议）。
     let raw_args: Vec<String> = std::env::args().skip(1).collect();
@@ -924,41 +1043,11 @@ async fn main() {
         .route("/api/analytics", get(analytics))
         .route("/api/analytics/rolling", get(analytics_rolling))
         .route("/api/disk/drives", get(disk_drives))
+        .route("/api/disk/invoke", post(disk_invoke))
+        .route("/api/disk/events", get(disk_events))
         .route("/api/disk/scan", get(disk_scan))
-        .route("/api/disk/dev", get(disk_dev))
-        .route("/api/disk/ai-tools", get(disk_ai_tools))
-        .route("/api/disk/scan-full", get(disk_scan_full))
-        .route("/api/disk/clean", axum::routing::post(disk_clean))
-        .route("/api/disk/deep", get(disk_deep))
-        .route("/api/disk/dupes", get(disk_dupes))
-        .route("/api/disk/projects", get(disk_projects))
-        .route("/api/disk/worktrees", get(disk_worktrees))
-        .route("/api/disk/bin", get(disk_bin))
-        .route("/api/disk/bin/log", get(disk_bin_log))
-        .route("/api/disk/bin/purge", axum::routing::post(disk_bin_purge))
-        .route("/api/disk/bin/restore", axum::routing::post(disk_bin_restore))
-        .route("/api/disk/bin/cancel", axum::routing::post(disk_bin_cancel))
-        .route("/api/disk/clean/start", axum::routing::post(disk_clean_start))
-        .route("/api/disk/clean/progress", get(disk_clean_progress))
-        .route("/api/disk/clean/cancel", axum::routing::post(disk_clean_cancel))
-        .route("/api/disk/bin/purge/start", axum::routing::post(disk_bin_purge_start))
-        .route("/api/disk/system", get(disk_system))
-        .route("/api/disk/system/action", axum::routing::post(disk_system_action))
-        .route("/api/disk/startup", get(disk_startup))
-        .route("/api/disk/startup/set", axum::routing::post(disk_startup_set))
-        .route("/api/disk/apps", get(disk_apps))
-        .route("/api/disk/apps/uninstall", axum::routing::post(disk_app_uninstall))
-        .route("/api/disk/sandboxes", get(disk_sandboxes))
-        .route("/api/disk/sandboxes/cleanable", get(disk_sandbox_cleanable))
-        .route("/api/disk/overview", get(disk_overview))
-        .route("/api/disk/overview/cleanable", get(disk_overview_cleanable))
-        .route("/api/disk/overview/live", get(disk_overview_live))
-        .route("/api/disk/autocare", get(autocare_status).post(autocare_update))
-        .route("/api/disk/autocare/run", axum::routing::post(autocare_run))
-        .route("/api/disk/processes", get(disk_processes))
-        .route("/api/disk/history", get(disk_history))
-        .route("/api/disk/desktop", get(disk_desktop))
         .route("/api/usage", get(usage))
+        .route("/api/quota/history/record", post(quota_history_record))
         .route("/api/backend-status", get(backend_status))
         .route("/api/settings", get(get_settings).post(update_settings))
         .route("/api/api-keys", get(api_key_status).post(save_api_keys))
@@ -991,8 +1080,11 @@ async fn main() {
     let bound = listener.local_addr().map(|a| a.port()).unwrap_or(port);
     println!("LISTENING {bound}");
     println!("env-tools-api {} on http://127.0.0.1:{bound}", APP_VERSION);
-    // 自动养护后台任务（默认关闭；开启后按间隔清理 Safe+自动重建缓存）。
-    jharu_autocare::start();
+    if let Err(error) = jharu_migration::run() {
+        eprintln!("legacy disk data migration failed: {error}");
+    }
+    // 自动养护后台任务（默认不自动清理；持续记录容量并按设置发送低空间提醒）。
+    autocare::start(jharu_host::app());
     // 启动预热：local 与 aggregate 各扫一遍（WSL 9P 冷扫 20s+，赶在用户首次
     // 切换/打开看板之前）。scope 级锁保证预热不阻塞其它范围的请求。
     {
@@ -1024,6 +1116,24 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
+/// Jharu 同源命令桥：扫描与删除均进入对应专用实现，返回值保持其原始结构。
+async fn disk_invoke(axum::extract::Json(body): axum::extract::Json<Value>) -> Json<Value> {
+    let command = body.get("command").and_then(Value::as_str).unwrap_or("").to_string();
+    let args = body.get("args").cloned().unwrap_or_else(|| serde_json::json!({}));
+    if command.is_empty() {
+        return Json(error_payload("disk command required".into()));
+    }
+    match jharu_api::execute(&command, args).await {
+        Ok(result) => Json(serde_json::json!({ "ok": true, "result": result })),
+        Err(error) => Json(error_payload(error)),
+    }
+}
+
+async fn disk_events(Query(params): Query<HashMap<String, String>>) -> Json<Value> {
+    let after = params.get("after").and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+    Json(jharu_host::events(after))
+}
+
 /// /api/disk/drives：驱动器列表（卷路径、总/可用/已用、使用率%）
 async fn disk_drives() -> Json<Value> {
     Json(serde_json::json!({ "ok": true, "drives": disk::drives() }))
@@ -1046,168 +1156,4 @@ async fn disk_scan(
     .await
     .unwrap_or(serde_json::json!({ "ok": false, "error": "scan worker failed" }));
     Json(result)
-}
-
-/// /api/disk/dev：开发缓存扫描（25+ 规则，安全分级）
-async fn disk_dev() -> Json<Value> {
-    let result = tokio::task::spawn_blocking(|| jharu::scan_dev_caches())
-        .await
-        .unwrap_or_default();
-    Json(serde_json::json!({ "ok": true, "items": result }))
-}
-
-/// /api/disk/ai-tools：AI 编码工具磁盘痕迹
-async fn disk_ai_tools() -> Json<Value> {
-    let result = tokio::task::spawn_blocking(|| jharu::ai_tool_locations())
-        .await
-        .unwrap_or_default();
-    Json(serde_json::json!({ "ok": true, "items": result }))
-}
-
-/// /api/disk/scan-full?tab=<models|browsers|python|junk|health>
-async fn disk_scan_full(Query(params): Query<HashMap<String, String>>) -> Json<Value> {
-    let tab = params.get("tab").cloned().unwrap_or_default();
-    if tab.is_empty() { return Json(serde_json::json!({ "ok": false, "error": "tab required" })); }
-    let result = tokio::task::spawn_blocking(move || jharu_full::scan_all(&tab))
-        .await
-        .unwrap_or(serde_json::json!({ "ok": false, "error": "scan worker failed" }));
-    Json(result)
-}
-
-/// POST /api/disk/clean  body: { "paths": ["C:\..."] } 或 { "items": [{path,size,source}] }
-/// 移入回收站（trash crate shell 调用）并写入清理日志（trash-log.jsonl）
-async fn disk_clean(
-    axum::extract::State(_state): axum::extract::State<AppState>,
-    axum::extract::Json(body): axum::extract::Json<Value>,
-) -> Json<Value> {
-    let items: Vec<Value> = if let Some(arr) = body.get("items").and_then(|v| v.as_array()) {
-        arr.clone()
-    } else {
-        body.get("paths")
-            .and_then(|v| v.as_array())
-            .map(|a| a.iter().filter_map(|x| x.as_str().map(|p| serde_json::json!({"path": p}))).collect())
-            .unwrap_or_default()
-    };
-    if items.is_empty() { return Json(serde_json::json!({ "ok": false, "error": "paths required" })); }
-    let result = tokio::task::spawn_blocking(move || jharu_bin::clean_and_journal(&items))
-        .await
-        .unwrap_or(serde_json::json!({ "ok": false, "error": "clean worker failed" }));
-    Json(result)
-}
-
-async fn disk_deep(Query(p): Query<HashMap<String, String>>) -> Json<Value> {
-    let path = p.get("path").cloned().unwrap_or("C:\\".into());
-    let depth = p.get("depth").and_then(|v| v.parse().ok()).unwrap_or(2);
-    Json(spawn_scan(move || jharu_extra::deep_scan(&path, depth.clamp(1, 5))))
-}
-async fn disk_dupes(Query(p): Query<HashMap<String, String>>) -> Json<Value> {
-    let roots: Vec<String> = p.get("roots").map(|r| r.split('|').map(String::from).collect()).unwrap_or_default();
-    let min = p.get("min").and_then(|v| v.parse().ok()).unwrap_or(10_000_000);
-    Json(spawn_scan(move || jharu_extra::dupes_scan(&roots, min)))
-}
-async fn disk_projects(Query(p): Query<HashMap<String, String>>) -> Json<Value> {
-    let path = p.get("path").cloned().unwrap_or_default();
-    if path.is_empty() { return Json(serde_json::json!({ "ok": false, "error": "path required" })); }
-    Json(spawn_scan(move || jharu_extra::projects_scan(&path)))
-}
-async fn disk_worktrees(Query(p): Query<HashMap<String, String>>) -> Json<Value> {
-    let path = p.get("path").cloned().unwrap_or_default();
-    Json(spawn_scan(move || jharu_extra::worktrees_scan(&path)))
-}
-async fn disk_bin() -> Json<Value> { Json(spawn_scan(jharu_bin::bin_list)) }
-async fn disk_bin_log() -> Json<Value> { Json(spawn_scan(jharu_bin::bin_log)) }
-async fn disk_bin_purge(axum::extract::Json(body): axum::extract::Json<Value>) -> Json<Value> {
-    // body: { ids?: [{id, deleted}], scope?: "all"|"older"|"app_older", days?: u32, token?: string }
-    let ids: Vec<jharu_bin::PurgeRequest> = body.get("ids").and_then(|v| v.as_array()).map(|a| a.iter()
-        .filter_map(|x| Some(jharu_bin::PurgeRequest {
-            id: x["id"].as_str()?.to_string(),
-            deleted: x["deleted"].as_i64(),
-        })).collect()).unwrap_or_default();
-    let scope = body.get("scope").and_then(|v| v.as_str()).unwrap_or("all").to_string();
-    let days = body.get("days").and_then(|v| v.as_u64()).unwrap_or(0).min(u32::MAX as u64) as u32;
-    let token = body.get("token").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    Json(spawn_scan(move || jharu_bin::bin_purge(&ids, &scope, days, &token)))
-}
-async fn disk_bin_restore(axum::extract::Json(body): axum::extract::Json<Value>) -> Json<Value> {
-    let ids: Vec<String> = body.get("ids").and_then(|v| v.as_array()).map(|a| a.iter()
-        .filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
-    Json(spawn_scan(move || jharu_bin::bin_restore(&ids)))
-}
-async fn disk_bin_cancel(axum::extract::Json(body): axum::extract::Json<Value>) -> Json<Value> {
-    let token = body.get("token").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    Json(jharu_bin::bin_cancel(&token))
-}
-/// POST /api/disk/clean/start body: {items:[{path,size,source}]} → {job}
-/// 后台逐项移入回收站，进度经 /clean/progress 轮询（Electron IPC 无法直连 SSE）。
-async fn disk_clean_start(axum::extract::Json(body): axum::extract::Json<Value>) -> Json<Value> {
-    let items: Vec<Value> = body.get("items").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-    if items.is_empty() { return Json(serde_json::json!({ "ok": false, "error": "paths required" })); }
-    Json(jharu_bin::start_clean_job(&items))
-}
-async fn disk_clean_progress(Query(p): Query<HashMap<String, String>>) -> Json<Value> {
-    let Some(job) = p.get("job").and_then(|v| v.parse::<u64>().ok()) else {
-        return Json(serde_json::json!({ "ok": false, "error": "job required" }));
-    };
-    Json(jharu_bin::job_progress(job))
-}
-async fn disk_clean_cancel(axum::extract::Json(body): axum::extract::Json<Value>) -> Json<Value> {
-    let Some(job) = body.get("job").and_then(|v| v.as_u64()) else {
-        return Json(serde_json::json!({ "ok": false, "error": "job required" }));
-    };
-    Json(jharu_bin::cancel_job(job))
-}
-/// POST /api/disk/bin/purge/start body: {ids?, scope?, days?} → {job}
-async fn disk_bin_purge_start(axum::extract::Json(body): axum::extract::Json<Value>) -> Json<Value> {
-    let ids: Vec<jharu_bin::PurgeRequest> = body.get("ids").and_then(|v| v.as_array()).map(|a| a.iter()
-        .filter_map(|x| Some(jharu_bin::PurgeRequest {
-            id: x["id"].as_str()?.to_string(),
-            deleted: x["deleted"].as_i64(),
-        })).collect()).unwrap_or_default();
-    let scope = body.get("scope").and_then(|v| v.as_str()).unwrap_or("all").to_string();
-    let days = body.get("days").and_then(|v| v.as_u64()).unwrap_or(0).min(u32::MAX as u64) as u32;
-    Json(jharu_bin::start_purge_job(&ids, &scope, days))
-}
-async fn disk_system() -> Json<Value> { Json(spawn_scan(jharu_manage::system_space)) }
-async fn disk_system_action(axum::extract::Json(body): axum::extract::Json<Value>) -> Json<Value> {
-    let action = body.get("action").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let shadow = body.get("shadow").and_then(|v| v.as_str()).map(String::from);
-    Json(spawn_scan(move || jharu_manage::system_space_action(&action, shadow.as_deref())))
-}
-async fn disk_startup() -> Json<Value> { Json(spawn_scan(jharu_manage::startup_scan)) }
-async fn disk_startup_set(axum::extract::Json(body): axum::extract::Json<Value>) -> Json<Value> {
-    let ids: Vec<String> = body.get("ids").and_then(|v| v.as_array()).map(|a| a.iter()
-        .filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
-    let enable = body.get("enable").and_then(|v| v.as_bool()).unwrap_or(true);
-    Json(spawn_scan(move || jharu_manage::set_startup_enabled(&ids, enable)))
-}
-async fn disk_apps() -> Json<Value> { Json(spawn_scan(jharu_manage::apps_list)) }
-async fn disk_app_uninstall(axum::extract::Json(body): axum::extract::Json<Value>) -> Json<Value> {
-    let cmd = body.get("command").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    Json(jharu_manage::run_uninstaller(&cmd))
-}
-async fn disk_sandboxes() -> Json<Value> { Json(spawn_scan(jharu_sandbox::sandboxes_scan)) }
-async fn disk_sandbox_cleanable(Query(p): Query<HashMap<String, String>>) -> Json<Value> {
-    let dirname = p.get("pkg").cloned().unwrap_or_default();
-    if dirname.is_empty() { return Json(serde_json::json!({ "ok": false, "error": "pkg required" })); }
-    Json(spawn_scan(move || jharu_sandbox::sandbox_cleanable(&dirname)))
-}
-async fn disk_overview() -> Json<Value> { Json(spawn_scan(jharu_overview::overview_quick)) }
-async fn disk_overview_cleanable() -> Json<Value> { Json(spawn_scan(jharu_overview::overview_cleanable)) }
-async fn disk_overview_live() -> Json<Value> { Json(jharu_overview::system_live()) }
-async fn autocare_status() -> Json<Value> { Json(jharu_autocare::status()) }
-async fn autocare_update(axum::extract::Json(body): axum::extract::Json<Value>) -> Json<Value> {
-    Json(jharu_autocare::update(&body))
-}
-async fn autocare_run() -> Json<Value> { Json(spawn_scan(jharu_autocare::run_now)) }
-async fn disk_processes() -> Json<Value> { Json(spawn_scan(|| jharu_extra::process_list())) }
-async fn disk_history() -> Json<Value> { Json(spawn_scan(|| jharu_extra::history_compare())) }
-async fn disk_desktop() -> Json<Value> { Json(spawn_scan(|| jharu_extra::desktop_scan())) }
-
-fn spawn_scan<F>(f: F) -> Value where F: FnOnce() -> Value + Send + 'static {
-    // 在 axum handler 中安全使用：当前已在 tokio 运行时上下文中
-    tokio::task::block_in_place(move || {
-        let handle = tokio::task::spawn_blocking(f);
-        tokio::runtime::Handle::current().block_on(handle)
-            .unwrap_or(serde_json::json!({"ok": false, "error": "worker failed"}))
-    })
 }

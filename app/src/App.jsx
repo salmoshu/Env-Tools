@@ -10,7 +10,7 @@ import Titlebar, {
 import Dashboard from "./pages/Dashboard.jsx";
 import Board from "./pages/Board.jsx";
 import Tools from "./pages/Tools.jsx";
-import DiskPage, { DiskIcon } from "./pages/DiskPage.jsx";
+import DiskPage, { DiskIcon, DiskGadget } from "./pages/DiskPage.jsx";
 import SettingsPage from "./pages/SettingsPage.jsx";
 import { t, useLang } from "./i18n.js";
 import { showToast, ToastStack } from "./toast.jsx";
@@ -25,6 +25,7 @@ function currentRoute() {
   if (hash === "board") return "board";
   if (hash === "tools") return "tools";
   if (hash === "disk") return "disk";
+  if (hash === "disk-gadget") return "disk-gadget";
   if (hash === "settings") return "settings";
   return "dashboard";
 }
@@ -50,6 +51,11 @@ export default function App() {
   useEffect(() => {
     applyTheme(theme);
   }, [theme]);
+
+  useEffect(() => {
+    document.body.classList.toggle("disk-gadget-window", route === "disk-gadget");
+    return () => document.body.classList.remove("disk-gadget-window");
+  }, [route]);
 
   useEffect(() => watchExternalTheme(setTheme), []);
 
@@ -165,6 +171,8 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey, true);
   }, [triggerRefresh]);
 
+  if (route === "disk-gadget") return <DiskGadget />;
+
   return (
     <div className={isBoard ? "board-frame" : "app-frame"}>
       <ToastStack />
@@ -251,7 +259,7 @@ export default function App() {
               onRefresh={triggerRefresh}
             />
           </div>
-          <div className="page-scroll" style={{ display: route === "disk" ? undefined : "none" }}>
+          <div className="page-scroll disk-page-scroll" style={{ display: route === "disk" ? undefined : "none" }}>
             <DiskPage />
           </div>
           </div>

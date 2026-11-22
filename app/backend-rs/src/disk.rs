@@ -16,7 +16,6 @@ pub fn drives() -> Vec<Value> {
             if !p.exists() {
                 continue;
             }
-            use std::os::windows::fs::MetadataExt;
             if let Ok(meta) = p.metadata() {
                 // Windows: fscc = total, caller_free = available
                 // 用 Win32 API 等价：volume_size 通过 metadata 的 ns
