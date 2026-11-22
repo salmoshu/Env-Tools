@@ -3226,7 +3226,7 @@
 }
 body.disk-gadget-window { background: transparent !important; }
 .disk-page-scroll { overflow: hidden !important; }
-.jharu-root.shell { height: 100%; min-height: 0; background: var(--bg); color: var(--text); overflow: hidden; }
+.jharu-root.shell { display: grid; grid-template-columns: 232px minmax(0, 1fr); height: 100%; min-height: 0; background: var(--bg); color: var(--text); overflow: hidden; }
 .jharu-root .sidebar { position: relative; height: 100%; min-height: 0; }
 .jharu-root .main-col { min-width: 0; min-height: 0; height: 100%; }
 .jharu-root .content-scroll { height: 100%; min-height: 0; overflow-y: auto; }
