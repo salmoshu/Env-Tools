@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld("api", {
   refresh: () => ipcRenderer.send("refresh"),
   onRefreshComplete: (callback) => subscribe("refresh-complete", callback),
   getAnalytics: (days, agent, target) => ipcRenderer.invoke("get-analytics", days, agent, target),
+  getLiveRate: (agent, target, expanded) => ipcRenderer.invoke("get-live-rate", agent, target, expanded),
   getDiskDrives: () => ipcRenderer.invoke("get-disk-drives"),
   diskInvoke: (command, args) => ipcRenderer.invoke("disk-invoke", command, args),
   diskEvents: (after) => ipcRenderer.invoke("disk-events", after),

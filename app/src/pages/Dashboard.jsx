@@ -22,12 +22,13 @@ import KimiWebAuth from "../components/KimiWebAuth.jsx";
 import { agentAccountId } from "../components/AgentAccountPicker.jsx";
 import { agentProviderKey, useAgentAccountStates } from "../agentAccounts.js";
 import {
-  quotaEstimateLookup, quotaEstimateLookupEntry, quotaEstimateLookupTotal, quotaEstimateMeta, quotaEstimateStoreKey, quotaEstimateQuality,
+  quotaEstimateRequest, quotaEstimateResult, quotaEstimateView,
 } from "../quotaEstimate.js";
 import { t, useLang } from "../i18n.js";
 import { useInstallState, setInstallResult, upgradingTargets as getUpgradingTargets } from "../installState.js";
 
 const ANALYTICS_REFRESH_MS = 5 * 60 * 1000;
+const LIVE_RATE_REFRESH_MS = 5000;
 // 页面分析口径固定 30 天（v0.7.34 移除范围下拉框后，历史 localStorage 里的
 // "7"/"90" 不再生效——否则按天视图只剩 7 桶、命中率图因点数不足无法缩放）
 const ANALYTICS_DAYS = "30";
@@ -124,6 +125,45 @@ function RateModelLabel({ agent, model }) {
   return `${agent ? `${agentLabel}/` : ""}${model.split("/").pop()}`;
 }
 
+function useLiveRate(target, agent, expanded, enabled) {
+  const key = `${target}|${agent}|${expanded}`;
+  const [snapshot, setSnapshot] = useState(null);
+  useEffect(() => {
+    if (!enabled || !window.api.getLiveRate) return;
+    let cancelled = false;
+    let pending = false;
+    let unsupported = false;
+    let timer;
+    const refresh = async () => {
+      if (cancelled || document.hidden || pending || unsupported) return;
+      pending = true;
+      try {
+        const result = await window.api.getLiveRate(agent, target, expanded);
+        if (cancelled) return;
+        if (result?.unsupported) unsupported = true;
+        if (result?.ok && result.rate) setSnapshot({ key, rate: result.rate });
+      } catch {
+        // 保留上一次已读到的样本。用户仍能正常看用量和配额。
+      } finally {
+        pending = false;
+        if (!cancelled && !unsupported && !document.hidden) timer = setTimeout(refresh, LIVE_RATE_REFRESH_MS);
+      }
+    };
+    const onVisibility = () => {
+      clearTimeout(timer);
+      refresh();
+    };
+    refresh();
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [agent, enabled, expanded, key, target]);
+  return snapshot?.key === key ? snapshot.rate : null;
+}
+
 function MembershipLine({ account }) {
   const membership = account.membership;
   if (!membership || membership.error || !membership.ends_at) return null;
@@ -150,87 +190,67 @@ function MembershipLine({ account }) {
   );
 }
 
-/** 套餐配额 token 额度估算（v0.7.53）：厂商只公布已用百分比（Kimi/Codex）
- *  或积分（GLM），窗口 token 总额需反推：
- *  估算总额 = 窗口 elapsed 时段内实际 token 用量 ÷ 窗口已用%
- *  （用量来自分析引擎，omp 会话按底层模型归并计入对应配额）。
- *  区块标题旁的开关切换显示口径：百分比（原样）/ token 额度（已用/≈总） */
+// 厂商百分比保持原样，token 模式使用后端按窗口校准的等效容量。
 const QUOTA_TOKEN_MODE_KEY = "ai-usage-monitor.quota-token-mode";
 
-/** 以服务端配额快照时间为基准，拉取精确 elapsed 窗口内的请求级增量。
- *  账号进入存储键与后端查询；全部来源模式合并本机/WSL及已连接 SSH。 */
 function useQuotaEstimates(accounts, target) {
-  const [estimates, setEstimates] = useState({});
-  const requests = accounts.flatMap((account) => {
-    const accountId = agentAccountId(account);
-    return (account.windows || []).map((w) => {
-      const meta = quotaEstimateMeta(account.provider, w, accountId);
-      if (!meta) return null;
-      const at = account.fetched_at ? Math.floor(new Date(account.fetched_at).getTime() / 1000) : 0;
-      return {
-        storeKey: quotaEstimateStoreKey(meta),
-        key: meta.key,
-        account: meta.account,
-        elapsed: meta.elapsed,
-        win: meta.windowSeconds,
-        at,
-        pct: w.used_percent,
-        plan: account.plan || "",
-      };
-    }).filter(Boolean);
-  });
-  const fingerprint = requests
-    .map((query) => `${query.storeKey}|${query.elapsed}|${query.at}`)
-    .join("&");
+  const [scopes, setScopes] = useState({});
+  const inFlight = useRef(new Set());
+  const mounted = useRef(false);
   useEffect(() => {
-    if (!fingerprint) return;
-    let cancelled = false;
-    Promise.all(requests.map(async (query) => {
-      try {
-        const result = await window.api.getAnalyticsRolling(query.key, query.elapsed, target, {
-          at: query.at,
-          window: query.win,
-          account: query.account,
-          history: true,
-          pct: query.pct,
-          plan: query.plan,
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+  const requests = accounts.flatMap((account) => (account.windows || [])
+    .map((w) => quotaEstimateRequest(account, w, agentAccountId(account)))
+    .filter(Boolean));
+  const fingerprint = JSON.stringify(requests);
+  useEffect(() => {
+    for (const query of requests) {
+      const id = JSON.stringify([target, query.storeKey, query.at, query.elapsed, query.pct]);
+      if (inFlight.current.has(id)) continue;
+      inFlight.current.add(id);
+      window.api.getAnalyticsRolling(query.key, query.elapsed, target, {
+        at: query.at,
+        window: query.windowSeconds,
+        account: query.account,
+        history: true,
+        pct: query.pct,
+        plan: query.plan,
+        share: query.share,
+      }).then((result) => {
+        if (!mounted.current || !result?.ok) return;
+        const next = quotaEstimateResult(query, result);
+        setScopes((prev) => {
+          const known = prev[target]?.[query.storeKey];
+          if (known && known.at > query.at) return prev;
+          if (!next.capacity && !next.coverageComplete && known?.coverageKey === next.coverageKey) {
+            next.capacity = known?.capacity || null;
+          }
+          return { ...prev, [target]: { ...prev[target], [query.storeKey]: next } };
         });
-        if (!cancelled && result && result.ok) {
-          return [query.storeKey, {
-            tokens: result.tokens || 0,
-            history: result.history || null,
-            sourceCount: result.sourceCount || 1,
-            failedSources: result.failedSources || 0,
-            coverageComplete: result.coverageComplete !== false,
-            externalActivity: Boolean(result.externalActivity),
-            usable: result.usable !== false,
-            quality: result.quality || "medium",
-            reason: result.reason || "",
-          }];
-        }
-      } catch {}
-      return null;
-    })).then((rows) => {
-      if (cancelled) return;
-      setEstimates((prev) => {
-        const next = { ...prev };
-        for (const row of rows) if (row) next[row[0]] = row[1];
-        return next;
+      }).catch(() => {}).finally(() => {
+        inFlight.current.delete(id);
       });
-    });
-    return () => { cancelled = true; };
+    }
   }, [fingerprint, target]);
-  return estimates;
+  return scopes[target] || {};
 }
 
-/** 周窗口 token 统计卡（单厂商）：近 ~13 周的 7d 窗口用量（周柱）与
- *  5h 峰值窗口用量并排，另以虚线参考线标出按当前配额反推的 5h 额度估算——
- *  直接回答"该厂商的 5h 额度预计多大、我平时压到多满"。
- *  数据独立自取 90 天（不随页面范围/agent 筛选），后端 weekly_quota
- *  厂商口径（omp 底层模型已归并）；下拉切换 Kimi/Codex/GLM（无"全部"） */
+function quotaCapacityHint(capacity) {
+  const confidence = t(`dash.quotaConfidence.${capacity.confidence || "low"}`);
+  const summary = t("dash.quotaEstimateModel")
+    .replace("{confidence}", confidence)
+    .replace("{samples}", String(capacity.samples || 0))
+    .replace("{windows}", String(capacity.windows || 0));
+  return capacity.low > 0 && capacity.high >= capacity.low
+    ? `${summary}\n${t("dash.quotaEstimateRange").replace("{low}", abbrev2(capacity.low)).replace("{high}", abbrev2(capacity.high))}`
+    : summary;
+}
+
 const QUOTA_WEEKLY_PROVIDER_KEY = "ai-usage-monitor.quota-weekly-provider";
 
-function QuotaWeeklyCard({ target, weekStart, accounts, estimates }) {
+function QuotaWeeklyCard({ target, weekStart, accounts, estimates, visible }) {
   const [weeklyAnalytics, setWeeklyAnalytics] = useState(null);
   const [provider, setProvider] = useState(() => {
     try {
@@ -239,44 +259,53 @@ function QuotaWeeklyCard({ target, weekStart, accounts, estimates }) {
     } catch { return "kimi"; }
   });
   useEffect(() => {
+    if (!visible) return;
     let cancelled = false;
-    window.api.getAnalytics(90, "all", target)
-      .then((result) => { if (!cancelled && result && result.ok) setWeeklyAnalytics(result.analytics); })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, [target]);
+    let pending = false;
+    const refresh = async () => {
+      if (pending) return;
+      pending = true;
+      try {
+        const result = await window.api.getAnalytics(90, "all", target);
+        if (!cancelled && result?.ok) setWeeklyAnalytics({ target, data: result.analytics });
+      } catch {} finally { pending = false; }
+    };
+    refresh();
+    const timer = setInterval(refresh, ANALYTICS_REFRESH_MS);
+    const off = window.api.onAnalyticsInvalidated(refresh);
+    return () => { cancelled = true; clearInterval(timer); off?.(); };
+  }, [target, weekStart, visible]);
+  const providerName = { kimi: "Kimi Code", codex: "OpenAI Codex", glm: "GLM" }[provider];
+  const account = accounts.find((item) => item.provider === providerName);
+  const accountId = account ? agentAccountId(account) : null;
+  const snapshot = weeklyAnalytics?.target === target ? weeklyAnalytics.data : null;
+  const weekly = snapshot?.weekly_quota;
+  const perAccount = Boolean(account && (snapshot?.weekly_quota_account_scoped || weekly?.some((row) => row.providers?.[provider]?.accounts)));
+  const windows = account?.windows || [];
+  const window5h = windows.find((w) => Math.abs(w.window_seconds - 18000) <= 600);
+  const window7d = windows.find((w) => Math.abs(w.window_seconds - 604800) <= 600);
+  const show5h = !account || !windows.length || Boolean(window5h);
+  const limit = (w) => account && perAccount && w
+    ? quotaEstimateView(estimates, account, w, accountId)?.capacity : null;
+  const referenceLines = [
+    [limit(window7d), "dash.quotaWeekly7dLimit", "var(--c-input)"],
+    [limit(window5h), "dash.quotaWeekly5hLimit", "var(--c-output)"],
+  ].flatMap(([cap, label, color]) => cap ? [{
+    value: cap.total, color, label: `${t(label)} ≈${abbrev2(cap.total)}`, hint: quotaCapacityHint(cap),
+  }] : []);
   const weeks = useMemo(() => {
-    const weekly = weeklyAnalytics && weeklyAnalytics.weekly_quota;
     if (!Array.isArray(weekly)) return [];
     return weekly
-      .map((row) => ({
-        start: row.start,
-        end: row.end,
-        total: (row.providers && row.providers[provider] && row.providers[provider].total) || 0,
-        peak5h: (row.providers && row.providers[provider] && row.providers[provider].peak5h) || 0,
-      }))
-      .filter((row) => row.total > 0 || row.peak5h > 0);
-  }, [weeklyAnalytics, provider]);
-  // 5h 额度估算参考线：该厂商当前 5h 窗口的 已用token ÷ 已用%。
-  // 多账号（如 codex free/plus）时遍历所有账号找有用量的 5h 窗口
-  const limit5h = useMemo(() => {
-    const providerName = { kimi: "Kimi Code", codex: "OpenAI Codex", glm: "GLM" }[provider];
-    const candidates = accounts
-      .filter((a) => a.provider === providerName)
-      .flatMap((a) => (a.windows || []).map((w) => ({ w, accountId: agentAccountId(a) })))
-      .filter(({ w }) => w.window_seconds && Math.abs(w.window_seconds - 18000) <= 600
-        && w.used_percent > 0);
-    for (const { w: w5h, accountId } of candidates) {
-      const used = quotaEstimateLookup(estimates, providerName, w5h, accountId);
-      if (used != null) {
-        const total = quotaEstimateLookupTotal(estimates, providerName, w5h, used, accountId);
-        if (total != null) return total;
-      }
-    }
-    return null;
-  }, [accounts, estimates, provider]);
-  if (weeks.length === 0) return null;
-  const WINDOWS_PER_WEEK = 168 / 5; // 33.6 个 5h 窗口
+      .map((row) => {
+        const group = row.providers?.[provider];
+        const stats = perAccount ? group?.accounts?.[accountId] : group;
+        return { start: row.start, end: row.end, days: row.days, total: stats?.total || 0, peak5h: stats?.peak5h || 0 };
+      });
+  }, [weekly, perAccount, accountId, provider]);
+  if (!weekly) return null;
+  const hasUsage = weeks.some((row) => row.total > 0 || (show5h && row.peak5h > 0));
+  const series = [{ color: "var(--c-input)", data: weeks.map((w) => w.total) }];
+  if (show5h) series.push({ color: "var(--c-output)", data: weeks.map((w) => w.peak5h) });
   const mmdd = (date) => date.slice(5);
   return (
     <section className="card quota-weeks">
@@ -296,32 +325,30 @@ function QuotaWeeklyCard({ target, weekStart, accounts, estimates }) {
         </div>
       </div>
       <div className="table-hint" style={{ marginBottom: 6 }}>{t("dash.quotaWeeklyHint")}</div>
+      {perAccount
+        ? <div className="table-hint">{t("dash.quotaWeeklyAccount").replace("{account}", account.account_label || account.label || accountId)}</div>
+        : <div className="table-hint">{t("dash.quotaWeeklyCombined")}</div>}
       <div className="legend">
         <span className="item"><span className="swatch" style={{ background: "var(--c-input)" }} />{t("dash.quotaWeekly7d")}</span>
-        <span className="item"><span className="swatch" style={{ background: "var(--c-output)" }} />{t("dash.quotaWeekly5h")}</span>
+        {show5h ? <span className="item"><span className="swatch" style={{ background: "var(--c-output)" }} />{t("dash.quotaWeekly5h")}</span> : null}
+        {referenceLines.map((line) => <span className="item" title={line.hint} key={line.label}>{line.label}</span>)}
       </div>
-      {weeks.length < 2 ? <div className="table-hint">{t("dash.quotaWeeklyShort")}</div> : null}
-      <GroupedBars
+      {!hasUsage ? <div className="table-hint">{t("state.noData")}</div> : <GroupedBars
         className="tall"
         zoomable
         labels={weeks.map((w) => mmdd(w.start))}
-        series={[
-          { color: "var(--c-input)", data: weeks.map((w) => w.total) },
-          { color: "var(--c-output)", data: weeks.map((w) => w.peak5h) },
-        ]}
-        refLine={limit5h ? { value: limit5h, label: `${t("dash.quotaWeekly5hLimit")} ≈${fmtTokens(limit5h)}` } : null}
+        series={series}
+        refLines={referenceLines}
         columnTip={(i) => {
           const w = weeks[i] || {};
           const range = `${mmdd(w.start || "")}–${mmdd(w.end || "")}`;
-          const current = i === weeks.length - 1 ? ` · ${t("dash.quotaWeekCurrent")}` : "";
+          const current = snapshot?.date_range?.[1] === w.end ? ` · ${t("dash.quotaWeekCurrent")}`
+            : w.days < 7 ? ` · ${t("dash.quotaWeekPartial")}` : "";
           return `<b>${range}${current}</b>` +
             `<div class="tt-row"><span class="swatch" style="background:var(--c-input)"></span>${t("dash.quotaWeekly7d")}<span class="tt-val">${fmtTokens(w.total || 0)}</span></div>` +
-            `<div class="tt-row"><span class="swatch" style="background:var(--c-output)"></span>${t("dash.quotaWeekly5h")}<span class="tt-val">${fmtTokens(w.peak5h || 0)}</span></div>` +
-            (limit5h
-              ? `<div class="tt-row">${t("dash.quotaWeekly5hLimit")}<span class="tt-val">≈${fmtTokens(limit5h)}</span></div>`
-              : "");
+            (show5h ? `<div class="tt-row"><span class="swatch" style="background:var(--c-output)"></span>${t("dash.quotaWeekly5h")}<span class="tt-val">${fmtTokens(w.peak5h || 0)}</span></div>` : "");
         }}
-      />
+      />}
     </section>
   );
 }
@@ -418,52 +445,32 @@ function QuotaCard({ account, versions, onUpgrade, upgrading, providerKey, accou
           : (showUsage
             ? <span className="reset">Usage {w.usage}</span>
             : null);
-        // token 额度口径：账号隔离的服务端百分比快照 + 请求级增量。
-        // 无本地增量时保留百分比，不用 0 反推出虚假总额；来源不完整时明确标注。
+        // 当前服务商百分比乘以同账号已校准的容量。已观测 token 在提示中单列。
         let pctText = `${pct.toFixed(1)}%`;
         let pctTitle = undefined;
         if (tokenMode === "tokens") {
-          const accountId = agentAccountId(account);
-          const meta = quotaEstimateMeta(account.provider, w, accountId);
-          const estimate = quotaEstimateLookupEntry(estimates, account.provider, w, accountId);
-          const usedTokens = estimate && Number.isFinite(estimate.tokens) ? estimate.tokens : null;
-          const quality = quotaEstimateQuality(estimate);
-          const qualityTip = quality === "external"
-            ? t("dash.quotaEstimateExternal")
-            : quality === "incomplete"
-              ? t("dash.quotaEstimateIncomplete")
-              : quality === "low_quality" ? t("dash.quotaEstimateLowQuality") : "";
-          if (usedTokens > 0) {
-            // Kimi 月度为家庭共享额度（w.sub 带 "Kimi Code share: xx.xx%"）：
-            // 已连接来源只覆盖 Kimi Code 份额，按 share 校正有效已用比例再反推总额
-            let effectivePct = pct;
-            const shareMatch = String(w.sub || "").match(/([\d.]+)\s*%/);
-            const share = shareMatch ? Number(shareMatch[1]) : null;
-            if (share && share > 0 && share < 100) effectivePct = pct * share / 100;
-            const estimateWindow = effectivePct === pct ? w : { ...w, used_percent: effectivePct };
-            const totalTokens = quotaEstimateLookupTotal(
-              estimates, account.provider, estimateWindow, usedTokens, accountId,
-            );
-            if (totalTokens != null) {
-              pctText = `${abbrev2(usedTokens)} / ≈${abbrev2(totalTokens)}`;
-              const basis = (share && share > 0 && share < 100)
-                ? t("dash.quotaEstimateTipShared")
-                  .replace("{used}", abbrev2(usedTokens))
-                  .replace("{pct}", effectivePct.toFixed(2))
-                  .replace("{share}", share.toFixed(2))
-                : t("dash.quotaEstimateTip")
-                  .replace("{used}", abbrev2(usedTokens))
-                  .replace("{pct}", pct.toFixed(0));
-              const coverage = t("dash.quotaEstimateSources").replace("{n}", String(estimate.sourceCount || 1));
-              const failed = estimate.failedSources > 0
-                ? `\n${t("dash.quotaEstimatePartial").replace("{n}", String(estimate.failedSources))}`
-                : "";
-              pctTitle = `${basis}${qualityTip ? `\n${qualityTip}` : ""}\n${coverage}${failed}`;
-            } else if (meta) {
-              pctTitle = qualityTip || t("dash.quotaEstimatePending");
+          const estimate = quotaEstimateView(estimates, account, w, agentAccountId(account));
+          if (estimate) {
+            const tips = [];
+            if (estimate.capacity) {
+              pctText = `≈${abbrev2(estimate.estimatedUsed)} / ≈${abbrev2(estimate.capacity.total)}`;
+              tips.push(t("dash.quotaEstimateEquivalent").replace("{pct}", pct.toFixed(1)), quotaCapacityHint(estimate.capacity));
+            } else {
+              pctText += ` · ${estimate.tokens > 0 ? `${abbrev2(estimate.tokens)} tok` : t("dash.quotaAwaitSamples")}`;
+              tips.push(t("dash.quotaEstimateLowQuality"));
             }
-          } else if (meta) {
-            pctTitle = qualityTip || (usedTokens === 0 ? t("dash.quotaEstimateNoUsage") : t("dash.quotaEstimatePending"));
+            if (estimate.tokens != null) {
+              tips.push(t("dash.quotaEstimateObserved")
+                .replace("{tokens}", fmtTokens(estimate.tokens))
+                .replace("{n}", String(estimate.sourceCount)));
+            }
+            if (estimate.pending) tips.push(t("dash.quotaEstimatePending"));
+            else if (!estimate.coverageComplete) tips.push(t("dash.quotaEstimateIncomplete"));
+            if (estimate.externalActivity) tips.push(t("dash.quotaEstimateExternal"));
+            if (["early_reset", "meter_decreased", "observed_usage_decreased"].includes(estimate.reason)) {
+              tips.push(t("dash.quotaEstimateDiscontinuity"));
+            }
+            pctTitle = tips.join("\n");
           }
         }
         return (
@@ -573,7 +580,7 @@ function filterByAgent(list, agent) {
   return list.filter((item) => allowed.includes(item.provider));
 }
 
-export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
+export default function Dashboard({ lastPayload, refreshing, onRefresh, visible = true }) {
   const [analytics, setAnalytics] = useState(null);
   const [view, setView] = useState(() => {
     try {
@@ -897,6 +904,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
     if (accountStates[provider].defaultRemoved && id === "default") return false;
     return id === accountStates[provider].viewId;
   };
+  const calibrationAccounts = allAccounts.filter(matchesActiveAccount);
   // agent 筛选联动配额：只看 kimi 时配额区只显示 Kimi
   const agentAccounts = filterByAgent(allAccounts, agent);
   // Kimi 网页会话问题已在卡片内联引导，不再重复生成错误卡（兼容旧后端载荷）
@@ -931,7 +939,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
       return next;
     });
   };
-  const quotaEstimates = useQuotaEstimates(accounts, target);
+  const quotaEstimates = useQuotaEstimates(calibrationAccounts, target);
 
   // --- 分析数据派生 ---
   const dayList = (analytics && analytics.day_list) || [];
@@ -1043,6 +1051,8 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
   );
 
   const kpi = (analytics && analytics.kpi) || {};
+  const liveRate = useLiveRate(target, agent, expandedCard === "rate", visible && view === "overview");
+  const rateData = liveRate || kpi.rate;
   // 缓存命中率 KPI 用今日口径：取逐日桶最后一天（与后端逐日 cache_hit_rate 同口径），
   // 原 kpi.cache_hit_rate 是所选范围窗口口径，与"本周/今日"两张固定窗口卡不一致
   const todayCacheRate = daily && daily.length ? daily[daily.length - 1].cache_hit_rate : null;
@@ -1074,9 +1084,18 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
   const fmtRate = (v) => (v >= 100 ? abbrev(Math.round(v)) : v.toFixed(1));
   const pickRate = (item) =>
     speedMode === "gen" ? (item.gen_rate != null ? item.gen_rate : item.rate) : item.rate;
-  const rateText = (item) => {
-    const v = pickRate(item);
+  const rateText = (item, recent = false) => {
+    const v = recent && speedMode === "gen" && Object.hasOwn(item, "latest_gen_rate")
+      ? (item.latest_gen_rate ?? item.rate)
+      : pickRate(item);
     return v != null ? `${fmtRate(v)} tok/s` : "—";
+  };
+  const rateSampleTitle = (item) => {
+    if (speedMode !== "gen") return t("dash.speedHintThroughput");
+    if (item.latest_gen_rate == null) return t("dash.rateSampleFallback");
+    const sampled = item.sample_at || item.last;
+    const age = Math.max(0, Math.floor(Date.now() / 1000) - sampled);
+    return t("dash.rateLatestRequest").replace("{d}", fmtSpan(age));
   };
   // agent/模型 展示：agent 取会话所属 CLI（kimi/kimi-work/codex/zcode/omp），而不是按
   // 模型名前缀的计费归因——自定义模型名带 deepseek/ 前缀时，Kimi Code 会话
@@ -1316,7 +1335,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
       </div>
       {expandedCard === "rate" ? (() => {
         // 全屏：近 1 天活跃明细（项目 → 会话 → 模型），旧版远端后端无此字段时回退空态
-        const active = (kpi.rate || {}).active_1d;
+        const active = (rateData || {}).active_1d;
         const projects = (active && active.projects) || [];
         if (!projects.length) {
           return <div className="status">{t("state.noData")}</div>;
@@ -1367,12 +1386,15 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                         <span className="mono act-sid" title={s.session_id}>
                           {String(s.session_id).replace("session_", "").replace(/^codex-/, "").slice(0, 8)}…
                         </span>
-                        <span className="act-agent"><BrandIcon of={s.agent} size={11} />{AGENT_LABELS[s.agent] || s.agent}</span>
+                        <span className="act-agent" title={rateModelLabel(s.cli || s.agent, latestModel?.model)}>
+                          <BrandIcon of={s.cli || s.agent} size={11} />
+                          <span><RateModelLabel agent={s.cli || s.agent} model={latestModel?.model} /></span>
+                        </span>
                         <span className="act-meta">
                           {fmtTokens(s.output)} out · {s.requests} req · {t("dash.rateEndedAgo").replace("{d}", fmtSpan(s.ended_ago_seconds || 0))}
                         </span>
-                        <span className="act-rate" title={t(speedMode === "gen" ? "dash.speedHint" : "dash.speedHintThroughput")}>
-                          {rateText(latestModel || s)}
+                        <span className="act-rate" title={rateSampleTitle(latestModel || s)}>
+                          {rateText(latestModel || s, true)}
                         </span>
                       </div>
                       <div className="act-models">
@@ -1384,7 +1406,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                             <span className="act-meta">
                               {fmtTokens(m.tokens)} {t("dash.tokens")} · {fmtTokens(m.output)} out · {m.requests} req
                             </span>
-                            <span className="act-rate">{rateText(m)}</span>
+                            <span className="act-rate" title={rateSampleTitle(m)}>{rateText(m, true)}</span>
                           </div>
                         ))}
                       </div>
@@ -1398,7 +1420,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
           </>
         );
       })() : (() => {
-        const latest = (kpi.rate || {}).latest_sessions || [];
+        const latest = (rateData || {}).latest_sessions || [];
         if (!latest.length) {
           return <div className="kpi-sub">{t("state.noData")}</div>;
         }
@@ -1424,7 +1446,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                     <BrandIcon of={item.cli || item.agent} size={12} />
                     <RateModelLabel agent={item.cli || item.agent} model={item.model} />
                   </span>
-                  <span className="rate-val">{rateText(item)}</span>
+                  <span className="rate-val" title={rateSampleTitle(item)}>{rateText(item, true)}</span>
                 </div>
               );
             })}
@@ -1432,7 +1454,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
         );
       })()}
     </div>
-  ), [kpi.rate, expandedCard, speedMode, rateCollapsed, lang, dragCard, dropTarget, nowMinute, refreshing, onRefresh]);
+  ), [rateData, expandedCard, speedMode, rateCollapsed, lang, dragCard, dropTarget, nowMinute, refreshing, onRefresh]);
 
   return (
     <div className="page page-flex">
@@ -1614,7 +1636,8 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
         </div>
       </section>
 
-      <QuotaWeeklyCard target={target} weekStart={weekStart} accounts={accounts} estimates={quotaEstimates} />
+      <QuotaWeeklyCard target={target} weekStart={weekStart} accounts={calibrationAccounts}
+        estimates={quotaEstimates} visible={visible && view === "overview"} />
       </div>
 
       <div className="dashboard-cards">

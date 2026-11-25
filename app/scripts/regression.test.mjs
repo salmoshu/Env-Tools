@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { installTarget, installScope, installConflict } from "../electron/installTarget.js";
 import { resetExpiries } from "../src/resetExpiries.js";
 import {
-  quotaEstimateLookup, quotaEstimateLookupEntry, quotaEstimateLookupTotal, quotaEstimateMeta, quotaEstimateStoreKey, quotaEstimateQuality,
+  quotaEstimateMeta, quotaEstimateRequest, quotaEstimateResult, quotaEstimateStoreKey, quotaEstimateView,
 } from "../src/quotaEstimate.js";
 
 const { zcodeCandidatePaths } = createRequire(import.meta.url)("../electron/zcodeLauncher.js");
@@ -84,81 +84,68 @@ test("GLM 日期缺失时保留真实次数并标记未知日期", () => {
     [{ label: "5h", at: null }]);
 });
 
-test("Codex 5h/7d 估算按窗口隔离，联合重置时不会共用 7d 历史", () => {
-  const provider = "OpenAI Codex";
-  const w5 = { used_percent: 10, window_seconds: 18000, reset_after_seconds: 16925 };
-  const w7 = { used_percent: 20, window_seconds: 604800, reset_after_seconds: 549561 };
-  assert.equal(quotaEstimateStoreKey(quotaEstimateMeta(provider, w5)), "codex|default|18000|1075");
-  assert.equal(quotaEstimateStoreKey(quotaEstimateMeta(provider, w7)), "codex|default|604800|55239");
-  const estimates = {
-    "codex|default|18000|1075": { tokens: 6434278, history: [64e6] },
-    "codex|default|604800|55239": { tokens: 62534629, history: [300e6] },
-  };
-  assert.equal(quotaEstimateLookup(estimates, provider, w5), 6434278);
-  assert.equal(quotaEstimateLookup(estimates, provider, w7), 62534629);
-  assert.ok(quotaEstimateLookupTotal(estimates, provider, w7, 62534629)
-    > quotaEstimateLookupTotal(estimates, provider, w5, 6434278));
+const codex = (plan = "prolite") => ({
+  provider: "OpenAI Codex", plan, fetched_at: "2026-11-25T00:00:00Z",
+});
+const weeklyWindow = (pct = 6, reset = 548137) => ({
+  window_seconds: 604800, used_percent: pct, reset_after_seconds: reset,
+});
+const capacity = (total) => ({ total, low: total * 0.9, high: total * 1.1, confidence: "medium", method: "increments" });
 
-  // 两个窗口 elapsed 相同（同代重置）：已用 token 相同是真实用量，
-  // 但总额必须各取自己的历史，不能都变成 7d 的中位。
-  const aligned5 = { used_percent: 11, window_seconds: 18000, reset_after_seconds: 0 };
-  const aligned7 = { used_percent: 11, window_seconds: 604800, reset_after_seconds: 586800 };
-  const sameTokens = 7366836;
-  const aligned = {
-    "codex|default|18000|18000": { tokens: sameTokens, history: [64e6] },
-    "codex|default|604800|18000": { tokens: sameTokens, history: [300e6] },
-  };
-  assert.notEqual(
-    quotaEstimateLookupTotal(aligned, provider, aligned5, sameTokens),
-    quotaEstimateLookupTotal(aligned, provider, aligned7, sameTokens),
-  );
+test("只有 7d 的 Codex 也显示额度，零本地用量不阻断已校准窗口", () => {
+  const account = codex();
+  const current = weeklyWindow(6);
+  const query = quotaEstimateRequest(account, current, "work");
+  const entry = quotaEstimateResult(query, { tokens: 0, estimate: capacity(3e9), externalActivity: true });
+  const view = quotaEstimateView({ [query.storeKey]: entry }, account, current, "work");
+  assert.equal(view.capacity.total, 3e9);
+  assert.equal(view.estimatedUsed, 180e6);
+  assert.equal(view.tokens, 0);
+  assert.equal(view.externalActivity, true);
+  assert.equal(quotaEstimateRequest(account, weeklyWindow(0, 604800), "work").elapsed, 0);
 });
 
-test("额度估算按账号隔离，保留精确窗口且零增量不反推", () => {
-  const provider = "OpenAI Codex";
-  const w = { used_percent: 10, window_seconds: 18000, reset_after_seconds: 16925 };
-  const defaultMeta = quotaEstimateMeta(provider, w, "default");
-  const workMeta = quotaEstimateMeta(provider, w, "work");
-  assert.equal(defaultMeta.elapsed, 1075);
-  assert.equal(defaultMeta.bucket, 1800);
-  assert.equal(quotaEstimateStoreKey(defaultMeta), "codex|default|18000|1075");
-  assert.equal(quotaEstimateStoreKey(workMeta), "codex|work|18000|1075");
-  const estimates = {
-    "codex|default|18000|1075": { tokens: 1000, history: [10000] },
-    "codex|work|18000|1075": { tokens: 2000, history: [22000] },
-  };
-  assert.equal(quotaEstimateLookup(estimates, provider, w, "default"), 1000);
-  assert.equal(quotaEstimateLookup(estimates, provider, w, "work"), 2000);
-  assert.equal(quotaEstimateLookup(estimates, provider, w, "other"), null);
-  assert.equal(quotaEstimateLookupTotal(estimates, provider, w, 1000, "default"), 10000);
-  assert.equal(quotaEstimateLookupTotal(estimates, provider, w, 2000, "work"), 21000);
-  // 零增量不生成当前比值；有合格历史时可沿用历史估算。
-  assert.equal(quotaEstimateLookupTotal(estimates, provider, w, 0, "default"), 10000);
+test("已估容量不随同套餐下一次快照闪回百分比，旧用量不会带入", () => {
+  const account = codex();
+  const query = quotaEstimateRequest(account, weeklyWindow(), "work");
+  const entries = { [query.storeKey]: quotaEstimateResult(query, { tokens: 190e6, estimate: capacity(3e9) }) };
+  const later = { ...account, fetched_at: "2026-11-25T00:01:00Z" };
+  const view = quotaEstimateView(entries, later, weeklyWindow(7, 548077), "work");
+  assert.equal(view.pending, true);
+  assert.equal(view.tokens, null);
+  assert.equal(view.estimatedUsed, 210e6);
 });
 
-test("额度估算拒绝窗口外旧 token，并在跨设备或覆盖不足时仅用历史", () => {
-  const provider = "OpenAI Codex";
-  const early = { used_percent: 10, window_seconds: 18000, reset_after_seconds: 17900 };
-  const meta = quotaEstimateMeta(provider, early, "work");
-  assert.equal(meta.elapsed, 100);
-  assert.equal(quotaEstimateStoreKey(meta), "codex|work|18000|100");
+test("5h、7d、套餐、账号及 Kimi 份额口径互不串用", () => {
+  const account = codex("plus");
+  const w5 = { window_seconds: 18000, reset_after_seconds: 3200, used_percent: 20 };
+  const w7 = weeklyWindow(20, 604800 - 14800);
+  const q5 = quotaEstimateRequest(account, w5, "work");
+  const q7 = quotaEstimateRequest(account, w7, "work");
+  const entries = {
+    [q5.storeKey]: quotaEstimateResult(q5, { tokens: 2000, estimate: capacity(10000) }),
+    [q7.storeKey]: quotaEstimateResult(q7, { tokens: 2000, estimate: capacity(20000) }),
+  };
+  assert.equal(q5.elapsed, q7.elapsed);
+  assert.notEqual(q5.storeKey, q7.storeKey);
+  assert.equal(quotaEstimateView(entries, account, w5, "work").capacity.total, 10000);
+  assert.equal(quotaEstimateView(entries, account, w7, "work").capacity.total, 20000);
+  assert.equal(quotaEstimateView(entries, codex("prolite"), w7, "work").capacity, undefined);
+  assert.equal(quotaEstimateView(entries, account, w7, "other").capacity, undefined);
+  const month = { window_seconds: 2592000, reset_after_seconds: 864000, used_percent: 20 };
+  const individual = quotaEstimateMeta("Kimi Code", month);
+  const shared = quotaEstimateMeta("Kimi Code", { ...month, quota_share_percent: 50 });
+  assert.notEqual(quotaEstimateStoreKey(individual), quotaEstimateStoreKey(shared));
+});
 
-  const estimates = { "codex|work|18000|100": { tokens: 1000, history: [10000] } };
-  const later = { ...early, reset_after_seconds: 17800 };
-  assert.equal(quotaEstimateLookupEntry(estimates, provider, later, "work"), null);
-
-  estimates["codex|work|18000|100"].externalActivity = true;
-  estimates["codex|work|18000|100"].usable = false;
-  assert.equal(quotaEstimateQuality(estimates["codex|work|18000|100"]), "external");
-  assert.equal(quotaEstimateLookupTotal(estimates, provider, early, 1000, "work"), 10000);
-
-  estimates["codex|work|18000|100"].externalActivity = false;
-  estimates["codex|work|18000|100"].coverageComplete = false;
-  assert.equal(quotaEstimateQuality(estimates["codex|work|18000|100"]), "incomplete");
-  assert.equal(quotaEstimateLookupTotal(estimates, provider, early, 1000, "work"), 10000);
-  assert.equal(quotaEstimateLookupTotal({
-    "codex|work|18000|100": { tokens: 1000, usable: false, externalActivity: true },
-  }, provider, early, 1000, "work"), null);
+test("不从单个不完整点造总额，旧 SSH 只用已有历史作低置信估计", () => {
+  const query = quotaEstimateRequest(codex(), weeklyWindow(), "work");
+  assert.equal(quotaEstimateResult(query, {
+    tokens: 100000, estimate: null, history: [99999], coverageComplete: false,
+  }).capacity, null);
+  const legacy = quotaEstimateResult(query, { tokens: 1000, history: [20000, 22000] });
+  assert.equal(legacy.capacity.total, 21000);
+  assert.equal(legacy.capacity.confidence, "low");
 });
 
 test("ZCode 启动路径支持注册表和环境目录并去重", () => {

@@ -7,8 +7,9 @@
 //! 模型接入其它 CLI，按模型名归因。与 Python 版的差异只在性能形态：解析
 //! 位置（offset）保留在本进程内存中，作为常驻服务重复请求只读取新增字节。
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Datelike, Local, TimeZone, Timelike};
 
@@ -19,6 +20,9 @@ pub const AGENTS: [&str; 8] = [
 ];
 /// 速率卡全屏"活跃明细"窗口：近 1 天（15m/60m 速率 KPI 仍按各自短窗计算）
 pub const ACTIVE_WINDOW_SECS: i64 = 86_400;
+const LIVE_DISCOVERY_PERIOD: Duration = Duration::from_secs(15);
+const LIVE_LOOKBACK_SECS: i64 = 2 * ACTIVE_WINDOW_SECS;
+const LIVE_INITIAL_TAIL_BYTES: u64 = 4 * 1024 * 1024;
 
 #[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Source {
@@ -75,6 +79,9 @@ pub struct FileState {
     /// 的 token_count 记录（该记录承载 usage 展示）。不落盘
     #[serde(skip)]
     pub pending_span_secs: f64,
+    /// 速率流已采纳的 usage 事件，避免随后的兼容 token_count 再记一笔。
+    #[serde(skip)]
+    live_usage: Option<(i64, [i64; 4])>,
     /// codex：当前模型，跨增量批次携带。token_count 行自身不带模型名，
     /// 模型只出现在 turn_context / thread_settings_applied / world_state
     /// 行；增量段内没遇到这些行时沿用上次值，否则该段记录全部落成
@@ -96,6 +103,7 @@ pub struct AnalyticsState {
     /// 上次扫描的秒级时间戳：节流窗内跳过重扫（WSL/聚合走 9P，全量 stat 20s+）；
     /// /api/cache-clear 置 0 以强制重扫
     pub last_scan_secs: i64,
+    live_discovered_at: Option<Instant>,
 }
 
 /// 磁盘持久化的增量扫描缓存：跨进程存活，避免每次启动全量冷扫
@@ -282,8 +290,7 @@ fn json_string_after(line: &str, needle: &str) -> Option<String> {
 
 fn codex_timestamp(line: &str) -> Option<i64> {
     let raw = json_string_after(line, "\"timestamp\":")?;
-    let raw = raw.trim_end_matches('Z');
-    let dt = DateTime::parse_from_rfc3339(&format!("{raw}+00:00")).ok()?;
+    let dt = DateTime::parse_from_rfc3339(&raw).ok()?;
     Some(dt.timestamp())
 }
 
@@ -295,8 +302,7 @@ fn codex_model(line: &str) -> Option<String> {
 /// 不能复用秒级的 codex_timestamp
 fn codex_timestamp_ms(line: &str) -> Option<i64> {
     let raw = json_string_after(line, "\"timestamp\":")?;
-    let raw = raw.trim_end_matches('Z');
-    let dt = DateTime::parse_from_rfc3339(&format!("{raw}+00:00")).ok()?;
+    let dt = DateTime::parse_from_rfc3339(&raw).ok()?;
     Some(dt.timestamp_millis())
 }
 
@@ -308,6 +314,11 @@ const CODEX_SPAN_MAX_SECS: f64 = 3600.0;
 /// 时长 = 本行时间戳 − boundary_ms（最近一次边界事件）。
 /// boundary_ms 为 0（跨进程半截配对）或差值超上限时返回 0.0
 pub(crate) fn parse_codex_usage_record(line: &str, boundary_ms: i64) -> Option<(i64, f64)> {
+    let (usage, _, span) = codex_usage_sample(line, boundary_ms)?;
+    Some((count_field(&usage, "output_tokens"), span))
+}
+
+fn codex_usage_sample(line: &str, boundary_ms: i64) -> Option<(serde_json::Value, i64, f64)> {
     if !line.contains("\"token_usage_record\"") {
         return None;
     }
@@ -316,15 +327,14 @@ pub(crate) fn parse_codex_usage_record(line: &str, boundary_ms: i64) -> Option<(
         return None;
     }
     let ts_ms = codex_timestamp_ms(line)?;
-    let usage = rec.get("payload")?.get("usage")?;
-    let output = count_field(usage, "output_tokens");
+    let usage = rec.get("payload")?.get("usage")?.as_object()?;
     let span = if boundary_ms > 0 && ts_ms > boundary_ms {
         (ts_ms - boundary_ms) as f64 / 1000.0
     } else {
         0.0
     };
     let span = if span > CODEX_SPAN_MAX_SECS { 0.0 } else { span };
-    Some((output, span))
+    Some((serde_json::Value::Object(usage.clone()), ts_ms, span))
 }
 
 /// 边界事件识别：task_started / response_item 中的工具产出
@@ -363,9 +373,13 @@ pub(crate) fn parse_codex_token_line(line: &str, model: &str, sid: &str) -> Opti
         return None;
     }
     let ts = codex_timestamp(line)?;
+    Some(codex_turn(usage, ts, model, sid))
+}
+
+fn codex_turn(usage: &serde_json::Value, ts: i64, model: &str, sid: &str) -> TurnRecord {
     let cached = count_field(usage, "cached_input_tokens");
     let input_total = count_field(usage, "input_tokens");
-    Some(TurnRecord {
+    TurnRecord {
         ts,
         model: if model.is_empty() {
             "(unknown)".into()
@@ -379,7 +393,11 @@ pub(crate) fn parse_codex_token_line(line: &str, model: &str, sid: &str) -> Opti
         sid: sid.to_string(),
         quota_account: None,
         gen_seconds: 0.0,
-    })
+    }
+}
+
+fn usage_fingerprint(record: &TurnRecord) -> [i64; 4] {
+    [record.input, record.output, record.cache_read, record.cache_creation]
 }
 
 pub(crate) fn parse_codex_meta_cwd(line: &str) -> Option<String> {
@@ -540,21 +558,58 @@ fn wire_files(root: &Path, selector: impl Fn(&str) -> bool) -> Vec<PathBuf> {
             Ok(entries) => entries,
             Err(_) => continue,
         };
-        let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
-        paths.sort();
-        for path in paths {
-            if path.is_dir() {
-                stack.push(path);
-            } else if path
-                .file_name()
-                .map(|n| selector(&n.to_string_lossy()))
-                .unwrap_or(false)
-            {
-                files.push(path);
+        let mut entries: Vec<_> = entries.flatten().collect();
+        entries.sort_unstable_by_key(|e| e.file_name());
+        for entry in entries {
+            if entry.file_type().is_ok_and(|ty| ty.is_dir()) {
+                stack.push(entry.path());
+            } else if selector(&entry.file_name().to_string_lossy()) {
+                files.push(entry.path());
             }
         }
     }
     files
+}
+
+fn recent_modified(path: &Path, cutoff: i64) -> bool {
+    path.metadata().and_then(|m| m.modified()).unwrap_or(SystemTime::UNIX_EPOCH)
+        .duration_since(UNIX_EPOCH).is_ok_and(|age| age.as_secs() as i64 >= cutoff)
+}
+
+/// 只读现有日志末尾，不把一个运行数天的会话重新从头解析。
+fn live_initial_offset(path: &Path) -> i64 {
+    use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+    let Ok(mut file) = std::fs::File::open(path) else { return 0 };
+    let start = file.metadata().map(|m| m.len().saturating_sub(LIVE_INITIAL_TAIL_BYTES)).unwrap_or(0);
+    if start == 0 || file.seek(SeekFrom::Start(start)).is_err() {
+        return 0;
+    }
+    let mut skip = Vec::new();
+    let count = BufReader::new(file.take(LIVE_INITIAL_TAIL_BYTES)).read_until(b'\n', &mut skip).unwrap_or(0);
+    (start + count as u64) as i64
+}
+
+fn live_log_context(path: &Path, source: Source) -> Option<(Option<String>, String)> {
+    use std::io::{BufRead, BufReader, Read};
+    if !matches!(source, Source::Codex | Source::Omp) {
+        return None;
+    }
+    let header = BufReader::new(std::fs::File::open(path).ok()?.take(128 * 1024));
+    let mut cwd = None;
+    let mut model = String::new();
+    for line in header.lines().map_while(Result::ok) {
+        if source == Source::Omp {
+            cwd = parse_omp_session_cwd(&line);
+            break;
+        }
+        if cwd.is_none() {
+            cwd = parse_codex_meta_cwd(&line);
+        }
+        if let Some(next_model) = codex_model(&line) {
+            model = next_model;
+        }
+    }
+    Some((cwd, model))
 }
 
 /// 读取自 offset 起新增的完整行文本（末尾未换行的半截行留待下次）。
@@ -623,22 +678,33 @@ fn scan_zcode_db(
     watermark: i64,
 ) -> Result<(i64, Vec<(String, String)>, Vec<TurnRecord>), String> {
     use rusqlite::OpenFlags;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     let temp_dir = std::env::temp_dir().join("env-tools-zcode-scan");
     std::fs::create_dir_all(&temp_dir).map_err(|err| err.to_string())?;
-    let mut hash: u64 = 0xcbf29ce484222325;
-    for byte in db_path.to_string_lossy().as_bytes() {
-        hash ^= *byte as u64;
-        hash = hash.wrapping_mul(0x100000001b3);
+    // Live, chart, and quota workers can read the same database concurrently.
+    // Separate copies also prevent an old -wal/-shm from leaking into a new scan.
+    struct Snapshot(PathBuf);
+    impl Drop for Snapshot {
+        fn drop(&mut self) {
+            for name in ["db.sqlite", "db.sqlite-wal", "db.sqlite-shm", "db.sqlite-journal"] {
+                let _ = std::fs::remove_file(self.0.join(name));
+            }
+            let _ = std::fs::remove_dir(&self.0);
+        }
     }
-    let work = temp_dir.join(format!("db-{hash:016x}"));
-    std::fs::create_dir_all(&work).map_err(|err| err.to_string())?;
-    let copy_path = work.join("db.sqlite");
+    static NEXT_SNAPSHOT: AtomicU64 = AtomicU64::new(0);
+    let seq = NEXT_SNAPSHOT.fetch_add(1, Ordering::Relaxed);
+    let clock = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+    let work = temp_dir.join(format!("db-{}-{clock:x}-{seq:x}", std::process::id()));
+    std::fs::create_dir(&work).map_err(|err| err.to_string())?;
+    let snapshot = Snapshot(work);
+    let copy_path = snapshot.0.join("db.sqlite");
     std::fs::copy(db_path, &copy_path).map_err(|err| err.to_string())?;
     for extra in ["-wal", "-shm"] {
         let from = PathBuf::from(format!("{}{}", db_path.display(), extra));
         if from.is_file() {
-            let _ = std::fs::copy(&from, work.join(format!("db.sqlite{extra}")));
+            let _ = std::fs::copy(&from, snapshot.0.join(format!("db.sqlite{extra}")));
         }
     }
     let conn = rusqlite::Connection::open_with_flags(&copy_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
@@ -781,82 +847,88 @@ pub fn cli_of(source: Source) -> &'static str {
     }
 }
 
-/// 周窗口统计（配额厂商口径）：按 week_start 把 day_list 分周，每周给出
-/// 各厂商的 7d 总量（daily_quota 求和）与 5h 峰值窗口用量（epoch 对齐的
-/// 5h 槽桶取最大，槽按中点时刻归周）。行按时间升序，供前端直接绘图
-fn build_weekly_quota(
+#[derive(Default, serde::Serialize)]
+struct WeeklyTokens {
+    total: i64,
+    peak5h: i64,
+}
+
+#[derive(Default, serde::Serialize)]
+struct WeeklyProvider<'a> {
+    #[serde(flatten)]
+    observed: WeeklyTokens,
+    accounts: HashMap<&'a str, WeeklyTokens>,
+}
+
+#[derive(Default)]
+struct RollingFiveHours {
+    points: VecDeque<(i64, i64)>,
+    sum: i64,
+}
+
+impl RollingFiveHours {
+    fn push(&mut self, at: i64, tokens: i64) -> i64 {
+        while self.points.front().is_some_and(|(ts, _)| *ts <= at - 18000) {
+            self.sum -= self.points.pop_front().unwrap().1;
+        }
+        self.points.push_back((at, tokens));
+        self.sum += tokens;
+        self.sum
+    }
+}
+
+type QuotaEvent<'a> = (i64, &'static str, &'a str, i64);
+
+/// Calendar-week observed totals plus a true 5h sliding peak, attributed to the
+/// week where the window ends. A peak may include requests just before Monday.
+pub(crate) fn build_weekly_quota<'a>(
     day_list: &[String],
-    daily_quota: &HashMap<String, HashMap<&'static str, i64>>,
-    quota_5h_slots: &HashMap<(i64, &'static str), i64>,
+    mut events: Vec<QuotaEvent<'a>>,
     week_start: &str,
 ) -> Vec<serde_json::Value> {
-    let start_dow = if week_start == "sunday" { 0 } else { 1 }; // Chrono: 周日=0 周一=1
-    // 周分桶：day_list 升序；周界日（getDay==start_dow）开新周
-    let mut weeks: Vec<(String, String)> = Vec::new(); // (start, end)
+    let start_dow = if week_start == "sunday" { 0 } else { 1 };
+    let mut weeks: Vec<(&str, &str, HashMap<&str, WeeklyProvider<'a>>)> = Vec::new();
+    let mut week_by_date = HashMap::new();
     for day in day_list {
         let weekday = chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d")
             .map(|d| d.weekday().num_days_from_sunday())
             .unwrap_or(1);
         if weekday == start_dow || weeks.is_empty() {
-            weeks.push((day.clone(), day.clone()));
+            weeks.push((day, day, HashMap::new()));
         } else {
-            weeks.last_mut().unwrap().1 = day.clone();
+            weeks.last_mut().unwrap().1 = day;
         }
+        week_by_date.insert(day.as_str(), weeks.len() - 1);
     }
-    // 5h 槽 → 归周（中点时刻的日期落在本周 [start,end] 区间内）
-    let mut slot_week: Vec<(usize, &'static str, i64)> = Vec::new(); // (week_idx, provider, tokens)
-    for ((slot, provider), tokens) in quota_5h_slots {
-        let mid = Local.timestamp_opt(slot * 18000 + 9000, 0).single();
-        if let Some(mid_local) = mid {
-            let mid_date = date_string(mid_local);
-            if let Some(idx) = weeks.iter().position(|(s, e)| mid_date >= *s && mid_date <= *e) {
-                slot_week.push((idx, *provider, *tokens));
-            }
-        }
-    }
-    let mut rows: Vec<serde_json::Value> = Vec::new();
-    for (idx, (start, end)) in weeks.iter().enumerate() {
-        // 该周各厂商日总量求和（遍历周内日期）
-        let mut week_days: Vec<&String> = Vec::new();
-        for day in day_list {
-            if day >= start && day <= end {
-                week_days.push(day);
-            }
-        }
-        let mut providers: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
-        let mut seen: std::collections::HashSet<&'static str> = std::collections::HashSet::new();
-        for day in &week_days {
-            if let Some(per_provider) = daily_quota.get(*day) {
-                for (&provider, &tokens) in per_provider {
-                    seen.insert(provider);
-                    let entry = providers
-                        .entry(provider.to_string())
-                        .or_insert_with(|| serde_json::json!({ "total": 0, "peak5h": 0 }));
-                    entry["total"] = serde_json::json!(entry["total"].as_i64().unwrap_or(0) + tokens);
-                }
-            }
-        }
-        for &provider in &seen {
-            let peak = slot_week
-                .iter()
-                .filter(|(wi, p, _)| *wi == idx && *p == provider)
-                .map(|(_, _, tokens)| *tokens)
-                .max()
-                .unwrap_or(0);
-            if let Some(entry) = providers.get_mut(provider) {
-                entry["peak5h"] = serde_json::json!(peak);
-            }
-        }
-        if providers.is_empty() {
+    events.sort_unstable_by_key(|event| event.0);
+    let mut providers: HashMap<&str, RollingFiveHours> = HashMap::new();
+    let mut accounts: HashMap<(&str, &str), RollingFiveHours> = HashMap::new();
+    let mut week_cache = HashMap::new();
+    for (at, provider, account, tokens) in events {
+        if tokens <= 0 {
             continue;
         }
-        rows.push(serde_json::json!({
-            "start": start,
-            "end": end,
-            "providers": providers,
-        }));
+        let provider_peak = providers.entry(provider).or_default().push(at, tokens);
+        let account_peak = accounts.entry((provider, account)).or_default().push(at, tokens);
+        let Some(date) = Local.timestamp_opt(at, 0).single().map(|time| time.date_naive()) else {
+            continue;
+        };
+        let week = *week_cache.entry(date)
+            .or_insert_with(|| week_by_date.get(date.format("%Y-%m-%d").to_string().as_str()).copied());
+        let Some(index) = week else { continue };
+        let summary = weeks[index].2.entry(provider).or_default();
+        summary.observed.total += tokens;
+        summary.observed.peak5h = summary.observed.peak5h.max(provider_peak);
+        let stats = summary.accounts.entry(account).or_default();
+        stats.total += tokens;
+        stats.peak5h = stats.peak5h.max(account_peak);
     }
-    rows
+    weeks.into_iter().map(|(start, end, providers)| {
+        let days = chrono::NaiveDate::parse_from_str(start, "%Y-%m-%d").ok()
+            .zip(chrono::NaiveDate::parse_from_str(end, "%Y-%m-%d").ok())
+            .map_or(7, |(first, last)| (last - first).num_days() + 1);
+        serde_json::json!({"start": start, "end": end, "days": days, "providers": providers})
+    }).collect()
 }
 
 pub fn agent_of(source: Source, model: &str) -> &'static str {
@@ -976,6 +1048,7 @@ struct SessionRow {
     total: i64,
     /// 逐请求纯生成时长之和（秒，ZCode 源），用于 TPOT 口径速率
     gen_seconds: f64,
+    timed_output: i64,
 }
 
 /// 近 1 天活跃明细（速率卡全屏视图）：会话内按模型分桶
@@ -987,6 +1060,31 @@ struct ActiveModelRow {
     first: i64,
     last: i64,
     gen_seconds: f64,
+    timed_output: i64,
+    latest_gen_rate: Option<f64>,
+    sample_at: i64,
+}
+
+impl ActiveModelRow {
+    fn add(&mut self, record: &TurnRecord, total: i64) {
+        self.output += record.output;
+        self.total += total;
+        self.requests += 1;
+        self.first = self.first.min(record.ts);
+        self.last = self.last.max(record.ts);
+        if let Some(rate) = token_rate(record.output, record.gen_seconds).filter(|_| record.ts >= self.sample_at) {
+            self.latest_gen_rate = Some(rate);
+            self.sample_at = record.ts;
+        }
+        if record.gen_seconds > 0.0 {
+            self.gen_seconds += record.gen_seconds;
+            self.timed_output += record.output;
+        }
+    }
+}
+
+fn token_rate(output: i64, seconds: f64) -> Option<f64> {
+    (seconds > 0.0 && output > 0).then(|| (output as f64 / seconds * 100.0).round() / 100.0)
 }
 
 /// 近 1 天活跃明细：会话级累加（窗口内口径，与 Sessions 表速率同定义）
@@ -1004,6 +1102,7 @@ struct ActiveSessionRow {
     first: i64,
     last: i64,
     gen_seconds: f64,
+    timed_output: i64,
 }
 
 impl AnalyticsState {
@@ -1032,13 +1131,41 @@ impl AnalyticsState {
         kimi_work_homes: &[PathBuf],
         now: i64,
     ) -> bool {
-        let cutoff = now - RECORD_RETENTION_DAYS * 86400;
+        self.scan_impl(kimi_homes, codex_homes, zcode_homes, omp_homes, kimi_work_homes, now, false)
+    }
+
+    /// 独立速率流仅跟踪最近活跃的日志。它不写历史缓存，也不重复扫整段旧会话。
+    pub fn scan_live(
+        &mut self,
+        kimi_homes: &[PathBuf],
+        codex_homes: &[PathBuf],
+        zcode_homes: &[PathBuf],
+        omp_homes: &[PathBuf],
+        kimi_work_homes: &[PathBuf],
+        now: i64,
+    ) {
+        self.scan_impl(kimi_homes, codex_homes, zcode_homes, omp_homes, kimi_work_homes, now, true);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn scan_impl(
+        &mut self,
+        kimi_homes: &[PathBuf],
+        codex_homes: &[PathBuf],
+        zcode_homes: &[PathBuf],
+        omp_homes: &[PathBuf],
+        kimi_work_homes: &[PathBuf],
+        now: i64,
+        live: bool,
+    ) -> bool {
+        let cutoff = now - if live { LIVE_LOOKBACK_SECS } else { RECORD_RETENTION_DAYS * 86400 };
+        let discover = !live || !self.live_discovered_at.is_some_and(|at| at.elapsed() < LIVE_DISCOVERY_PERIOD);
         let mut dirty = !self.scanned;
         self.scanned = true;
-        self.session_index.clear();
-        for home in kimi_homes.iter().chain(kimi_work_homes.iter()) {
-            for (sid, wd) in load_session_index(home) {
-                self.session_index.insert(sid, wd);
+        if discover {
+            self.session_index.clear();
+            for home in kimi_homes.iter().chain(kimi_work_homes.iter()) {
+                self.session_index.extend(load_session_index(home));
             }
         }
 
@@ -1081,34 +1208,45 @@ impl AnalyticsState {
             ));
         }
 
+        let mut seen = HashSet::new();
         for (source, root, quota_account, session_id_of, selector) in sources {
-            let files = wire_files(&root, selector);
-            // HashSet：已登记文件 × 现存文件逐个 contains 是 O(n²)
-            let live: HashSet<String> = files
-                .iter()
-                .map(|p| p.to_string_lossy().into_owned())
-                .collect();
-            for (key, state) in self.files.iter_mut() {
-                if state.source == source && !live.contains(key) && state.offset != -1 {
-                    state.offset = -1;
-                    dirty = true;
-                }
-            }
+            let files = if discover {
+                wire_files(&root, selector).into_iter()
+                    .filter(|p| !live || recent_modified(p, cutoff))
+                    .collect::<Vec<_>>()
+            } else {
+                self.files.iter()
+                    .filter(|(key, state)| state.source == source && Path::new(key).starts_with(&root))
+                    .map(|(key, _)| PathBuf::from(key))
+                    .collect()
+            };
             for wire in files {
                 let key = wire.to_string_lossy().to_string();
+                if !seen.insert(key.clone()) {
+                    continue;
+                }
+                let session_id = session_id_of(&wire);
                 if !self.files.contains_key(&key) {
+                    let offset = if live { live_initial_offset(&wire) } else { 0 };
+                    let mut cwds = HashMap::new();
+                    let (cwd, model) = (offset > 0).then(|| live_log_context(&wire, source))
+                        .flatten().unwrap_or_default();
+                    if let Some(cwd) = cwd {
+                        cwds.insert(session_id.clone(), cwd);
+                    }
                     self.files.insert(
                         key.clone(),
                         FileState {
-                            offset: 0,
+                            offset,
                             records: Vec::new(),
                             source,
                             quota_account: quota_account.clone(),
-                            cwds: HashMap::new(),
+                            cwds,
                             pending_llm_ms: 0,
                             codex_boundary_ms: 0,
                             pending_span_secs: 0.0,
-                            current_model: String::new(),
+                            live_usage: None,
+                            current_model: model,
                         },
                     );
                     dirty = true;
@@ -1125,14 +1263,18 @@ impl AnalyticsState {
                     dirty = true;
                 }
                 let (text, new_offset, restarted) = read_new_lines(&wire, state.offset);
+                dirty |= state.offset != new_offset;
                 state.offset = new_offset;
                 if restarted {
                     state.records.clear();
                     state.cwds.clear();
                     state.current_model.clear();
+                    state.pending_llm_ms = 0;
+                    state.codex_boundary_ms = 0;
+                    state.pending_span_secs = 0.0;
+                    state.live_usage = None;
                     dirty = true;
                 }
-                let session_id = session_id_of(&wire);
                 for line in text.split('\n') {
                     if matches!(source, Source::Kimi | Source::KimiWork) {
                         // llm.request：记录起始时刻，供下一个 usage.record 配对
@@ -1165,6 +1307,7 @@ impl AnalyticsState {
                             parse_kimi_line_with_pending(line, state.pending_llm_ms)
                         {
                             record.sid = session_id.clone();
+                            record.quota_account = Some(quota_account.clone());
                             if record.gen_seconds > 0.0 {
                                 state.pending_llm_ms = 0; // 已配对，防止复用过期起点
                             }
@@ -1203,16 +1346,33 @@ impl AnalyticsState {
                     if let Some(ts_ms) = codex_boundary_event(line) {
                         state.codex_boundary_ms = ts_ms;
                     }
-                    if let Some((_out, span)) =
-                        parse_codex_usage_record(line, state.codex_boundary_ms)
+                    if let Some((usage, at_ms, span)) =
+                        codex_usage_sample(line, state.codex_boundary_ms)
                     {
                         state.pending_span_secs = span;
-                        state.codex_boundary_ms = codex_timestamp_ms(line).unwrap_or(0);
+                        state.codex_boundary_ms = at_ms;
+                        if live {
+                            let mut record = codex_turn(&usage, at_ms / 1000, &state.current_model, &session_id);
+                            record.gen_seconds = span;
+                            state.live_usage = Some((record.ts, usage_fingerprint(&record)));
+                            state.records.push(record);
+                            dirty = true;
+                        }
                     }
                     if let Some(mut record) =
                         parse_codex_token_line(line, &state.current_model, &session_id)
                     {
+                        if live {
+                            let duplicate = state.live_usage.is_some_and(|(at, fingerprint)| {
+                                (0..=30).contains(&(record.ts - at)) && fingerprint == usage_fingerprint(&record)
+                            });
+                            state.pending_span_secs = 0.0;
+                            if duplicate {
+                                continue;
+                            }
+                        }
                         record.gen_seconds = state.pending_span_secs;
+                        record.quota_account = Some(quota_account.clone());
                         state.pending_span_secs = 0.0;
                         state.records.push(record);
                         dirty = true;
@@ -1233,10 +1393,28 @@ impl AnalyticsState {
                 }
             }
         }
+        // 只有遍历完所有 profile / WSL 根目录，才知道文件真的消失。
+        // 逐根标记会让同一来源的其它根在每次轮询都被从 0 重新解析。
+        if discover {
+            if live {
+                self.files.retain(|key, state| state.source == Source::ZCode || seen.contains(key));
+                self.live_discovered_at = Some(Instant::now());
+            } else {
+                for (key, state) in &mut self.files {
+                    if state.source != Source::ZCode && !seen.contains(key) && state.offset != -1 {
+                        state.offset = -1;
+                        dirty = true;
+                    }
+                }
+            }
+        }
 
         // --- ZCode 数据源：~/.zcode/cli/db/db.sqlite（SQLite，复制后只读） ---
         // 增量水位 = model_usage 的 rowid；session 表提供 sid → 项目目录。
         for home in zcode_homes {
+            if live && !discover {
+                break;
+            }
             let db_path = home.join(".zcode").join("cli").join("db").join("db.sqlite");
             if !db_path.is_file() {
                 continue;
@@ -1254,6 +1432,7 @@ impl AnalyticsState {
                         pending_llm_ms: 0,
                         codex_boundary_ms: 0,
                         pending_span_secs: 0.0,
+                        live_usage: None,
                         current_model: String::new(),
                     },
                 );
@@ -1362,34 +1541,25 @@ impl AnalyticsState {
         let mut active_day_tokens = 0i64;
         // 日期格式化按天缓存：同一日期只在首次出现时 format
         let mut date_cache: HashMap<i32, String> = HashMap::new();
-        // 配额厂商口径的逐日桶（周窗口统计卡）：date → provider → token。
-        // 在 agent 筛选之前累计——配额是账号级概念，kimi/codex/glm 的
-        // 厂商视图必须覆盖 omp 等客户端经底层模型产生的用量
+        // 归因在 agent 筛选前，包括通过其它 CLI 使用相同套餐的 token。
+        let mut quota_events = Vec::new();
         let mut daily_quota: HashMap<String, HashMap<&'static str, i64>> = HashMap::new();
-        // 5h 槽桶（epoch 对齐）：(slot, provider) → token。用于每周的
-        // 5h 峰值窗口用量——比"周均"更贴近 5h 额度的实际消耗压力
-        let mut quota_5h_slots: HashMap<(i64, &'static str), i64> = HashMap::new();
+        let weekly_cutoff = now_sec - (days + 1) * 86400;
 
         for (file_key, state) in &self.files {
             let main_file = is_main_agent_file(file_key, state.source);
             for record in &state.records {
-                // daily_quota 先于 agent 筛选累计（见声明处注释）
-                if let Some(qp) = quota_provider_of(state.source, &record.model) {
-                    let qtotal = record.input + record.output + record.cache_read + record.cache_creation;
-                    if let Some(qlocal) = Local.timestamp_opt(record.ts, 0).single() {
-                        let qdate = date_cache
-                            .entry(qlocal.date_naive().num_days_from_ce())
-                            .or_insert_with(|| date_string(qlocal))
-                            .clone();
-                        *daily_quota
-                            .entry(qdate)
-                            .or_default()
-                            .entry(qp)
-                            .or_insert(0) += qtotal;
+                if (weekly_cutoff..=now_sec).contains(&record.ts) {
+                    if let Some(provider) = quota_provider_of(state.source, &record.model) {
+                        let account = record.quota_account.as_deref().unwrap_or(&state.quota_account);
+                        let tokens = record.input + record.output + record.cache_read + record.cache_creation;
+                        quota_events.push((record.ts, provider, account, tokens));
+                        if let Some(local) = Local.timestamp_opt(record.ts, 0).single() {
+                            let date = date_cache.entry(local.date_naive().num_days_from_ce())
+                                .or_insert_with(|| date_string(local)).clone();
+                            *daily_quota.entry(date).or_default().entry(provider).or_default() += tokens;
+                        }
                     }
-                    *quota_5h_slots
-                        .entry((record.ts.div_euclid(18000), qp))
-                        .or_insert(0) += qtotal;
                 }
                 let record_agent = agent_of(state.source, &record.model);
                 if agent != "all" && record_agent != agent {
@@ -1445,7 +1615,10 @@ impl AnalyticsState {
                     act.requests += 1;
                     act.first = act.first.min(record.ts);
                     act.last = act.last.max(record.ts);
-                    act.gen_seconds += record.gen_seconds;
+                    if record.gen_seconds > 0.0 {
+                        act.gen_seconds += record.gen_seconds;
+                        act.timed_output += record.output;
+                    }
                     let am = act
                         .models
                         .entry(record.model.clone())
@@ -1454,12 +1627,7 @@ impl AnalyticsState {
                             last: record.ts,
                             ..Default::default()
                         });
-                    am.output += record.output;
-                    am.total += total;
-                    am.requests += 1;
-                    am.first = am.first.min(record.ts);
-                    am.last = am.last.max(record.ts);
-                    am.gen_seconds += record.gen_seconds;
+                    am.add(record, total);
                     if record.ts >= now_sec - 900 {
                         recent15_tokens += total;
                         recent15_requests += 1;
@@ -1536,6 +1704,7 @@ impl AnalyticsState {
                         last: record.ts,
                         total: 0,
                         gen_seconds: 0.0,
+                        timed_output: 0,
                     });
                 *session
                     .model_totals
@@ -1549,12 +1718,7 @@ impl AnalyticsState {
                         last: record.ts,
                         ..Default::default()
                     });
-                model_stat.output += record.output;
-                model_stat.total += total;
-                model_stat.requests += 1;
-                model_stat.first = model_stat.first.min(record.ts);
-                model_stat.last = model_stat.last.max(record.ts);
-                model_stat.gen_seconds += record.gen_seconds;
+                model_stat.add(record, total);
                 *session.agent_totals.entry(record_agent).or_default() += total;
                 session.input += record.input;
                 session.output += record.output;
@@ -1574,7 +1738,10 @@ impl AnalyticsState {
                 session.first = session.first.min(record.ts);
                 session.last = session.last.max(record.ts);
                 session.total += total;
-                session.gen_seconds += record.gen_seconds;
+                if record.gen_seconds > 0.0 {
+                    session.gen_seconds += record.gen_seconds;
+                    session.timed_output += record.output;
+                }
             }
         }
 
@@ -1653,7 +1820,7 @@ impl AnalyticsState {
                     .map(|m| span_rate(m.output, m.first, m.last))
                     .unwrap_or(serde_json::Value::Null);
                 let gen_rate = model_stat
-                    .map(|m| tpot_rate(m.output, m.gen_seconds))
+                    .map(|m| tpot_rate(m.timed_output, m.gen_seconds))
                     .unwrap_or(serde_json::Value::Null);
                 serde_json::json!({
                     "project": s.project,
@@ -1664,6 +1831,8 @@ impl AnalyticsState {
                     // 输出速率为基础（业界吞吐标准：以输出 token 计量）
                     "rate": rate,
                     "gen_rate": gen_rate,
+                    "latest_gen_rate": model_stat.and_then(|m| m.latest_gen_rate),
+                    "sample_at": model_stat.map(|m| m.sample_at).filter(|at| *at > 0),
                     "total": s.total,
                     "output": s.output,
                     "last": s.last,
@@ -1720,7 +1889,9 @@ impl AnalyticsState {
                                     "output": m.output,
                                     "requests": m.requests,
                                     "rate": span_rate(m.output, m.first, m.last),
-                                    "gen_rate": tpot_rate(m.output, m.gen_seconds),
+                                    "gen_rate": tpot_rate(m.timed_output, m.gen_seconds),
+                                    "latest_gen_rate": m.latest_gen_rate,
+                                    "sample_at": (m.sample_at > 0).then_some(m.sample_at),
                                     "last": m.last,
                                 })
                             })
@@ -1736,7 +1907,7 @@ impl AnalyticsState {
                             "last": s.last,
                             "ended_ago_seconds": (now_sec - s.last).max(0),
                             "rate": span_rate(s.output, s.first, s.last),
-                            "gen_rate": tpot_rate(s.output, s.gen_seconds),
+                            "gen_rate": tpot_rate(s.timed_output, s.gen_seconds),
                             "models": models,
                         })
                     })
@@ -1883,7 +2054,7 @@ impl AnalyticsState {
                     // 真生成速度（TPOT 口径，仅 ZCode 源有逐请求生成时长）
                     "gen_rate": if session.gen_seconds > 0.0 {
                         serde_json::json!(
-                            (session.output as f64 / session.gen_seconds * 100.0).round() / 100.0
+                            (session.timed_output as f64 / session.gen_seconds * 100.0).round() / 100.0
                         )
                     } else {
                         serde_json::Value::Null
@@ -1952,7 +2123,8 @@ impl AnalyticsState {
                 (day.clone(), daily_agent.get(day).cloned().unwrap_or_default())
             }).collect::<HashMap<String, _>>(),
             "daily_quota": daily_quota,
-            "weekly_quota": build_weekly_quota(&day_list, &daily_quota, &quota_5h_slots, week_start),
+            "weekly_quota": build_weekly_quota(&day_list, quota_events, week_start),
+            "weekly_quota_account_scoped": true,
             "today_hourly": hourly.iter().enumerate().map(|(hour, b)| serde_json::json!({
                 "hour": hour,
                 "input": b.input,

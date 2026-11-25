@@ -13,6 +13,7 @@ const { spawn, execSync, exec } = require("child_process");
 const os = require("os");
 const path = require("path");
 const fs = require("fs");
+const { createHash } = require("node:crypto");
 const { installTarget, installScope, installConflict } = require("./installTarget.js");
 
 const REPO_ROOT = path.join(__dirname, "..", "..");
@@ -1057,13 +1058,14 @@ ipcMain.handle("get-analytics-rolling", async (_event, agent, seconds, targetId,
   const aggregate = targetId === "aggregate";
   const target = targetId || "local";
   const extra = opts || {};
-  let query = `?agent=${encodeURIComponent(agent || "kimi")}&seconds=${encodeURIComponent(seconds || 3600)}` +
+  let query = `?agent=${encodeURIComponent(agent || "kimi")}&seconds=${encodeURIComponent(seconds ?? 3600)}` +
     `${aggregate ? "&aggregate=1" : ""}&scope=${encodeURIComponent(target)}`;
   if (extra.at) query += `&at=${encodeURIComponent(extra.at)}`;
   if (extra.window) query += `&window=${encodeURIComponent(extra.window)}`;
   if (extra.account) query += `&account_id=${encodeURIComponent(extra.account)}`;
   if (extra.history) query += "&history=1";
-  if (Number.isFinite(Number(extra.pct))) query += `&pct=${encodeURIComponent(extra.pct)}`;
+  if (Number.isFinite(extra.pct)) query += `&pct=${encodeURIComponent(extra.pct)}`;
+  if (Number.isFinite(extra.share)) query += `&share=${encodeURIComponent(extra.share)}`;
   if (extra.plan) query += `&plan=${encodeURIComponent(extra.plan)}`;
   if (target.startsWith("wsl:")) query += `&wsl_distro=${encodeURIComponent(target.slice(4))}`;
   const remoteRolling = async (host) => {
@@ -1079,17 +1081,19 @@ ipcMain.handle("get-analytics-rolling", async (_event, agent, seconds, targetId,
     return result;
   };
   const recordAssessment = async (result, host = null) => {
-    if (!result || !result.ok || !Number.isFinite(Number(extra.pct)) || !extra.window) return result;
+    if (!result || !result.ok || !Number.isFinite(extra.pct) || !extra.window) return result;
     const complete = result.coverageComplete !== false && !(result.failedSources > 0);
     const payload = {
       provider: agent,
       account: extra.account || "default",
       window: Number(extra.window),
       scope: target,
+      cohort: result.coverageKey || "",
       plan: extra.plan || "",
       at: Number(extra.at || result.at),
       elapsed: Number(seconds),
       pct: Number(extra.pct),
+      share: extra.share,
       tokens: Number(result.tokens || 0),
       complete,
     };
@@ -1100,7 +1104,7 @@ ipcMain.handle("get-analytics-rolling", async (_event, agent, seconds, targetId,
           body: JSON.stringify(payload), timeoutMs: SETTINGS_TIMEOUT_MS,
         })).json()
         : await backendFetch("/api/quota/history/record", SETTINGS_TIMEOUT_MS, payload);
-      return assessment && Array.isArray(assessment.history)
+      return assessment && assessment.ok !== false && Array.isArray(assessment.history)
         ? { ...result, ...assessment, coverageComplete: complete }
         : { ...result, coverageComplete: complete };
     } catch {
@@ -1117,13 +1121,19 @@ ipcMain.handle("get-analytics-rolling", async (_event, agent, seconds, targetId,
     const local = await backendFetch(`/api/analytics/rolling${query}`);
     if (!local || !local.ok) return local;
     if (!aggregate || sshSessions.size === 0) return recordAssessment(local);
-    const remote = await Promise.all([...sshSessions.keys()].map(async (host) => {
+    const hosts = [...sshSessions.keys()].sort();
+    const remote = await Promise.all(hosts.map(async (host) => {
       try { return await remoteRolling(host); } catch { return null; }
     }));
     const available = remote.filter(Boolean);
     const failedSources = Number(local.failedSources || 0) + remote.length - available.length;
     const combined = {
       ...local,
+      history: null,
+      estimate: null,
+      usable: false,
+      externalActivity: false,
+      coverageKey: createHash("sha256").update(JSON.stringify([local.coverageKey || "", hosts])).digest("hex"),
       tokens: Number(local.tokens || 0) + available.reduce((sum, result) => sum + Number(result.tokens || 0), 0),
       sourceCount: Number(local.sourceCount || 1) + available.length,
       failedSources,
@@ -1132,6 +1142,27 @@ ipcMain.handle("get-analytics-rolling", async (_event, agent, seconds, targetId,
     return recordAssessment(combined);
   } catch (err) {
     return { ok: false, error: `Rolling engine unavailable: ${err.message}` };
+  }
+});
+
+ipcMain.handle("get-live-rate", async (_event, agent, targetId, expanded) => {
+  const target = targetId || "local";
+  let query = `?agent=${encodeURIComponent(agent || "all")}&active=${expanded ? "1" : "0"}`;
+  if (target === "aggregate") query += "&aggregate=1";
+  if (target.startsWith("wsl:")) query += `&wsl_distro=${encodeURIComponent(target.slice(4))}`;
+  try {
+    if (target.startsWith("ssh:")) {
+      const remote = await resolveTargetAgent(target);
+      if (!remote) return { ok: false };
+      const response = await fetchWithTimeout(`${remote.base}/api/analytics/rate${query}`, {
+        headers: remote.headers, timeoutMs: 30000,
+      });
+      if (!response.ok) return { ok: false, unsupported: response.status === 404 };
+      return await response.json();
+    }
+    return await backendFetch(`/api/analytics/rate${query}`, 30000);
+  } catch {
+    return { ok: false };
   }
 });
 

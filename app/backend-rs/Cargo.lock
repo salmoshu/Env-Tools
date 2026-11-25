@@ -416,7 +416,7 @@ checksum = "0e9c71c2167ca323c882b99918929403426e2373ea17242ff5653e0d5e1058be"
 
 [[package]]
 name = "env-tools-api"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "aes-gcm",
  "axum",

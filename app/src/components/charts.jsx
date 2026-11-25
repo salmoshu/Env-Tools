@@ -209,8 +209,8 @@ export function StackedBars({ labels, series, columnTip, className = "", zoomabl
 
 /** 分组并排柱状图：与 StackedBars 同风格（坐标轴/网格/x 标签/悬浮提示/
  *  滚轮缩放一致），每列内多序列并排——周窗口统计（7d 周量 vs 5h 峰值）
- *  等非可加场景。refLine 可选：在指定值画水平虚线参考（如 5h 额度估算） */
-export function GroupedBars({ labels, series, columnTip, className = "", zoomable = false, refLine = null }) {
+ *  等非可加场景。refLines 用不同颜色标出同账号的各窗口校准值。 */
+export function GroupedBars({ labels, series, columnTip, className = "", zoomable = false, refLines = [] }) {
   const ref = useRef(null);
   const total = labels ? labels.length : 0;
   const zoomCount = useXAxisZoom(ref, zoomable, total);
@@ -218,16 +218,16 @@ export function GroupedBars({ labels, series, columnTip, className = "", zoomabl
   const vLabels = labels ? labels.slice(from) : labels;
   const vSeries = series.map((item) => ({ ...item, data: item.data.slice(from) }));
   const vTip = (i, peak) => columnTip(i + from, peak);
-  const dataKey = JSON.stringify([vLabels, vSeries.map((item) => [item.color, item.data]), refLine && refLine.value]);
+  const dataKey = JSON.stringify([vLabels, vSeries.map((item) => [item.color, item.data]), refLines]);
   useChartBuild(ref, (container) => {
     if (!vLabels) return;
-    buildGroupedBars(container, vLabels, vSeries, vTip, refLine);
+    buildGroupedBars(container, vLabels, vSeries, vTip, refLines);
   }, [dataKey]);
   useEffect(() => bindChartClickTooltip(ref), []);
   return <div ref={ref} className={`chart${zoomable ? " chart-zoomable" : ""} ${className}`} />;
 }
 
-function buildGroupedBars(container, labels, series, columnTip, refLine = null) {
+function buildGroupedBars(container, labels, series, columnTip, refLines) {
   container.textContent = "";
   const width = Math.max(container.clientWidth || 0, 240);
   const height = Math.max(container.clientHeight || 0, 160);
@@ -236,7 +236,7 @@ function buildGroupedBars(container, labels, series, columnTip, refLine = null) 
   const innerH = height - margin.top - margin.bottom;
   const peaks = labels.map((_, i) => series.reduce((max, item) => Math.max(max, item.data[i] || 0), 0));
   // 参考线参与上限计算，保证虚线始终在图内
-  const maxVal = niceMax(Math.max(1, ...peaks, refLine ? refLine.value : 0));
+  const maxVal = niceMax(Math.max(1, ...peaks, ...refLines.map((line) => line.value)));
   const svg = svgEl("svg", { width, height });
 
   for (let tick = 0; tick <= 4; tick++) {
@@ -285,18 +285,14 @@ function buildGroupedBars(container, labels, series, columnTip, refLine = null) 
     }, svg);
     hit.dataset.tip = columnTip(i, peaks[i]);
   });
-  // 水平虚线参考（如 5h 额度估算）：超出数据峰也不截断，右侧标注
-  if (refLine && refLine.value > 0 && refLine.value <= maxVal) {
+  for (const refLine of refLines) {
+    if (!(refLine.value > 0 && refLine.value <= maxVal)) continue;
     const y = margin.top + innerH - (refLine.value / maxVal) * innerH;
-    svgEl("line", {
+    const line = svgEl("line", {
       x1: margin.left, x2: margin.left + innerW, y1: y, y2: y,
-      stroke: "var(--warn)", "stroke-width": 1.2, "stroke-dasharray": "5 4",
+      stroke: refLine.color, "stroke-width": 1.5, "stroke-dasharray": "5 4",
     }, svg);
-    const text = svgEl("text", {
-      x: margin.left + innerW - 4, y: y - 4, "text-anchor": "end",
-      "font-size": 10.5, fill: "var(--warn)",
-    }, svg);
-    text.textContent = refLine.label;
+    svgEl("title", {}, line).textContent = `${refLine.label}\n${refLine.hint || ""}`;
   }
   container.appendChild(svg);
 }

@@ -1,79 +1,88 @@
-// 配额估算只接受同账号、同来源范围、同窗口的当前样本。
-// 当前 token 查询键使用精确 elapsed；相邻时间桶的旧 token 不参与当前反推。
-// 外部设备消耗或覆盖不完整时，仅使用通过质量筛选的历史样本。
+// 容量校准与本地已观测用量分开。校准值可跨同套餐的快照保留，
+// 但本地 token 数只能用于与服务端百分比精确对齐的那个快照。
 
-export const QUOTA_EST_FETCH_BUCKET = 1800;
 const QUOTA_ESTIMABLE_MAX_SECONDS = 32 * 86400;
+const MONTH = 30 * 86400;
 const QUOTA_PROVIDER_KEYS = {
   "Kimi Code": "kimi",
   "OpenAI Codex": "codex",
   GLM: "glm",
 };
 
-export function quotaEstimateMeta(provider, w, accountId = "default") {
+export function quotaEstimateMeta(provider, w, accountId = "default", plan = "") {
   const key = QUOTA_PROVIDER_KEYS[provider];
-  if (!key) return null;
-  if (!(w.used_percent > 0) || !w.window_seconds
-    || w.window_seconds > QUOTA_ESTIMABLE_MAX_SECONDS || w.reset_after_seconds == null) {
+  const windowSeconds = w?.window_seconds;
+  const reset = w?.reset_after_seconds;
+  const pct = w?.used_percent;
+  if (!key || !Number.isInteger(windowSeconds) || windowSeconds <= 0 || windowSeconds > QUOTA_ESTIMABLE_MAX_SECONDS
+    || !Number.isInteger(reset) || reset < 0 || reset > windowSeconds || !Number.isFinite(pct) || pct < 0 || pct > 100) {
     return null;
   }
-  const elapsed = w.window_seconds - w.reset_after_seconds;
-  if (elapsed <= 0) return null;
+  const monthly = windowSeconds >= 27 * 86400;
+  const formattedShare = String(w.sub || "").match(/^Kimi Code share:\s*([\d.]+)%$/i);
+  const share = w.quota_share_percent ?? (formattedShare ? Number(formattedShare[1]) : null);
   return {
     key,
     account: String(accountId || "default"),
-    bucket: Math.round(elapsed / QUOTA_EST_FETCH_BUCKET) * QUOTA_EST_FETCH_BUCKET,
-    elapsed,
-    windowSeconds: w.window_seconds,
+    plan: String(plan || ""),
+    elapsed: windowSeconds - reset,
+    windowSeconds,
+    windowKey: monthly ? MONTH : windowSeconds,
+    share: key === "kimi" && monthly && Number.isFinite(share) && share >= 0 && share <= 100 ? share : null,
+    pct,
   };
 }
 
 export function quotaEstimateStoreKey(meta) {
-  return `${meta.key}|${meta.account}|${meta.windowSeconds}|${meta.elapsed}`;
+  return JSON.stringify([meta.key, meta.account, meta.plan, meta.windowKey, meta.share != null]);
 }
 
-function quotaEstimateFind(estimates, meta) {
-  return estimates[quotaEstimateStoreKey(meta)] ?? null;
+export function quotaEstimateRequest(account, w, id) {
+  const meta = quotaEstimateMeta(account.provider, w, id, account.plan);
+  const at = Math.floor(Date.parse(account.fetched_at) / 1000);
+  return meta && Number.isFinite(at) && at > 0 ? { ...meta, at, storeKey: quotaEstimateStoreKey(meta) } : null;
 }
 
-export function quotaEstimateLookupEntry(estimates, provider, w, accountId = "default") {
-  const meta = quotaEstimateMeta(provider, w, accountId);
-  return meta ? quotaEstimateFind(estimates, meta) : null;
+function validCapacity(capacity) {
+  return capacity && Number.isFinite(capacity.total) && capacity.total > 0;
 }
 
-export function quotaEstimateLookup(estimates, provider, w, accountId = "default") {
-  const entry = quotaEstimateLookupEntry(estimates, provider, w, accountId);
-  return entry && Number.isFinite(entry.tokens) ? entry.tokens : null;
-}
-
-function median(points) {
-  points.sort((a, b) => a - b);
-  const mid = Math.floor(points.length / 2);
-  return points.length % 2 ? points[mid] : (points[mid - 1] + points[mid]) / 2;
-}
-
-export function quotaEstimateLookupTotal(estimates, provider, w, usedTokens, accountId = "default") {
-  const meta = quotaEstimateMeta(provider, w, accountId);
-  if (!meta) return null;
-  const entry = quotaEstimateFind(estimates, meta);
-  if (!entry) return null;
-  const points = [];
-  const currentUsable = usedTokens > 0
-    && entry.usable !== false
-    && entry.coverageComplete !== false
-    && !entry.externalActivity;
-  if (currentUsable) points.push(usedTokens / (Math.max(0.01, w.used_percent) / 100));
-  if (Array.isArray(entry.history)) {
-    points.push(...entry.history.filter((value) => Number.isFinite(value) && value > 0));
+export function quotaEstimateResult(query, result) {
+  let capacity = validCapacity(result.estimate) ? result.estimate : null;
+  // Older SSH agents return history without a fitted model. Reuse their
+  // history at low confidence only, without inventing a ratio from a live point.
+  if (!Object.hasOwn(result, "estimate") && query.share == null && Array.isArray(result.history)) {
+    const history = result.history.filter((value) => Number.isFinite(value) && value > 0).sort((a, b) => a - b);
+    const mid = history.length >>> 1;
+    if (history.length) {
+      const total = history.length % 2 ? history[mid] : (history[mid - 1] + history[mid]) / 2;
+      capacity = { total, samples: history.length, windows: history.length, confidence: "low", method: "legacy" };
+    }
   }
-  return points.length ? median(points) : null;
+  return {
+    at: query.at, elapsed: query.elapsed, pct: query.pct,
+    tokens: Number.isFinite(result.tokens) ? result.tokens : null,
+    capacity,
+    coverageKey: result.coverageKey ?? null,
+    coverageComplete: result.coverageComplete !== false && !(result.failedSources > 0),
+    sourceCount: result.sourceCount || 1,
+    externalActivity: Boolean(result.externalActivity),
+    reason: result.reason || "",
+  };
 }
 
-export function quotaEstimateQuality(entry) {
-  if (!entry) return "pending";
-  if (entry.externalActivity) return "external";
-  if (entry.coverageComplete === false || entry.failedSources > 0) return "incomplete";
-  if (entry.tokens === 0) return "no_usage";
-  if (entry.usable === false) return "low_quality";
-  return entry.quality || "medium";
+export function quotaEstimateView(estimates, account, w, id) {
+  const query = quotaEstimateRequest(account, w, id);
+  if (!query) return null;
+  const entry = estimates[query.storeKey];
+  if (!entry) return { pending: true };
+  const matching = entry.at === query.at && entry.elapsed === query.elapsed && entry.pct === query.pct;
+  return {
+    ...entry,
+    pending: !matching,
+    tokens: matching ? entry.tokens : null,
+    reason: matching ? entry.reason : "",
+    externalActivity: matching && entry.externalActivity,
+    estimatedUsed: entry.capacity ? entry.capacity.total * query.pct / 100 : null,
+  };
 }

@@ -257,6 +257,7 @@ export default function App() {
               lastPayload={lastPayload}
               refreshing={refreshing}
               onRefresh={triggerRefresh}
+              visible={route === "dashboard"}
             />
           </div>
           <div className="page-scroll disk-page-scroll" style={{ display: route === "disk" ? undefined : "none" }}>

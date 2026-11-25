@@ -185,7 +185,7 @@ fn codex_tpot_pairs_usage_record_with_token_count() {
     assert_close(records[2].gen_seconds, 2.0);
     assert_close(records[3].gen_seconds, 0.0);
 
-    // 端到端：gen_rate = Σoutput / Σspan = 165 / 7.3
+    // Untimed R4 must not contribute output to the timed rate's numerator.
     let now = chrono::Local
         .with_ymd_and_hms(2026, 9, 26, 20, 0, 0)
         .unwrap();
@@ -194,12 +194,95 @@ fn codex_tpot_pairs_usage_record_with_token_count() {
     assert_eq!(sessions.len(), 1);
     let gen_rate = sessions[0]["gen_rate"].as_f64().unwrap();
     assert!(
-        (gen_rate - 165.0 / 7.3).abs() < 0.05,
+        (gen_rate - 160.0 / 7.3).abs() < 0.05,
         "gen_rate {gen_rate} != {}",
-        165.0 / 7.3
+        160.0 / 7.3
     );
     // 会话寿命吞吐（旧口径）仍可用：分母是首末记录差
     assert!(sessions[0]["rate"].as_f64().unwrap() < 1.0);
+}
+
+#[test]
+fn live_codex_rate_uses_the_new_completed_request_before_token_count_arrives() {
+    use std::io::Write;
+    let dir = tempfile_dir();
+    let home = dir.join(".codex");
+    let rollout = home.join("sessions").join("rollout-fixture.jsonl");
+    let now = chrono::Local::now();
+    let iso = |back| omp_iso(now, back, 0);
+    write_file(&rollout, &[
+        cx_line(&iso(40), "session_meta", r#"{"cwd":"/home/u/project"}"#),
+        cx_line(&iso(40), "turn_context", r#"{"model":"gpt-test"}"#),
+        cx_line(&iso(39), "event_msg", r#"{"type":"task_started"}"#),
+        cx_usage(&iso(29), 300),
+        cx_token_count(&iso(28), 300),
+    ]);
+    let mut state = AnalyticsState::default();
+    let scan = |state: &mut AnalyticsState| {
+        state.scan_live(&[], std::slice::from_ref(&home), &[], &[], &[], now.timestamp());
+        state.aggregate(2, "codex", now)["kpi"]["rate"]["latest_sessions"][0].clone()
+    };
+    assert_eq!(scan(&mut state)["latest_gen_rate"], 30.0);
+    let append = |line: &str| {
+        let mut file = std::fs::OpenOptions::new().append(true).open(&rollout).unwrap();
+        writeln!(file, "{line}").unwrap();
+    };
+    append(&cx_line(&iso(19), "response_item", r#"{"type":"message","role":"user"}"#));
+    append(&cx_usage(&iso(14), 300));
+    let after = scan(&mut state);
+    assert_eq!(after["latest_gen_rate"], 60.0);
+    assert_eq!(after["sample_at"], now.timestamp() - 14);
+    assert_eq!(after["output"], 600);
+    append(&cx_token_count(&iso(10), 300));
+    append(&cx_token_count(&iso(9), 300));
+    let duplicate = scan(&mut state);
+    assert_eq!(duplicate["output"], 600, "repeated token_count telemetry must not double count");
+    assert_eq!(duplicate["latest_gen_rate"], 60.0);
+    append(&cx_token_count(&iso(8), 5));
+    let untimed = scan(&mut state);
+    assert_eq!(untimed["output"], 605);
+    assert_eq!(untimed["latest_gen_rate"], 60.0, "an untimed update must not hide the last measurement");
+    assert_eq!(untimed["sample_at"], now.timestamp() - 14);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn scanning_two_profiles_keeps_both_incremental_offsets() {
+    let dir = tempfile_dir();
+    let first = dir.join("first");
+    let second = dir.join("second");
+    let now = chrono::Local::now();
+    for (i, home) in [&first, &second].into_iter().enumerate() {
+        write_file(&home.join("sessions").join(format!("rollout-test-{i}.jsonl")), &[
+            codex_token_line(100, 0, 0, 50, &omp_iso(now, 60, 0)),
+        ]);
+    }
+    let homes = [first, second];
+    let mut state = AnalyticsState::default();
+    assert!(state.scan_all(&[], &homes, &[], &[], &[], now.timestamp()));
+    assert!(state.files.values().all(|file| file.offset > 0 && file.records.len() == 1));
+    assert!(!state.scan_all(&[], &homes, &[], &[], &[], now.timestamp()));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn weekly_peak_is_a_sliding_window_and_compares_only_the_selected_account() {
+    let local = chrono::Local.with_ymd_and_hms(2026, 11, 25, 12, 0, 0).unwrap();
+    let edge = local.timestamp().div_euclid(18_000) * 18_000;
+    let days = (0..7).map(|offset| (local.date_naive() - chrono::Duration::days(3 - offset))
+        .format("%Y-%m-%d").to_string()).collect::<Vec<_>>();
+    let result = crate::analytics::build_weekly_quota(&days, vec![
+        (edge - 30, "codex", "work", 400),
+        (edge + 30, "codex", "other", 900),
+        (edge + 60, "codex", "work", 500),
+        (edge + 18_000 + 60, "codex", "work", 100),
+    ], "monday");
+    let provider = &result.iter().find(|row| row["providers"]["codex"].is_object()).unwrap()["providers"]["codex"];
+    assert_eq!(provider["total"], 1900);
+    assert_eq!(provider["peak5h"], 1800);
+    assert_eq!(provider["accounts"]["work"]["total"], 1000);
+    assert_eq!(provider["accounts"]["work"]["peak5h"], 900);
+    assert_eq!(provider["accounts"]["other"]["peak5h"], 900);
 }
 
 #[test]

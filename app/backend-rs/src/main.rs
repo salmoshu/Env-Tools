@@ -107,6 +107,8 @@ const SCAN_GAP_LOCAL: i64 = 30;
 const SCAN_GAP_WSL: i64 = 120;
 const USAGE_TTL: Duration = Duration::from_secs(20);
 const ANALYTICS_WSL_TTL: Duration = Duration::from_secs(120);
+const RATE_TTL: Duration = Duration::from_secs(3);
+const RATE_ROOT_REFRESH: Duration = Duration::from_secs(45);
 
 /// 配额快照专用分析引擎（与主 AppState.analytics 分离：usage 闭包 'static）。
 /// HashMap::new 非 const——OnceLock 惰性初始化绕过静态限制
@@ -123,6 +125,8 @@ struct AnalyticsScope {
     generation: u64,
     scan_finished: Option<Instant>,
     wsl_home_count: usize,
+    coverage_key: String,
+    rate_homes: Option<(Instant, ScanHomes)>,
 }
 
 #[derive(Default)]
@@ -145,6 +149,7 @@ impl AnalyticsEngines {
             if engine.generation != generation {
                 engine.state.last_scan_secs = 0;
                 engine.scan_finished = None;
+                engine.rate_homes = None;
                 engine.generation = generation;
             }
             work(&mut engine, &scope)
@@ -304,12 +309,17 @@ fn default_home(dot_dir: &str) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(dot_dir))
 }
 
-fn scan_analytics(
-    engine: &mut analytics::AnalyticsState,
-    aggregate: bool,
-    wsl_distro: Option<&str>,
-    now: i64,
-) -> (bool, usize) {
+struct ScanHomes {
+    kimi: Vec<PathBuf>,
+    codex: Vec<PathBuf>,
+    zcode: Vec<PathBuf>,
+    omp: Vec<PathBuf>,
+    kimi_work: Vec<PathBuf>,
+    wsl_count: usize,
+    coverage_key: String,
+}
+
+fn scan_homes(aggregate: bool, wsl_distro: Option<&str>) -> ScanHomes {
     let (mut kimi, mut codex, mut zcode, mut omp) = (vec![], vec![], vec![], vec![]);
     if wsl_distro.is_none() {
         kimi.extend(accounts::profiles(accounts::Provider::Kimi).into_iter().map(|a| a.home));
@@ -324,13 +334,33 @@ fn scan_analytics(
         None => vec![],
     };
     let wsl_home_count = wsl_homes.len();
+    let coverage_key = if wsl_homes.is_empty() {
+        String::new()
+    } else {
+        let mut hash = blake3::Hasher::new();
+        for home in &wsl_homes {
+            hash.update(home.to_string_lossy().as_bytes());
+            hash.update(b"\0");
+        }
+        hash.finalize().to_hex().to_string()
+    };
     for home in wsl_homes {
         kimi.extend([home.join(".kimi-code"), home.join(".kimi")]);
         codex.push(home.join(".codex"));
         omp.push(home.join(".omp"));
         zcode.push(home);
     }
-    (engine.scan_all(&kimi, &codex, &zcode, &omp, &kimi_work_homes(wsl_distro), now), wsl_home_count)
+    ScanHomes { kimi, codex, zcode, omp, kimi_work: kimi_work_homes(wsl_distro), wsl_count: wsl_home_count, coverage_key }
+}
+
+fn scan_analytics(
+    engine: &mut analytics::AnalyticsState,
+    aggregate: bool,
+    wsl_distro: Option<&str>,
+    now: i64,
+) -> (bool, usize, String) {
+    let homes = scan_homes(aggregate, wsl_distro);
+    (engine.scan_all(&homes.kimi, &homes.codex, &homes.zcode, &homes.omp, &homes.kimi_work, now), homes.wsl_count, homes.coverage_key)
 }
 
 fn scan_scope(
@@ -339,15 +369,18 @@ fn scan_scope(
     aggregate: bool,
     wsl_distro: Option<&str>,
     now: i64,
+    require_coverage_through: Option<i64>,
 ) -> Option<bool> {
     let scan_gap = if aggregate || wsl_distro.is_some() { SCAN_GAP_WSL } else { SCAN_GAP_LOCAL };
-    if engine.scan_finished.is_some_and(|finished| finished.elapsed() < Duration::from_secs(scan_gap as u64)) {
+    let behind_snapshot = require_coverage_through.is_some_and(|at| at <= now && engine.state.last_scan_secs < at);
+    if !behind_snapshot && engine.scan_finished.is_some_and(|finished| finished.elapsed() < Duration::from_secs(scan_gap as u64)) {
         return None;
     }
     let cache_path = settings::scan_cache_path(scope);
     engine.state.hydrate_once(&cache_path);
-    let (dirty, wsl_home_count) = scan_analytics(&mut engine.state, aggregate, wsl_distro, now);
+    let (dirty, wsl_home_count, coverage_key) = scan_analytics(&mut engine.state, aggregate, wsl_distro, now);
     engine.wsl_home_count = wsl_home_count;
+    engine.coverage_key = coverage_key;
     // 覆盖时间仍以扫描开始为准。节流从结束开始，避免长扫描刚结束就重扫。
     engine.state.last_scan_secs = now;
     if dirty {
@@ -367,7 +400,7 @@ fn analytics_worker(
 ) -> Value {
     let now = chrono::Local::now();
     let scan_started = std::time::Instant::now();
-    let (dirty, scan_note) = match scan_scope(engine, scope, aggregate, wsl_distro, now.timestamp()) {
+    let (dirty, scan_note) = match scan_scope(engine, scope, aggregate, wsl_distro, now.timestamp(), None) {
         Some(dirty) => (dirty, format!("scan {:.1}ms", scan_started.elapsed().as_secs_f64() * 1000.0)),
         None => (false, "scan throttled".to_string()),
     };
@@ -446,6 +479,45 @@ async fn analytics(
     Json(value)
 }
 
+/// The dashboard can follow completed requests without rebuilding 30/90 days of charts.
+async fn analytics_rate(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Json<Value> {
+    let agent = params.get("agent").map(String::as_str)
+        .filter(|raw| analytics::AGENTS.contains(raw)).unwrap_or("all").to_owned();
+    let wsl = params.get("wsl_distro").filter(|name| !name.is_empty()).cloned();
+    let aggregate = wsl.is_none() && params.get("aggregate").is_some_and(|v| v == "1" || v == "true");
+    let expanded = params.get("active").is_some_and(|v| v == "1");
+    let scope = match wsl.as_deref() {
+        Some(distro) => format!("rate:wsl:{distro}"),
+        None if aggregate => "rate:aggregate".to_owned(),
+        None => "rate:local".to_owned(),
+    };
+    let key = format!("{scope}:{agent}:{expanded}");
+    let engines = state.analytics;
+    let value = state.cache.get_or_fetch(key, RATE_TTL, move || async move {
+        engines.run(scope, move |engine, _| {
+            let now = chrono::Local::now();
+            if !engine.scan_finished.is_some_and(|at| at.elapsed() < RATE_TTL) {
+                if !engine.rate_homes.as_ref().is_some_and(|(at, _)| at.elapsed() < RATE_ROOT_REFRESH) {
+                    engine.rate_homes = Some((Instant::now(), scan_homes(aggregate, wsl.as_deref())));
+                }
+                let (_, homes) = engine.rate_homes.as_ref().unwrap();
+                engine.state.scan_live(&homes.kimi, &homes.codex, &homes.zcode, &homes.omp, &homes.kimi_work, now.timestamp());
+                engine.scan_finished = Some(Instant::now());
+            }
+            let mut payload = engine.state.aggregate(2, &agent, now);
+            let mut rate = std::mem::take(&mut payload["kpi"]["rate"]);
+            if !expanded {
+                if let Some(fields) = rate.as_object_mut() { fields.remove("active_1d"); }
+            }
+            serde_json::json!({"ok": true, "rate": rate})
+        }).await.unwrap_or_else(|err| error_payload(format!("live-rate worker failed: {err}")))
+    }).await;
+    Json(value)
+}
+
 /// /api/analytics/rolling：额度估算用——provider + account 在
 /// [at-seconds, at] 内同来源范围的请求级 token 总量（omp 按底层模型归并）。
 /// 服务端百分比、覆盖状态和历史质量评估共同决定该点是否可用于反推。
@@ -470,7 +542,7 @@ async fn analytics_rolling(
         .get("seconds")
         .and_then(|raw| raw.parse().ok())
         .unwrap_or(3600)
-        .clamp(1, 60 * 86400);
+        .clamp(0, 60 * 86400);
     let aggregate = params
         .get("aggregate")
         .map(|v| v == "1" || v == "true")
@@ -495,7 +567,8 @@ async fn analytics_rolling(
         .get("history")
         .map(|v| v == "1" || v == "true")
         .unwrap_or(false);
-    let observed_pct = params.get("pct").and_then(|raw| raw.parse::<f64>().ok());
+    let observed_pct = params.get("pct").and_then(|raw| raw.parse::<f64>().ok()).filter(|value| (0.0..=100.0).contains(value));
+    let share = params.get("share").and_then(|raw| raw.parse::<f64>().ok());
     let plan = params.get("plan").and_then(|raw| raw.parse::<String>().ok()).unwrap_or_default();
     let estimate_scope = params
         .get("scope")
@@ -519,24 +592,22 @@ async fn analytics_rolling(
     };
     let value = state.analytics
         .run(scope, move |engine, scope| {
-            scan_scope(engine, scope, aggregate, wsl_distro.as_deref(), chrono::Local::now().timestamp());
-            let tokens = engine.state.rolling_quota_tokens_for_account(&provider, at - seconds, at, &account_id);
+            let now = chrono::Local::now().timestamp();
+            // A fresh provider snapshot must not inherit a pre-snapshot scan's
+            // watermark just because its general analytics TTL has not elapsed.
+            scan_scope(engine, scope, aggregate, wsl_distro.as_deref(), now, window_seconds.map(|_| at));
+            let tokens = if seconds == 0 { 0 } else {
+                engine.state.rolling_quota_tokens_for_account(&provider, at - seconds, at, &account_id)
+            };
             let scanned_through = engine.state.last_scan_secs;
             let coverage_complete = scanned_through >= at;
             let assessment = match (window_seconds, observed_pct) {
-                (Some(win), Some(pct)) => quota_history::evaluate(
-                    &settings::quota_history_path(),
-                    &provider,
-                    &account_id,
-                    win,
-                    &estimate_scope,
-                    &plan,
-                    at,
-                    seconds,
-                    pct,
-                    tokens as f64,
-                    coverage_complete,
-                ),
+                (Some(window), Some(pct)) => quota_history::evaluate(&settings::quota_history_path(), &quota_history::Observation {
+                    provider: &provider, account: &account_id, window,
+                    scope: &estimate_scope, cohort: &engine.coverage_key, plan: &plan,
+                    at, elapsed: seconds, pct, tokens: tokens as f64,
+                    complete: coverage_complete, share,
+                }),
                 _ => Value::Null,
             };
             let history = if with_history {
@@ -552,7 +623,9 @@ async fn analytics_rolling(
                 "at": at,
                 "tokens": tokens,
                 "history": history,
+                "estimate": assessment["estimate"],
                 "sourceCount": if aggregate { 1 + engine.wsl_home_count } else { 1 },
+                "coverageKey": engine.coverage_key,
                 "failedSources": 0,
                 "coverageComplete": coverage_complete,
                 "coverageEnd": scanned_through.min(at),
@@ -613,9 +686,6 @@ fn queue_quota_snapshots(accounts: &[Value]) {
 /// 配额快照：按账号自己的 fetched_at 对齐；百分比变化、代际变化或持续
 /// token 增长均可形成样本，是否写入历史由质量评估决定。
 fn record_quota_snapshots(accounts: &[Value]) {
-    static LAST: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::HashMap<String, (i64, f64, i64, i64)>>,
-    > = std::sync::OnceLock::new();
     let key_of = |provider: &str| match provider {
         "Kimi Code" => Some("kimi"),
         "OpenAI Codex" => Some("codex"),
@@ -624,6 +694,7 @@ fn record_quota_snapshots(accounts: &[Value]) {
     };
     let now_sec = chrono::Local::now().timestamp();
     for account in accounts {
+        if account["stale"].as_bool() == Some(true) { continue; }
         let Some(key) = key_of(account.get("provider").and_then(|v| v.as_str()).unwrap_or("")) else { continue };
         let account_id = account
             .get("account_id")
@@ -638,18 +709,13 @@ fn record_quota_snapshots(accounts: &[Value]) {
             .unwrap_or(now_sec);
         let plan = account.get("plan").and_then(Value::as_str).unwrap_or("");
         for w in account.get("windows").and_then(|v| v.as_array()).unwrap_or(&Vec::new()) {
-            let pct = w.get("used_percent").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            let win = w.get("window_seconds").and_then(|v| v.as_i64()).unwrap_or(0);
+            let Some(pct) = w.get("used_percent").and_then(Value::as_f64) else { continue; };
+            let window = w.get("window_seconds").and_then(Value::as_i64).unwrap_or(0);
             let Some(ra) = w.get("reset_after_seconds").and_then(|v| v.as_i64()) else { continue };
-            if pct <= 0.0 || win <= 0 || win > 32 * 86400 {
+            if !(0.0..=100.0).contains(&pct) || window <= 0 || window > 32 * 86400 || !(0..=window).contains(&ra) {
                 continue;
             }
-            let elapsed = win - ra;
-            if elapsed <= 0 {
-                continue;
-            }
-            let gen = at - elapsed;
-            let map_key = format!("{key}|{account_id}|{win}");
+            let elapsed = window - ra;
             let scope = "quota-history".to_string();
             let engine_arc = SNAP_ENGINES
                 .get_or_init(Default::default)
@@ -660,38 +726,20 @@ fn record_quota_snapshots(accounts: &[Value]) {
                 .clone();
             let mut engine = engine_arc.lock().unwrap();
             engine.hydrate_once(&settings::scan_cache_path(&scope));
-            if now_sec - engine.last_scan_secs >= SCAN_GAP_LOCAL {
+            if engine.last_scan_secs < at || now_sec - engine.last_scan_secs >= SCAN_GAP_LOCAL {
                 scan_analytics(&mut engine, false, None, now_sec);
                 engine.last_scan_secs = now_sec;
                 engine.save_cache(&settings::scan_cache_path(&scope));
             }
             let complete = engine.last_scan_secs >= at;
-            let tokens = engine.rolling_quota_tokens_for_account(key, at - elapsed, at, account_id);
+            let tokens = if elapsed == 0 { 0 } else { engine.rolling_quota_tokens_for_account(key, at - elapsed, at, account_id) };
             drop(engine);
-            let mut last = LAST.get_or_init(Default::default).lock().unwrap();
-            if let Some((last_gen, last_pct, last_tok, last_at)) = last.get(&map_key) {
-                let same_gen = (gen - last_gen).abs() <= 120;
-                if same_gen
-                    && (*last_pct - pct).abs() < 0.1
-                    && (*last_tok == tokens || at - *last_at < 300)
-                {
-                    continue;
-                }
-            }
-            quota_history::record(
-                &settings::quota_history_path(),
-                key,
-                account_id,
-                win,
-                "local",
-                plan,
-                at,
-                elapsed,
-                pct,
-                tokens as f64,
-                complete,
-            );
-            last.insert(map_key, (gen, pct, tokens, at));
+            quota_history::record(&settings::quota_history_path(), &quota_history::Observation {
+                provider: key, account: account_id, window,
+                scope: "local", cohort: "", plan, at, elapsed, pct,
+                tokens: tokens as f64, complete,
+                share: w.get("quota_share_percent").and_then(Value::as_f64),
+            });
         }
     }
 }
@@ -702,20 +750,24 @@ async fn quota_history_record(axum::extract::Json(body): axum::extract::Json<Val
         let provider = body.get("provider").and_then(Value::as_str).unwrap_or("").to_string();
         let account = body.get("account").and_then(Value::as_str).unwrap_or("default").to_string();
         let scope = body.get("scope").and_then(Value::as_str).unwrap_or("local").to_string();
+        let cohort = body.get("cohort").and_then(Value::as_str).unwrap_or("");
         let plan = body.get("plan").and_then(Value::as_str).unwrap_or("").to_string();
         let window = body.get("window").and_then(Value::as_i64).unwrap_or(0);
         let at = body.get("at").and_then(Value::as_i64).unwrap_or(0);
         let elapsed = body.get("elapsed").and_then(Value::as_i64).unwrap_or(0);
-        let pct = body.get("pct").and_then(Value::as_f64).unwrap_or(0.0);
-        let tokens = body.get("tokens").and_then(Value::as_f64).unwrap_or(0.0);
+        let pct = body.get("pct").and_then(Value::as_f64).unwrap_or(-1.0);
+        let tokens = body.get("tokens").and_then(Value::as_f64).unwrap_or(-1.0);
         let complete = body.get("complete").and_then(Value::as_bool).unwrap_or(false);
-        if provider.is_empty() || window <= 0 || at <= 0 || elapsed <= 0 {
+        if !["kimi", "codex", "glm"].contains(&provider.as_str())
+            || window <= 0 || window > 32 * 86400 || at <= 0 || !(0..=window).contains(&elapsed)
+            || !(0.0..=100.0).contains(&pct) || tokens < 0.0 || cohort.len() > 256
+        {
             return error_payload("invalid quota history sample".into());
         }
-        quota_history::record(
-            &settings::quota_history_path(), &provider, &account, window, &scope, &plan,
-            at, elapsed, pct, tokens, complete,
-        )
+        quota_history::record(&settings::quota_history_path(), &quota_history::Observation {
+            provider: &provider, account: &account, window, scope: &scope, cohort, plan: &plan,
+            at, elapsed, pct, tokens, complete, share: body.get("share").and_then(Value::as_f64),
+        })
     })
     .await
     .unwrap_or_else(|err| error_payload(format!("quota history worker failed: {err}")));
@@ -1010,6 +1062,7 @@ async fn main() {
     let app = Router::new()
         .route("/api/health", get(health))
         .route("/api/analytics", get(analytics))
+        .route("/api/analytics/rate", get(analytics_rate))
         .route("/api/analytics/rolling", get(analytics_rolling))
         .route("/api/disk/drives", get(disk_drives))
         .route("/api/disk/invoke", post(disk_invoke))

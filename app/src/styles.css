@@ -403,7 +403,7 @@ select.control:focus { border-color: var(--accent-border); box-shadow: 0 0 0 3px
 .kselect-check { flex: none; margin-left: auto; color: var(--accent); }
 
 .kpi-row {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(0, 2.5fr);
   gap: 14px; margin-bottom: 16px;
 }
 .kpi-card {
@@ -415,7 +415,11 @@ select.control:focus { border-color: var(--accent-border); box-shadow: 0 0 0 3px
 .kpi-value {
   font-size: clamp(20px, 1.9vw, 26px); line-height: 1.25; font-weight: 500;
   font-family: var(--font-num); letter-spacing: -0.02em;
-  font-variant-numeric: tabular-nums; white-space: nowrap;
+  font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+@media (max-width: 850px) {
+  .kpi-row { grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(0, 1.45fr); gap: 8px; }
+  .kpi-row > .kpi-card:not(.card-expanded) { padding-inline: 10px; }
 }
 .kpi-sub { font-size: 11.5px; line-height: 17px; margin-top: 5px; color: var(--faint); }
 .kpi-sub .up { color: var(--green); font-weight: 600; }
@@ -1524,14 +1528,14 @@ td b { font-weight: 600; }
   gap: 8px; font-size: 11px; color: var(--dim); overflow: hidden;
 }
 .rate-row .rate-name {
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   color: var(--text); font-weight: 600; min-width: 0;
 }
 .rate-row .rate-tag {
   font-family: var(--font-num); color: var(--accent-text); flex-shrink: 0;
 }
 .rate-row .rate-model {
-  display: none; max-width: 55%;
+  display: none; max-width: 59%;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   color: var(--faint); min-width: 0;
 }
@@ -1584,10 +1588,11 @@ td b { font-weight: 600; }
 .act-sid { flex-shrink: 0; }
 .act-agent {
   display: inline-flex; align-items: center; gap: 4px;
-  font-size: 10px; font-weight: 600; color: var(--accent-text); flex-shrink: 0;
+  font-size: 10px; font-weight: 600; color: var(--accent-text); min-width: 0; max-width: 55%;
   border: 1px solid var(--accent-border-soft); background: var(--accent-softer);
   border-radius: var(--r-pill); padding: 0 8px;
 }
+.act-agent span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sess-agent { display: inline-flex; align-items: center; gap: 5px; }
 .act-meta {
   flex: 1; min-width: 0; color: var(--faint); font-size: 11px;

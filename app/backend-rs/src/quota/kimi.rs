@@ -253,23 +253,21 @@ fn normalize_kimi_monthly(stats: &Value) -> Option<(Value, Vec<String>)> {
     let used_percent = ratio_percent(
         balance.get("amount_used_ratio").or_else(|| balance.get("amountUsedRatio")),
     )?;
-    let mut extra_lines = Vec::new();
     // 共享额度占比：挂在月额度窗口下方展示（w.sub），不再进 extra_lines
-    let mut sub = Value::Null;
-    if let Some(code_percent) = ratio_percent(
+    let share = ratio_percent(
         balance.get("kimi_code_used_ratio").or_else(|| balance.get("kimiCodeUsedRatio")),
-    ) {
-        sub = Value::String(format!("Kimi Code share: {code_percent:.2}%"));
-    }
+    );
+    let sub = share.map(|value| format!("Kimi Code share: {value:.2}%"));
     let expire_key = balance.get("expire_time").or_else(|| balance.get("expireTime"));
     let window = serde_json::json!({
         "label": "Monthly Total",
         "used_percent": used_percent,
         "reset_after_seconds": seconds_until(expire_key, Utc::now()),
         "window_seconds": parse_timestamp(expire_key).map(monthly_window_seconds),
+        "quota_share_percent": share,
         "sub": sub,
     });
-    Some((window, extra_lines))
+    Some((window, Vec::new()))
 }
 
 /// GetSubscription 响应 → plan（goods.title，如 Allegro）与 membership；无订阅返回 None。
