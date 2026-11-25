@@ -74,7 +74,7 @@ impl Facts {
 
 /// `path` is `dir` or inside it, ignoring case where the file system does:
 /// sysinfo may report `C:\Users\X\...` for a folder scanned as `c:\users\x`.
-fn is_under(path: &Path, dir: &Path) -> bool {
+pub(crate) fn is_under(path: &Path, dir: &Path) -> bool {
     let key = |p: &Path| {
         let s = p.to_string_lossy().replace('\\', "/");
         let s = s.trim_end_matches('/').to_string();

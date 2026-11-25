@@ -22,7 +22,10 @@ use std::{
     future::Future,
     net::SocketAddr,
     path::PathBuf,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
     time::{Duration, Instant},
 };
 
@@ -33,7 +36,7 @@ use axum::{
     Json, Router,
 };
 use serde_json::Value;
-use tokio::sync::Mutex;
+use tokio::sync::{watch, Mutex};
 
 mod accounts;
 mod disk;
@@ -86,6 +89,9 @@ mod analytics_tests;
 #[path = "quota_tests.rs"]
 mod quota_tests;
 
+#[cfg(test)]
+mod request_tests;
+
 /// 展示给用户的版本号：由 build.rs 从仓库根 VERSION 文件注入，
 /// Cargo.toml 的 version 仅作编译期兜底，保证全项目版本显示一致。
 pub(crate) const APP_VERSION: &str = match option_env!("APP_VERSION") {
@@ -109,14 +115,54 @@ static SNAP_ENGINES: std::sync::OnceLock<
         std::collections::HashMap<String, Arc<std::sync::Mutex<analytics::AnalyticsState>>>,
     >,
 > = std::sync::OnceLock::new();
+static SNAPSHOT_WORK: Mutex<()> = Mutex::const_new(());
+
+#[derive(Default)]
+struct AnalyticsScope {
+    state: analytics::AnalyticsState,
+    generation: u64,
+    scan_finished: Option<Instant>,
+    wsl_home_count: usize,
+}
+
+#[derive(Default)]
+struct AnalyticsEngines {
+    scopes: std::sync::Mutex<HashMap<String, Arc<Mutex<AnalyticsScope>>>>,
+    generation: AtomicU64,
+}
+
+impl AnalyticsEngines {
+    async fn run<T, F>(&self, scope: String, work: F) -> Result<T, tokio::task::JoinError>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut AnalyticsScope, &str) -> T + Send + 'static,
+    {
+        let engine = self.scopes.lock().unwrap().entry(scope.clone()).or_default().clone();
+        // 等同一范围的扫描时不占用 Tokio 工作线程或 blocking 线程。
+        let mut engine = engine.lock_owned().await;
+        let generation = self.generation.load(Ordering::Relaxed);
+        tokio::task::spawn_blocking(move || {
+            if engine.generation != generation {
+                engine.state.last_scan_secs = 0;
+                engine.scan_finished = None;
+                engine.generation = generation;
+            }
+            work(&mut engine, &scope)
+        })
+        .await
+    }
+
+    fn invalidate(&self) {
+        // 不能等待进行中的 WSL 扫描。下一次进入各范围时再重置水位。
+        self.generation.fetch_add(1, Ordering::Relaxed);
+    }
+}
 
 #[derive(Clone)]
 struct AppState {
     cache: Arc<Cache>,
-    /// 原生分析引擎状态：按扫描范围（local / wsl:<distro> / aggregate）各一份，
-    /// 进程内增量（std Mutex + spawn_blocking 避免阻塞运行时）
-    analytics:
-        Arc<std::sync::Mutex<HashMap<String, Arc<std::sync::Mutex<analytics::AnalyticsState>>>>>,
+    /// 按扫描范围增量维护分析数据。
+    analytics: Arc<AnalyticsEngines>,
     /// 可选鉴权 token（--token）：设置后所有 /api 请求（除 /api/health）必须带
     /// x-env-token 头。用于 SSH 等跨机场景；本机 loopback 可省略。
     token: Option<String>,
@@ -168,12 +214,12 @@ async fn auth_guard(
 /// 单飞缓存：同一 key 的并发请求共享同一次抓取（OnceCell），成功结果在
 /// TTL 内直接复用；失败不落地，后续请求自动重试。
 struct Cache {
-    entries: Mutex<HashMap<String, Arc<Entry>>>,
+    entries: Mutex<HashMap<String, Entry>>,
 }
 
 struct Entry {
-    created: Instant,
-    cell: tokio::sync::OnceCell<Value>,
+    ttl: Duration,
+    result: watch::Receiver<Option<(Instant, Value)>>,
 }
 
 impl Cache {
@@ -185,29 +231,30 @@ impl Cache {
 
     async fn get_or_fetch<F, Fut>(&self, key: String, ttl: Duration, fetch: F) -> Value
     where
-        F: FnOnce() -> Fut,
-        Fut: Future<Output = Value>,
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = Value> + Send + 'static,
     {
-        let entry = {
+        let mut result = {
             let mut map = self.entries.lock().await;
-            // 顺带清理：已过期且有值的旧代目直接淘汰；无值的（在途/失败）保留
-            map.retain(|_, e| e.cell.get().is_none() || e.created.elapsed() < ttl);
-            match map.get(&key) {
-                Some(entry) => entry.clone(),
-                None => {
-                    let entry = Arc::new(Entry {
-                        created: Instant::now(),
-                        cell: tokio::sync::OnceCell::new(),
-                    });
-                    map.insert(key.clone(), entry.clone());
-                    entry
-                }
-            }
+            map.retain(|_, entry| match &*entry.result.borrow() {
+                Some((finished, value)) => finished.elapsed() < entry.ttl && value["ok"] != false,
+                None => entry.result.has_changed().is_ok(),
+            });
+            map.entry(key).or_insert_with(|| {
+                let (tx, result) = watch::channel(None);
+                // 客户端超时或断开不取消已经启动的扫描/采集，避免下一次又排同一份工作。
+                tokio::spawn(async move {
+                    let value = fetch().await;
+                    tx.send_replace(Some((Instant::now(), value)));
+                });
+                Entry { ttl, result }
+            }).result.clone()
         };
-        if let Some(value) = entry.cell.get() {
-            return value.clone();
-        }
-        entry.cell.get_or_init(fetch).await.clone()
+        let value = match result.wait_for(Option::is_some).await {
+            Ok(value) => value.as_ref().unwrap().1.clone(),
+            Err(_) => error_payload("background request stopped before returning data".into()),
+        };
+        value
     }
 }
 
@@ -217,29 +264,6 @@ async fn health() -> Json<Value> {
         "service": "env-tools-api",
         "version": APP_VERSION,
     }))
-}
-
-fn kimi_homes(aggregate: bool, wsl_distro: Option<&str>) -> Vec<PathBuf> {
-    if let Some(distro) = wsl_distro {
-        // 指定 WSL 发行版：仅扫描该发行版家目录（UNC）
-        let mut homes: Vec<PathBuf> = Vec::new();
-        for home in settings::wsl_distro_homes(distro) {
-            homes.push(home.join(".kimi-code"));
-            homes.push(home.join(".kimi"));
-        }
-        return homes;
-    }
-    let mut homes: Vec<PathBuf> = accounts::profiles(accounts::Provider::Kimi)
-        .into_iter()
-        .map(|account| account.home)
-        .collect();
-    if aggregate {
-        for home in settings::wsl_homes() {
-            homes.push(home.join(".kimi-code"));
-            homes.push(home.join(".kimi"));
-        }
-    }
-    homes
 }
 
 fn kimi_work_homes(wsl_distro: Option<&str>) -> Vec<PathBuf> {
@@ -266,54 +290,6 @@ fn kimi_work_homes(wsl_distro: Option<&str>) -> Vec<PathBuf> {
         .collect()
 }
 
-fn zcode_homes(aggregate: bool, wsl_distro: Option<&str>) -> Vec<PathBuf> {
-    if let Some(distro) = wsl_distro {
-        return settings::wsl_distro_homes(distro);
-    }
-    let mut homes = vec![settings::local_home()];
-    if aggregate {
-        homes.extend(settings::wsl_homes());
-    }
-    homes
-}
-
-fn codex_homes(aggregate: bool, wsl_distro: Option<&str>) -> Vec<PathBuf> {
-    if let Some(distro) = wsl_distro {
-        return settings::wsl_distro_homes(distro)
-            .into_iter()
-            .map(|home| home.join(".codex"))
-            .collect();
-    }
-    let mut homes: Vec<PathBuf> = settings::codex_accounts()
-        .into_iter()
-        .map(|account| account.home)
-        .collect();
-    if aggregate {
-        for home in settings::wsl_homes() {
-            homes.push(home.join(".codex"));
-        }
-    }
-    homes
-}
-
-/// omp 家目录：~/.omp（会话在 agent/sessions，由 scan_all 决定子布局）。
-/// 本机 + 聚合时的全部 WSL 发行版 UNC，与 kimi/codex 同模式
-fn omp_homes(aggregate: bool, wsl_distro: Option<&str>) -> Vec<PathBuf> {
-    if let Some(distro) = wsl_distro {
-        return settings::wsl_distro_homes(distro)
-            .into_iter()
-            .map(|home| home.join(".omp"))
-            .collect();
-    }
-    let mut homes = vec![omp_home()];
-    if aggregate {
-        for home in settings::wsl_homes() {
-            homes.push(home.join(".omp"));
-        }
-    }
-    homes
-}
-
 fn omp_home() -> PathBuf {
     if let Some(home) = std::env::var_os("OMP_HOME") {
         return PathBuf::from(home);
@@ -328,10 +304,61 @@ fn default_home(dot_dir: &str) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(dot_dir))
 }
 
-/// 分析 worker：扫描（节流）+ 聚合。引擎按 scope 各持一把细粒度锁——
-/// aggregate 的 9P 长扫描不会阻塞 local 请求。启动预热也走这条路径。
+fn scan_analytics(
+    engine: &mut analytics::AnalyticsState,
+    aggregate: bool,
+    wsl_distro: Option<&str>,
+    now: i64,
+) -> (bool, usize) {
+    let (mut kimi, mut codex, mut zcode, mut omp) = (vec![], vec![], vec![], vec![]);
+    if wsl_distro.is_none() {
+        kimi.extend(accounts::profiles(accounts::Provider::Kimi).into_iter().map(|a| a.home));
+        codex.extend(settings::codex_accounts().into_iter().map(|a| a.home));
+        zcode.push(settings::local_home());
+        omp.push(omp_home());
+    }
+    // Each scan enumerates WSL homes once, regardless of the number of agents.
+    let wsl_homes = match wsl_distro {
+        Some(distro) => settings::wsl_distro_homes(distro),
+        None if aggregate => settings::wsl_homes(),
+        None => vec![],
+    };
+    let wsl_home_count = wsl_homes.len();
+    for home in wsl_homes {
+        kimi.extend([home.join(".kimi-code"), home.join(".kimi")]);
+        codex.push(home.join(".codex"));
+        omp.push(home.join(".omp"));
+        zcode.push(home);
+    }
+    (engine.scan_all(&kimi, &codex, &zcode, &omp, &kimi_work_homes(wsl_distro), now), wsl_home_count)
+}
+
+fn scan_scope(
+    engine: &mut AnalyticsScope,
+    scope: &str,
+    aggregate: bool,
+    wsl_distro: Option<&str>,
+    now: i64,
+) -> Option<bool> {
+    let scan_gap = if aggregate || wsl_distro.is_some() { SCAN_GAP_WSL } else { SCAN_GAP_LOCAL };
+    if engine.scan_finished.is_some_and(|finished| finished.elapsed() < Duration::from_secs(scan_gap as u64)) {
+        return None;
+    }
+    let cache_path = settings::scan_cache_path(scope);
+    engine.state.hydrate_once(&cache_path);
+    let (dirty, wsl_home_count) = scan_analytics(&mut engine.state, aggregate, wsl_distro, now);
+    engine.wsl_home_count = wsl_home_count;
+    // 覆盖时间仍以扫描开始为准。节流从结束开始，避免长扫描刚结束就重扫。
+    engine.state.last_scan_secs = now;
+    if dirty {
+        engine.state.save_cache(&cache_path);
+    }
+    engine.scan_finished = Some(Instant::now());
+    Some(dirty)
+}
+
 fn analytics_worker(
-    state: &AppState,
+    engine: &mut AnalyticsScope,
     days: u32,
     agent: &str,
     aggregate: bool,
@@ -339,42 +366,10 @@ fn analytics_worker(
     scope: &str,
 ) -> Value {
     let now = chrono::Local::now();
-    let now_sec = now.timestamp();
-    let engine_arc = {
-        let mut engines = state.analytics.lock().unwrap();
-        engines.entry(scope.to_string()).or_default().clone()
-    };
-    let mut engine = engine_arc.lock().unwrap();
-    // 首次见到该 scope 的引擎：先水合磁盘缓存再扫描，重启后只需读增量字节
-    engine.hydrate_once(&settings::scan_cache_path(scope));
-    let scan_gap = if aggregate || wsl_distro.is_some() {
-        SCAN_GAP_WSL
-    } else {
-        SCAN_GAP_LOCAL
-    };
     let scan_started = std::time::Instant::now();
-    let (dirty, scan_note) = if now_sec - engine.last_scan_secs >= scan_gap {
-        let dirty = engine.scan_all(
-            &kimi_homes(aggregate, wsl_distro),
-            &codex_homes(aggregate, wsl_distro),
-            &zcode_homes(aggregate, wsl_distro),
-            &omp_homes(aggregate, wsl_distro),
-            &kimi_work_homes(wsl_distro),
-            now_sec,
-        );
-        engine.last_scan_secs = now_sec;
-        if dirty {
-            engine.save_cache(&settings::scan_cache_path(scope));
-        }
-        (
-            dirty,
-            format!(
-                "scan {:.1}ms",
-                scan_started.elapsed().as_secs_f64() * 1000.0
-            ),
-        )
-    } else {
-        (false, "scan throttled".to_string())
+    let (dirty, scan_note) = match scan_scope(engine, scope, aggregate, wsl_distro, now.timestamp()) {
+        Some(dirty) => (dirty, format!("scan {:.1}ms", scan_started.elapsed().as_secs_f64() * 1000.0)),
+        None => (false, "scan throttled".to_string()),
     };
     // 周起点设置（settings.json 的 week_start）注入周至今对比
     let week_start = settings::load_settings()
@@ -382,8 +377,7 @@ fn analytics_worker(
         .and_then(|v| v.as_str())
         .unwrap_or("monday")
         .to_string();
-    let payload = engine.aggregate_with_week_start(days, agent, now, &week_start);
-    drop(engine);
+    let payload = engine.state.aggregate_with_week_start(days, agent, now, &week_start);
     let engine_note = format!(
         "native-rust{}{} ({}, dirty={dirty})",
         if aggregate { "+wsl" } else { "" },
@@ -439,28 +433,14 @@ async fn analytics(
     } else {
         ANALYTICS_TTL
     };
-    let state = state.clone();
-    let cache = state.cache.clone();
-    let value = cache
-        .get_or_fetch(key, ttl, move || {
-            let state = state.clone();
-            let agent = agent.clone();
-            let wsl_distro = wsl_distro.clone();
-            let scope = scope.clone();
-            async move {
-                tokio::task::spawn_blocking(move || {
-                    analytics_worker(
-                        &state,
-                        days,
-                        &agent,
-                        aggregate,
-                        wsl_distro.as_deref(),
-                        &scope,
-                    )
-                })
+    let engines = state.analytics;
+    let value = state.cache
+        .get_or_fetch(key, ttl, move || async move {
+            engines.run(scope, move |engine, scope| {
+                analytics_worker(engine, days, &agent, aggregate, wsl_distro.as_deref(), scope)
+            })
                 .await
                 .unwrap_or_else(|err| error_payload(format!("analytics worker failed: {err}")))
-            }
         })
         .await;
     Json(value)
@@ -537,72 +517,54 @@ async fn analytics_rolling(
     } else {
         "rolling:local".to_string()
     };
-    let engine_arc = {
-        let mut engines = state.analytics.lock().unwrap();
-        engines.entry(scope.clone()).or_default().clone()
-    };
-    let mut engine = engine_arc.lock().unwrap();
-    engine.hydrate_once(&settings::scan_cache_path(&scope));
-    let now_sec = chrono::Local::now().timestamp();
-    let scan_gap = if aggregate || wsl_distro.is_some() { SCAN_GAP_WSL } else { SCAN_GAP_LOCAL };
-    if now_sec - engine.last_scan_secs >= scan_gap {
-        engine.scan_all(
-            &kimi_homes(aggregate, wsl_distro.as_deref()),
-            &codex_homes(aggregate, wsl_distro.as_deref()),
-            &zcode_homes(aggregate, wsl_distro.as_deref()),
-            &omp_homes(aggregate, wsl_distro.as_deref()),
-            &kimi_work_homes(wsl_distro.as_deref()),
-            now_sec,
-        );
-        engine.last_scan_secs = now_sec;
-        engine.save_cache(&settings::scan_cache_path(&scope));
-    }
-    let scanned_through = engine.last_scan_secs;
-    drop(engine);
-    let tokens = engine_arc
-        .lock()
-        .unwrap()
-        .rolling_quota_tokens_for_account(&provider, at - seconds, at, &account_id);
-    let coverage_complete = scanned_through >= at;
-    let assessment = match (window_seconds, observed_pct) {
-        (Some(win), Some(pct)) => quota_history::evaluate(
-            &settings::quota_history_path(),
-            &provider,
-            &account_id,
-            win,
-            &estimate_scope,
-            &plan,
-            at,
-            seconds,
-            pct,
-            tokens as f64,
-            coverage_complete,
-        ),
-        _ => Value::Null,
-    };
-    let history = if with_history {
-        assessment.get("history").cloned().unwrap_or(Value::Null)
-    } else {
-        Value::Null
-    };
-    let source_count = if aggregate { 1 + settings::wsl_homes().len() } else { 1 };
-    Json(serde_json::json!({
-        "ok": true,
-        "agent": provider,
-        "account_id": account_id,
-        "seconds": seconds,
-        "at": at,
-        "tokens": tokens,
-        "history": history,
-        "sourceCount": source_count,
-        "failedSources": 0,
-        "coverageComplete": coverage_complete,
-        "coverageEnd": scanned_through.min(at),
-        "externalActivity": assessment.get("externalActivity").and_then(Value::as_bool).unwrap_or(false),
-        "usable": assessment.get("usable").and_then(Value::as_bool).unwrap_or(false),
-        "quality": assessment.get("quality").and_then(Value::as_str).unwrap_or("low"),
-        "reason": assessment.get("reason").and_then(Value::as_str).unwrap_or("missing_percentage"),
-    }))
+    let value = state.analytics
+        .run(scope, move |engine, scope| {
+            scan_scope(engine, scope, aggregate, wsl_distro.as_deref(), chrono::Local::now().timestamp());
+            let tokens = engine.state.rolling_quota_tokens_for_account(&provider, at - seconds, at, &account_id);
+            let scanned_through = engine.state.last_scan_secs;
+            let coverage_complete = scanned_through >= at;
+            let assessment = match (window_seconds, observed_pct) {
+                (Some(win), Some(pct)) => quota_history::evaluate(
+                    &settings::quota_history_path(),
+                    &provider,
+                    &account_id,
+                    win,
+                    &estimate_scope,
+                    &plan,
+                    at,
+                    seconds,
+                    pct,
+                    tokens as f64,
+                    coverage_complete,
+                ),
+                _ => Value::Null,
+            };
+            let history = if with_history {
+                assessment.get("history").cloned().unwrap_or(Value::Null)
+            } else {
+                Value::Null
+            };
+            serde_json::json!({
+                "ok": true,
+                "agent": provider,
+                "account_id": account_id,
+                "seconds": seconds,
+                "at": at,
+                "tokens": tokens,
+                "history": history,
+                "sourceCount": if aggregate { 1 + engine.wsl_home_count } else { 1 },
+                "failedSources": 0,
+                "coverageComplete": coverage_complete,
+                "coverageEnd": scanned_through.min(at),
+                "externalActivity": assessment.get("externalActivity").and_then(Value::as_bool).unwrap_or(false),
+                "usable": assessment.get("usable").and_then(Value::as_bool).unwrap_or(false),
+                "quality": assessment.get("quality").and_then(Value::as_str).unwrap_or("low"),
+                "reason": assessment.get("reason").and_then(Value::as_str).unwrap_or("missing_percentage"),
+            })
+        })
+        .await
+        .unwrap_or_else(|err| error_payload(format!("rolling analytics worker failed: {err}")));
+    Json(value)
 }
 
 
@@ -613,9 +575,7 @@ async fn usage(axum::extract::State(state): axum::extract::State<AppState>) -> J
         .get_or_fetch("usage".to_string(), USAGE_TTL, move || async move {
             tokio::task::spawn_blocking(|| {
                 let (accounts, errors) = quota::collect_all();
-                // 配额快照落盘（额度估算精度）：pct/代际变化才落一行。
-                // tokens 经 rolling 引擎按窗口 elapsed 取本机对应账号用量
-                record_quota_snapshots(&accounts);
+                queue_quota_snapshots(&accounts);
                 let versions = settings::collect_versions();
                 let settings = settings::load_settings();
                 let data = serde_json::json!({
@@ -633,6 +593,21 @@ async fn usage(axum::extract::State(state): axum::extract::State<AppState>) -> J
         })
         .await;
     Json(value)
+}
+
+/// 配额先返回实时百分比。历史估算需要扫描会话与写盘，不阻塞 /api/usage
+/// 或累积后台任务；上一轮未结束时等下一次定时采样。
+fn queue_quota_snapshots(accounts: &[Value]) {
+    if accounts.is_empty() {
+        return;
+    }
+    if let Ok(guard) = SNAPSHOT_WORK.try_lock() {
+        let accounts = accounts.to_vec();
+        tokio::task::spawn_blocking(move || {
+            let _guard = guard;
+            record_quota_snapshots(&accounts);
+        });
+    }
 }
 
 /// 配额快照：按账号自己的 fetched_at 对齐；百分比变化、代际变化或持续
@@ -686,14 +661,7 @@ fn record_quota_snapshots(accounts: &[Value]) {
             let mut engine = engine_arc.lock().unwrap();
             engine.hydrate_once(&settings::scan_cache_path(&scope));
             if now_sec - engine.last_scan_secs >= SCAN_GAP_LOCAL {
-                engine.scan_all(
-                    &kimi_homes(false, None),
-                    &codex_homes(false, None),
-                    &zcode_homes(false, None),
-                    &omp_homes(false, None),
-                    &kimi_work_homes(None),
-                    now_sec,
-                );
+                scan_analytics(&mut engine, false, None, now_sec);
                 engine.last_scan_secs = now_sec;
                 engine.save_cache(&settings::scan_cache_path(&scope));
             }
@@ -756,11 +724,8 @@ async fn quota_history_record(axum::extract::Json(body): axum::extract::Json<Val
 
 /// 手动刷新：清空分析/配额缓存，下次请求强制增量重扫
 async fn cache_clear(axum::extract::State(state): axum::extract::State<AppState>) -> Json<Value> {
+    state.analytics.invalidate();
     state.cache.entries.lock().await.clear();
-    // 重置扫描节流水位：下一次分析请求强制增量重扫（手动刷新语义）
-    for engine in state.analytics.lock().unwrap().values() {
-        engine.lock().unwrap().last_scan_secs = 0;
-    }
     Json(serde_json::json!({ "ok": true }))
 }
 
@@ -923,12 +888,16 @@ async fn update_account_provider(
     provider: accounts::Provider,
     payload: Value,
 ) -> Json<Value> {
-    let result = if provider == accounts::Provider::Codex {
-        settings::update_codex_accounts(&payload)
-    } else {
-        settings::update_accounts(provider, &payload)
-    };
     let changed = payload.get("action").and_then(Value::as_str) != Some("set-active");
+    let result = tokio::task::spawn_blocking(move || {
+        if provider == accounts::Provider::Codex {
+            settings::update_codex_accounts(&payload)
+        } else {
+            settings::update_accounts(provider, &payload)
+        }
+    })
+    .await
+    .unwrap_or_else(|err| Err(format!("account update worker failed: {err}")));
     if changed
         && result
             .as_ref()
@@ -1012,7 +981,7 @@ async fn main() {
 
     let state = AppState {
         cache: Arc::new(Cache::new()),
-        analytics: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        analytics: Arc::new(AnalyticsEngines::default()),
         token,
         last_activity: Arc::new(std::sync::atomic::AtomicU64::new(now_millis())),
     };
@@ -1094,16 +1063,14 @@ async fn main() {
                 (false, None, "local".to_string()),
                 (true, None, "aggregate".to_string()),
             ];
-            for distro in settings::available_wsl_distros() {
+            let distros = tokio::task::spawn_blocking(settings::available_wsl_distros).await.unwrap_or_default();
+            for distro in distros.into_iter().filter(|name| !settings::is_docker_wsl_distro(name)) {
                 jobs.push((false, Some(distro.clone()), format!("wsl:{distro}")));
             }
             for (aggregate, distro, scope) in jobs {
-                let st = warm_state.clone();
-                let _ = tokio::task::spawn_blocking(move || {
+                let _ = warm_state.analytics.run(scope, move |engine, scope| {
                     let started = std::time::Instant::now();
-                    let value =
-                        analytics_worker(&st, 30, "all", aggregate, distro.as_deref(), &scope);
-                    let _ = value;
+                    analytics_worker(engine, 30, "all", aggregate, distro.as_deref(), scope);
                     eprintln!(
                         "warmup {scope} done in {:.1}s",
                         started.elapsed().as_secs_f64()

@@ -3,6 +3,7 @@ import { invoke } from "../adapter";
 import { listen, type UnlistenFn } from "../adapter";
 import { formatBytes, isWindows } from "../format";
 import type { Reason, Safety } from "../types";
+import { dt } from "../i18n";
 
 type Class =
   | "cache"
@@ -100,11 +101,11 @@ const CLASS_LABEL: Record<Class, string> = {
 };
 
 function ageLabel(days: number | null): string {
-  if (days == null) return "unknown";
-  if (days < 1) return "today";
-  if (days < 30) return `${days}d ago`;
-  if (days < 365) return `${Math.round(days / 30)} mo ago`;
-  return `${(days / 365).toFixed(1)} yr ago`;
+  if (days == null) return dt("unknown");
+  if (days < 1) return dt("today");
+  if (days < 30) return dt("{n}d ago", { n: days });
+  if (days < 365) return dt("{n} mo ago", { n: Math.round(days / 30) });
+  return dt("{n} yr ago", { n: (days / 365).toFixed(1) });
 }
 
 function plural(n: number, one: string, many: string): string {
@@ -253,28 +254,20 @@ export default function AiTools({
       {confirming && (
         <div className="modal-backdrop" role="dialog" aria-modal="true" onClick={() => setConfirming(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h3 className="modal-title">
-              Move {plural(chosen.length, "item", "items")} to the {BIN}?
+            <h3 className="modal-title">{dt("Move")}{dt(" ")}{plural(chosen.length, dt("item"), dt("items"))}{dt(" ")}{dt("to the")}{dt(" ")}{dt(BIN)}?
             </h3>
-            <p className="modal-body">
-              Caches, logs and downloads are rebuilt by their tool the next time it runs. Every item is
-              checked again just before it moves, and anything a running tool may be using stays where
-              it is.
-            </p>
+            <p className="modal-body">{dt("Caches, logs and downloads are rebuilt by their tool the next time it runs. Every item is checked again just before it moves, and anything a running tool may be using stays where it is.")}</p>
             {chosenHistory.length > 0 && (
               <>
                 <p className="modal-warn">
-                  {plural(chosenHistory.length, "of these holds", "of these hold")} your conversation
-                  history, saved state or extensions. Env-Tools cannot re-create them, and nothing else keeps
-                  a copy. They stay in the {BIN} until you empty it.
-                </p>
+                  {plural(chosenHistory.length, dt("of these holds"), dt("of these hold"))}{dt(" ")}{dt("your conversation history, saved state or extensions. Env-Tools cannot re-create them, and nothing else keeps a copy. They stay in the")}{dt(" ")}{dt(BIN)}{dt(" ")}{dt("until you empty it.")}</p>
                 <label className="ai-ack">
                   <input
                     type="checkbox"
                     checked={understood}
                     onChange={(e) => setUnderstood(e.target.checked)}
                   />
-                  <span>I understand this history cannot be re-created.</span>
+                  <span>{dt("I understand this history cannot be re-created.")}</span>
                 </label>
               </>
             )}
@@ -283,30 +276,25 @@ export default function AiTools({
                 <li key={i.id}>
                   <span>
                     {i.label}
-                    {aged(i) && cutoffs[i.id] ? `, older than ${cutoffs[i.id]} days` : ""}
+                    {aged(i) && cutoffs[i.id] ? dt(", older than {p0} days", { p0: cutoffs[i.id] }) : dt("")}
                   </span>
                   <span>{formatBytes(bytesOf(i))}</span>
                 </li>
               ))}
-              {chosen.length > 8 && <li>and {chosen.length - 8} more</li>}
+              {chosen.length > 8 && <li>{dt("and")}{dt(" ")}{chosen.length - 8}{dt(" ")}{dt("more")}</li>}
             </ul>
             <div className="modal-total">
-              <span>Space reclaimed</span>
+              <span>{dt("Space reclaimed")}</span>
               <strong>{formatBytes(chosenBytes)}</strong>
             </div>
-            <p className="modal-foot">
-              Everything moves to the {BIN}, so you can put it back until you empty it.
-            </p>
+            <p className="modal-foot">{dt("Everything moves to the")}{dt(" ")}{dt(BIN)}{dt(", so you can put it back until you empty it.")}</p>
             <div className="modal-actions">
-              <button className="btn" onClick={() => setConfirming(false)}>
-                No, keep it
-              </button>
+              <button className="btn" onClick={() => setConfirming(false)}>{dt("No, keep it")}</button>
               <button
                 className="btn-danger"
                 onClick={removeSelected}
                 disabled={chosenHistory.length > 0 && !understood}
-              >
-                Yes, move to {BIN}
+              >{dt("Yes, move to")}{dt(" ")}{dt(BIN)}
               </button>
             </div>
           </div>
@@ -315,34 +303,30 @@ export default function AiTools({
 
       <div className="view-head">
         <div>
-          <h2 className="view-title">AI tools</h2>
-          <p className="view-sub">
-            What Claude Code, Codex, Cursor, Windsurf, Copilot, Continue and Aider leave behind — caches
-            to clear, history to keep or trim
-          </p>
+          <h2 className="view-title">{dt("AI tools")}</h2>
+          <p className="view-sub">{dt("What Claude Code, Codex, Cursor, Windsurf, Copilot, Continue and Aider leave behind — caches to clear, history to keep or trim")}</p>
         </div>
         <button className="btn" onClick={scan} disabled={scanning || busy}>
-          {scanning ? "Scanning…" : "Rescan"}
+          {scanning ? dt("Scanning…") : dt("Rescan")}
         </button>
       </div>
 
       {error && (
         <div className="banner-error">
           <span>{error}</span>
-          <button className="btn-ghost" onClick={() => setError(null)}>Dismiss</button>
+          <button className="btn-ghost" onClick={() => setError(null)}>{dt("Dismiss")}</button>
         </div>
       )}
 
       {progress && (
         <div className="banner-info ai-progress">
           <div className="meter-head">
-            <span>
-              Moving to the {BIN}
-              {progress.current && ` · ${progress.current}`}
-              {progress.step_total > 0 && ` (${progress.step_done} of ${progress.step_total} entries)`}
+            <span>{dt("Moving to the")}{dt(" ")}{dt(BIN)}
+              {progress.current && dt(" · {p0}", { p0: progress.current })}
+              {progress.step_total > 0 && dt(" ({p0} of {p1} entries)", { p0: progress.step_done, p1: progress.step_total })}
             </span>
             <span className="meter-value">
-              {Math.min(progress.done, progress.total)} of {progress.total}
+              {Math.min(progress.done, progress.total)}{dt(" ")}{dt("of")}{dt(" ")}{progress.total}
             </span>
           </div>
           <div className="meter-track">
@@ -355,12 +339,9 @@ export default function AiTools({
             />
           </div>
           <div className="ai-progress-actions">
-            <p className="model-meta">
-              Large folders can take a while on {isWindows ? "Windows" : "this disk"}. You can keep
-              using Env-Tools in the meantime.
-            </p>
+            <p className="model-meta">{dt("Large folders can take a while on")}{dt(" ")}{isWindows ? dt("Windows") : dt("this disk")}{dt(". You can keep using Env-Tools in the meantime.")}</p>
             <button className="btn" onClick={cancel} disabled={cancelling}>
-              {cancelling ? "Stopping after this batch…" : "Cancel"}
+              {cancelling ? dt("Stopping after this batch…") : dt("Cancel")}
             </button>
           </div>
         </div>
@@ -369,18 +350,16 @@ export default function AiTools({
       {outcome && !progress && (
         <div className="banner-info">
           {outcome.moved > 0 && (
-            <>
-              Moved {plural(outcome.moved, "entry", "entries")} to the {BIN} (
-              {formatBytes(outcome.freed_bytes)}).{" "}
+            <>{dt("Moved")}{dt(" ")}{plural(outcome.moved, dt("entry"), dt("entries"))}{dt(" ")}{dt("to the")}{dt(" ")}{dt(BIN)} (
+              {formatBytes(outcome.freed_bytes)}).{dt(" ")}
             </>
           )}
-          {outcome.cancelled && <>Stopped early, as you asked; the rest was not touched. </>}
+          {outcome.cancelled && <>{dt("Stopped early, as you asked; the rest was not touched.")}</>}
           {outcome.already_gone.length > 0 && (
-            <>{plural(outcome.already_gone.length, "location was", "locations were")} already empty. </>
+            <>{plural(outcome.already_gone.length, dt("location was"), dt("locations were"))}{dt(" ")}{dt("already empty.")}</>
           )}
           {outcome.skipped.length > 0 && (
-            <>
-              Left in place ({outcome.skipped.length}):
+            <>{dt("Left in place (")}{outcome.skipped.length}):
               <ul className="ai-skipped">
                 {outcome.skipped.map((s) => (
                   <li key={s}>{s}</li>
@@ -391,14 +370,14 @@ export default function AiTools({
           {outcome.moved === 0 &&
             outcome.skipped.length === 0 &&
             !outcome.cancelled &&
-            "Nothing needed moving."}
+            dt("Nothing needed moving.")}
         </div>
       )}
 
       {scanning && !report && (
         <div className="empty-state">
           <div className="spinner" />
-          <p>Looking through each tool's folders and measuring what they hold…</p>
+          <p>{dt("Looking through each tool's folders and measuring what they hold…")}</p>
         </div>
       )}
 
@@ -406,55 +385,43 @@ export default function AiTools({
         <>
           <section className="metrics">
             <div className="metric">
-              <span className="metric-label">Found</span>
+              <span className="metric-label">{dt("Found")}</span>
               <span className="metric-value">{formatBytes(report.total_bytes)}</span>
             </div>
             <div className="metric accent">
-              <span className="metric-label">Safe to clear now</span>
+              <span className="metric-label">{dt("Safe to clear now")}</span>
               <span className="metric-value">{formatBytes(report.safe_bytes)}</span>
             </div>
             <div className="metric">
-              <span className="metric-label">History and settings</span>
+              <span className="metric-label">{dt("History and settings")}</span>
               <span className="metric-value">{formatBytes(report.history_bytes)}</span>
             </div>
           </section>
 
-          <div className="banner-info">
-            AI coding tools keep two kinds of data side by side. <strong>Caches and logs</strong> are
-            rebuilt by the tool and are safe to clear once it is closed.{" "}
-            <strong>Conversation history, memory, settings and extensions</strong> cannot be re-created,
-            so they are listed with their size and age but never selected for you. Old sessions can be
-            trimmed by age; today's are never touched.
-          </div>
+          <div className="banner-info">{dt("AI coding tools keep two kinds of data side by side.")}{dt(" ")}<strong>{dt("Caches and logs")}</strong>{dt(" ")}{dt("are rebuilt by the tool and are safe to clear once it is closed.")}{dt(" ")}
+            <strong>{dt("Conversation history, memory, settings and extensions")}</strong>{dt(" ")}{dt("cannot be re-created, so they are listed with their size and age but never selected for you. Old sessions can be trimmed by age; today's are never touched.")}</div>
 
           <div className="filter-row">
             <div className="filter-tabs">
               <button
                 className={`filter-tab ${filter === "all" ? "is-active" : ""}`}
                 onClick={() => setFilter("all")}
-              >
-                All ({items.length})
+              >{dt("All (")}{items.length})
               </button>
               <button
                 className={`filter-tab ${filter === "clearable" ? "is-active" : ""}`}
                 onClick={() => setFilter("clearable")}
-              >
-                Caches and downloads ({clearableCount})
+              >{dt("Caches and downloads (")}{clearableCount})
               </button>
               <button
                 className={`filter-tab ${filter === "history" ? "is-active" : ""}`}
                 onClick={() => setFilter("history")}
-              >
-                History and settings ({historyCount})
+              >{dt("History and settings (")}{historyCount})
               </button>
             </div>
             <div className="confirm">
-              <button className="btn-ghost" onClick={selectSafe} disabled={busy}>
-                Select all safe
-              </button>
-              <button className="btn-ghost" onClick={clearSelection} disabled={busy || chosen.length === 0}>
-                Clear selection
-              </button>
+              <button className="btn-ghost" onClick={selectSafe} disabled={busy}>{dt("Select all safe")}</button>
+              <button className="btn-ghost" onClick={clearSelection} disabled={busy || chosen.length === 0}>{dt("Clear selection")}</button>
               {chosen.length > 0 && (
                 <button
                   className="btn-clean"
@@ -463,8 +430,7 @@ export default function AiTools({
                     setUnderstood(false);
                     setConfirming(true);
                   }}
-                >
-                  Remove {chosen.length} selected ({formatBytes(chosenBytes)})
+                >{dt("Remove")}{dt(" ")}{chosen.length}{dt(" ")}{dt("selected (")}{formatBytes(chosenBytes)})
                 </button>
               )}
             </div>
@@ -472,7 +438,7 @@ export default function AiTools({
 
           {report.tools.length === 0 && (
             <div className="empty-state">
-              <p>No AI coding tool data found on this computer.</p>
+              <p>{dt("No AI coding tool data found on this computer.")}</p>
             </div>
           )}
 
@@ -489,18 +455,11 @@ export default function AiTools({
                   </h2>
                   <span className="ai-tool-size">{formatBytes(tool.total_bytes)}</span>
                   {tool.running.length > 0 && (
-                    <span className="ai-running" title="Caches are held back while the tool runs">
-                      running now
-                    </span>
+                    <span className="ai-running" title={dt("Caches are held back while the tool runs")}>{dt("running now")}</span>
                   )}
                 </div>
                 {tool.worktrees_link && onOpen && (
-                  <p className="view-sub ai-tool-note">
-                    Spare git checkouts this tool makes are handled by the Git worktrees tab, which asks
-                    git whether each one is merged.
-                    <button className="btn-ghost sm" onClick={() => onOpen("worktrees")}>
-                      Open Git worktrees
-                    </button>
+                  <p className="view-sub ai-tool-note">{dt("Spare git checkouts this tool makes are handled by the Git worktrees tab, which asks git whether each one is merged.")}{dt(" ")}<button className="btn-ghost sm" onClick={() => onOpen("worktrees")}>{dt("Open Git worktrees")}</button>
                   </p>
                 )}
                 <div className="findings">
@@ -512,19 +471,18 @@ export default function AiTools({
                             value={cutoffs[i.id] ?? ""}
                             disabled={busy}
                             onChange={(e) => pickAge(i, e.target.value)}
-                            aria-label={`Move ${i.label} older than`}
+                            aria-label={dt("Move {p0} older than", { p0: i.label })}
                           >
-                            <option value="">Keep all</option>
+                            <option value="">{dt("Keep all")}</option>
                             {i.ages.map((b) => (
-                              <option key={b.days} value={b.days} disabled={b.files === 0}>
-                                Older than {b.days} days ({formatBytes(b.bytes)})
+                              <option key={b.days} value={b.days} disabled={b.files === 0}>{dt("Older than")}{dt(" ")}{b.days}{dt(" ")}{dt("days (")}{formatBytes(b.bytes)})
                               </option>
                             ))}
                           </select>
                           <span>
                             {cutoffs[i.id]
-                              ? `${plural(bucket(i)?.files ?? 0, "file", "files")} selected`
-                              : "Choose an age to select"}
+                              ? dt("{p0} selected", { p0: plural(bucket(i)?.files ?? 0, "file", "files") })
+                              : dt("Choose an age to select")}
                           </span>
                         </div>
                       ) : (
@@ -535,9 +493,9 @@ export default function AiTools({
                           onChange={() => toggle(i)}
                           title={
                             !i.removable
-                              ? "Env-Tools only lists this one"
+                              ? dt("Env-Tools only lists this one")
                               : i.tool_running
-                                ? "The tool is running; close it first"
+                                ? dt("The tool is running; close it first")
                                 : undefined
                           }
                         />
@@ -545,14 +503,14 @@ export default function AiTools({
                       <div className="model-main">
                         <div className="finding-title">
                           <span className="finding-name">{i.label}</span>
-                          <span className={`badge safety-${i.safety}`}>{SAFETY_LABEL[i.safety]}</span>
-                          <span className="badge cat-dev_cache">{CLASS_LABEL[i.class]}</span>
-                          {!i.removable && i.class !== "link" && <span className="badge safety-caution">Listed only</span>}
+                          <span className={`badge safety-${i.safety}`}>{dt(SAFETY_LABEL[i.safety])}</span>
+                          <span className="badge cat-dev_cache">{dt(CLASS_LABEL[i.class])}</span>
+                          {!i.removable && i.class !== "link" && <span className="badge safety-caution">{dt("Listed only")}</span>}
                         </div>
                         <span className="model-meta">
-                          {plural(i.file_count, "file", "files")}
-                          {i.modified_days != null && ` · last changed ${ageLabel(i.modified_days)}`}
-                          {i.paths.length > 1 && ` · ${i.paths.length} folders`}
+                          {plural(i.file_count, dt("file"), dt("files"))}
+                          {i.modified_days != null && dt(" · last changed {p0}", { p0: ageLabel(i.modified_days) })}
+                          {i.paths.length > 1 && dt(" · {p0} folders", { p0: i.paths.length })}
                         </span>
                         <code className="finding-path">{i.path}</code>
                         <p className="ai-explain">{i.explanation}</p>
@@ -560,7 +518,7 @@ export default function AiTools({
                           {i.reasons.map((r) => (
                             <li key={r.text} className={`reason-${r.level}`}>
                               <span className="reason-mark" aria-hidden>
-                                {r.level === "ok" ? "✓" : r.level === "warn" ? "!" : "✕"}
+                                {r.level === "ok" ? dt("✓") : r.level === "warn" ? dt("!") : dt("✕")}
                               </span>
                               {r.text}
                             </li>
@@ -574,9 +532,7 @@ export default function AiTools({
                                 e.preventDefault();
                                 onOpen(i.link as string);
                               }}
-                            >
-                              Open Git worktrees
-                            </button>
+                            >{dt("Open Git worktrees")}</button>
                           </div>
                         )}
                       </div>
@@ -589,9 +545,7 @@ export default function AiTools({
                           e.preventDefault();
                           invoke("reveal_path", { path: i.path }).catch((err) => setError(String(err)));
                         }}
-                      >
-                        Show
-                      </button>
+                      >{dt("Show")}</button>
                     </label>
                   ))}
                   {shown.length > COLLAPSED_ROWS && (
@@ -606,7 +560,7 @@ export default function AiTools({
                         })
                       }
                     >
-                      {open ? "Show fewer" : `Show ${shown.length - COLLAPSED_ROWS} more`}
+                      {open ? dt("Show fewer") : dt("Show {p0} more", { p0: shown.length - COLLAPSED_ROWS })}
                     </button>
                   )}
                 </div>
@@ -614,13 +568,7 @@ export default function AiTools({
             );
           })}
 
-          <p className="footnote">
-            Only locations Env-Tools knows are listed; anything it does not recognise is left out rather than
-            guessed at. Editor storage for projects that still exist, and Aider's files inside your
-            projects, are listed but never removed here. Claude's desktop app keeps its sign-in and
-            settings in the same data folder as its caches: Env-Tools clears only the cache and log folders
-            inside it, like the app's own Clear Cache.
-          </p>
+          <p className="footnote">{dt("Only locations Env-Tools knows are listed; anything it does not recognise is left out rather than guessed at. Editor storage for projects that still exist, and Aider's files inside your projects, are listed but never removed here. Claude's desktop app keeps its sign-in and settings in the same data folder as its caches: Env-Tools clears only the cache and log folders inside it, like the app's own Clear Cache.")}</p>
         </>
       )}
     </>

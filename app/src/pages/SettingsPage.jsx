@@ -617,7 +617,7 @@ function AgentAccountsPanel({ provider, settings, lastPayload, onSaved }) {
     selectAccount,
     updateAccounts,
     reload,
-    error,
+    loadError,
     switching,
     defaultRemoved,
     launcherInstalled,
@@ -640,7 +640,7 @@ function AgentAccountsPanel({ provider, settings, lastPayload, onSaved }) {
     });
   }, [provider, registry, reload]);
   const visibleNote = note.key || note.text ? note
-    : error ? { cls: "settings-note error", text: error } : note;
+    : loadError ? { cls: "settings-note error", text: loadError } : note;
   const hasDefault = registry.some((account) => account.id === "default");
   const showRestore = defaultRemoved || (ready && !hasDefault);
 

@@ -1,6 +1,7 @@
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { formatBytes } from "../format";
+import { dt, useLang } from "../i18n";
 import type { DeepEntry } from "../types";
 import { deepVerdict, VERDICT_LABEL, type Verdict } from "./deepVerdict";
 import { squarify, type Placed } from "./squarify";
@@ -51,11 +52,11 @@ function buildCells(entries: DeepEntry[]): { cells: Cell[]; unmeasured: number; 
   if (rest.length > 0 && restSize / total >= MIN_SHARE) {
     cells.push({
       key: "__smaller__",
-      name: `${rest.length} smaller item${rest.length === 1 ? "" : "s"}`,
+      name: dt(rest.length === 1 ? "{n} smaller item" : "{n} smaller items", { n: rest.length }),
       size: restSize,
       entry: null,
       level: null,
-      reasons: ["Too small to draw as separate boxes.", "Switch to List to see each one."],
+      reasons: [dt("Too small to draw as separate boxes."), dt("Switch to List to see each one.")],
     });
   } else {
     omitted = rest.length;
@@ -73,6 +74,7 @@ export default function Treemap({
   onOpen: (entry: DeepEntry) => void;
   height?: number;
 }) {
+  const [lang] = useLang();
   const frameRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(900);
   const [active, setActive] = useState<string | null>(null);
@@ -87,7 +89,7 @@ export default function Treemap({
     return () => ro.disconnect();
   }, []);
 
-  const { cells, unmeasured, omitted } = useMemo(() => buildCells(entries), [entries]);
+  const { cells, unmeasured, omitted } = useMemo(() => buildCells(entries), [entries, lang]);
 
   const placed = useMemo<Placed<Cell>[]>(
     () =>
@@ -136,10 +138,10 @@ export default function Treemap({
         className="tm"
         style={{ height }}
         role="group"
-        aria-label={`Disk map: ${placed.length} boxes sized by disk usage and coloured by safety`}
+        aria-label={dt("Disk map: {n} boxes sized by disk usage and coloured by safety", { n: placed.length })}
         onKeyDown={onKeyDown}
       >
-        {placed.length === 0 && <div className="tm-empty">Nothing measurable at this level yet</div>}
+        {placed.length === 0 && <div className="tm-empty">{dt("Nothing measurable at this level yet")}</div>}
 
         {placed.map((p) => {
           const { item: c } = p;
@@ -149,10 +151,10 @@ export default function Treemap({
           const showSize = showName && p.h >= 48;
           const showTag = !!c.level && p.w >= 104 && p.h >= 68;
           const summary =
-            `${c.name}, ${formatBytes(c.size)}, ${share.toFixed(1)}% of this level` +
-            (c.level ? `, ${VERDICT_LABEL[c.level]}` : "") +
-            `. ${c.reasons.join(" ")}` +
-            (openable ? " Press Enter to open." : "");
+            dt("{p0}, {p1}, {p2}", { p0: c.name, p1: formatBytes(c.size), p2: dt("{pct}% of this level", { pct: share.toFixed(1) }) }) +
+            (c.level ? dt(", {p0}", { p0: dt(VERDICT_LABEL[c.level]) }) : dt("")) +
+            dt(". {p0}", { p0: c.reasons.map(reason => dt(reason)).join(" ") }) +
+            (openable ? dt(" Press Enter to open.") : dt(""));
 
           return (
             <button
@@ -173,7 +175,7 @@ export default function Treemap({
             >
               {showName && <span className="tm-name">{c.name}</span>}
               {showSize && <span className="tm-meta">{formatBytes(c.size)}</span>}
-              {showTag && <span className="tm-tag">{VERDICT_LABEL[c.level!]}</span>}
+              {showTag && <span className="tm-tag">{dt(VERDICT_LABEL[c.level!])}</span>}
             </button>
           );
         })}
@@ -185,15 +187,15 @@ export default function Treemap({
               <span className="tm-tip-size">{formatBytes(activeBox.item.size)}</span>
             </div>
             <div className="tm-tip-verdict">
-              {activeBox.item.level ? VERDICT_LABEL[activeBox.item.level] : "Not shown one by one"}
-              {total > 0 && ` · ${((activeBox.item.size / total) * 100).toFixed(1)}% of this level`}
+              {dt(activeBox.item.level ? VERDICT_LABEL[activeBox.item.level] : "Not shown one by one")}
+              {total > 0 && dt(" · {p0}", { p0: dt("{pct}% of this level", { pct: ((activeBox.item.size / total) * 100).toFixed(1) }) })}
             </div>
             <ul>
               {activeBox.item.reasons.map((r) => (
-                <li key={r}>{r}</li>
+                <li key={r}>{dt(r)}</li>
               ))}
             </ul>
-            {activeBox.item.entry?.is_dir && <div className="tm-tip-action">Click or press Enter to open</div>}
+            {activeBox.item.entry?.is_dir && <div className="tm-tip-action">{dt("Click or press Enter to open")}</div>}
           </div>
         )}
       </div>
@@ -203,13 +205,13 @@ export default function Treemap({
           {levelsShown.map((l) => (
             <span key={l} className="tm-legend-item">
               <i className={`tm-swatch v-${l}`} />
-              {VERDICT_LABEL[l]}
+              {dt(VERDICT_LABEL[l])}
             </span>
           ))}
           {cells.some((c) => !c.level) && (
             <span className="tm-legend-item">
               <i className="tm-swatch is-virtual" />
-              Too small to show
+              {dt("Too small to show")}
             </span>
           )}
         </div>
@@ -218,12 +220,12 @@ export default function Treemap({
       {unmeasured + omitted > 0 && (
         <p className="footnote">
           {[
-            unmeasured > 0 && `${unmeasured} measured 0 B (empty, or not readable)`,
-            omitted > 0 && `${omitted} too small to see`,
+            unmeasured > 0 && dt("{n} measured 0 B (empty, or not readable)", { n: unmeasured }),
+            omitted > 0 && dt("{n} too small to see", { n: omitted }),
           ]
             .filter(Boolean)
-            .join(" and ")}
-          {" "}— not drawn. List shows every item.
+            .join(dt(" and "))}
+          {dt(" ")}— {dt("not drawn. List shows every item.")}
         </p>
       )}
     </div>

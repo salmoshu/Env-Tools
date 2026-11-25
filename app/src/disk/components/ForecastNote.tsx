@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "../adapter";
+import { dt, useLang } from "../i18n";
 
 /// The space history's verdict on one drive: when it fills, or why there is
 /// no answer yet. Shown on the Drive health tab under its own forecast.
@@ -27,6 +28,7 @@ export function loadForecasts(): Promise<SpaceForecast[]> {
 }
 
 export default function ForecastNote({ mount }: { mount: string }) {
+  useLang();
   const [forecast, setForecast] = useState<SpaceForecast | null>(null);
 
   useEffect(() => {
@@ -42,7 +44,7 @@ export default function ForecastNote({ mount }: { mount: string }) {
   if (!forecast) return null;
   return (
     <p className="forecast-note hs-drive-note">
-      <strong>From Env-Tools's space history:</strong> {forecast.summary}
+      <strong>{dt("From Env-Tools's space history:")}</strong> {dt(forecast.summary)}
     </p>
   );
 }

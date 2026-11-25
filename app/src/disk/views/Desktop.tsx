@@ -3,11 +3,13 @@ import { invoke } from "../adapter";
 import { formatBytes } from "../format";
 import ConfirmClean from "../components/ConfirmClean";
 import type { CleanOutcome, DesktopReport, MoveOutcome } from "../types";
+import { dt, useLang } from "../i18n";
 
 type AgeFilter = "all" | "30" | "90";
 type TypeFilter = "all" | "screenshots" | "other";
 
 export default function Desktop({ onRecovered }: { onRecovered: (bytes: number) => void }) {
+  useLang();
   const [report, setReport] = useState<DesktopReport | null>(null);
   const [scanning, setScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -65,9 +67,9 @@ export default function Desktop({ onRecovered }: { onRecovered: (bytes: number) 
         destination: report.suggested_archive,
       });
       if (outcome.errors.length) setError(outcome.errors.join("; "));
-      setNotice(
-        `Moved ${outcome.moved} file(s) — ${formatBytes(outcome.moved_bytes)} — to ${report.suggested_archive}`
-      );
+      setNotice(dt("Moved {n} file(s) — {size} — to {path}", {
+        n: outcome.moved, size: formatBytes(outcome.moved_bytes), path: report.suggested_archive,
+      }));
       await scan();
     } catch (e) {
       setError(String(e));
@@ -97,7 +99,7 @@ export default function Desktop({ onRecovered }: { onRecovered: (bytes: number) 
         <ConfirmClean
           request={{
             kind: "userfile",
-            title: `Move ${selectedItems.length} file${selectedItems.length === 1 ? "" : "s"} to the Trash?`,
+            title: dt(selectedItems.length === 1 ? "Move {n} file to the Trash?" : "Move {n} files to the Trash?", { n: selectedItems.length }),
             items: selectedItems.map((i) => i.name),
             bytes: selectedBytes,
             risky: selectedItems.some((i) => !i.is_screenshot),
@@ -110,56 +112,54 @@ export default function Desktop({ onRecovered }: { onRecovered: (bytes: number) 
 
       <div className="view-head">
         <div>
-          <h2 className="view-title">Desktop</h2>
-          <p className="view-sub">Screenshots and clutter piling up on your desktop</p>
+          <h2 className="view-title">{dt("Desktop")}</h2>
+          <p className="view-sub">{dt("Screenshots and clutter piling up on your desktop")}</p>
         </div>
         <button className="btn" onClick={scan} disabled={scanning}>
-          {scanning ? "Scanning…" : "Rescan"}
+          {dt(scanning ? "Scanning…" : "Rescan")}
         </button>
       </div>
 
       {error && (
         <div className="banner-error">
           <span>{error}</span>
-          <button className="btn-ghost" onClick={() => setError(null)}>Dismiss</button>
+          <button className="btn-ghost" onClick={() => setError(null)}>{dt("Dismiss")}</button>
         </div>
       )}
       {notice && (
         <div className="banner-info">
-          <span>{notice}</span>{" "}
-          <button className="btn-ghost" onClick={() => setNotice(null)}>Dismiss</button>
+          <span>{notice}</span>{dt(" ")}
+          <button className="btn-ghost" onClick={() => setNotice(null)}>{dt("Dismiss")}</button>
         </div>
       )}
 
       {scanning && !report && (
-        <div className="empty-state"><div className="spinner" /><p>Reading your desktop…</p></div>
+        <div className="empty-state"><div className="spinner" /><p>{dt("Reading your desktop…")}</p></div>
       )}
 
       {report && (
         <>
           <section className="metrics">
             <div className="metric accent">
-              <span className="metric-label">Screenshots</span>
+              <span className="metric-label">{dt("Screenshots")}</span>
               <span className="metric-value">{formatBytes(report.screenshot_bytes)}</span>
             </div>
             <div className="metric">
-              <span className="metric-label">Screenshot files</span>
+              <span className="metric-label">{dt("Screenshot files")}</span>
               <span className="metric-value">{report.screenshot_count}</span>
             </div>
             <div className="metric">
-              <span className="metric-label">Everything on desktop</span>
+              <span className="metric-label">{dt("Everything on desktop")}</span>
               <span className="metric-value">{formatBytes(report.total_bytes)}</span>
             </div>
             <div className="metric">
-              <span className="metric-label">Items</span>
+              <span className="metric-label">{dt("Items")}</span>
               <span className="metric-value">{report.file_count}</span>
             </div>
           </section>
 
           <div className="banner-info">
-            Screenshots are your own files, so archiving is the default — they move to
-            <code className="inline-path"> {report.suggested_archive}</code> where you can still find
-            them. Trashing is available when you are sure.
+            {dt("Screenshots are your own files, so archiving is the default — they move to {path} where you can still find them. Trashing is available when you are sure.", { path: report.suggested_archive })}
           </div>
 
           <div className="filter-row">
@@ -168,19 +168,19 @@ export default function Desktop({ onRecovered }: { onRecovered: (bytes: number) 
                 className={`filter-tab ${type === "screenshots" ? "is-active" : ""}`}
                 onClick={() => setType("screenshots")}
               >
-                Screenshots ({report.screenshot_count})
+                {dt("Screenshots ({n})", { n: report.screenshot_count })}
               </button>
               <button
                 className={`filter-tab ${type === "other" ? "is-active" : ""}`}
                 onClick={() => setType("other")}
               >
-                Other files ({otherCount})
+                {dt("Other files ({n})", { n: otherCount })}
               </button>
               <button
                 className={`filter-tab ${type === "all" ? "is-active" : ""}`}
                 onClick={() => setType("all")}
               >
-                All ({report.file_count})
+                {dt("All ({n})", { n: report.file_count })}
               </button>
             </div>
             <div className="filter-tabs">
@@ -190,7 +190,7 @@ export default function Desktop({ onRecovered }: { onRecovered: (bytes: number) 
                   className={`filter-tab ${age === a ? "is-active" : ""}`}
                   onClick={() => setAge(a)}
                 >
-                  {a === "all" ? "Any age" : `Older than ${a}d`}
+                  {dt(a === "all" ? "Any age" : "Older than {n}d", { n: a })}
                 </button>
               ))}
             </div>
@@ -199,15 +199,15 @@ export default function Desktop({ onRecovered }: { onRecovered: (bytes: number) 
                 className="btn-ghost"
                 onClick={() => setSelected(new Set(shots.map((i) => i.path)))}
               >
-                Select all shown
+                {dt("Select all shown")}
               </button>
               {selected.size > 0 && (
                 <>
                   <button className="btn" onClick={archive} disabled={working}>
-                    {working ? "Working…" : `Archive ${selected.size} (${formatBytes(selectedBytes)})`}
+                    {dt(working ? "Working…" : "Archive {n} ({size})", { n: selected.size, size: formatBytes(selectedBytes) })}
                   </button>
                   <button className="btn-clean" onClick={() => setConfirmTrash(true)}>
-                    Trash
+                    {dt("Trash")}
                   </button>
                 </>
               )}
@@ -216,7 +216,7 @@ export default function Desktop({ onRecovered }: { onRecovered: (bytes: number) 
 
           <div className="findings">
             {shots.length === 0 && (
-              <div className="empty-state"><p>No screenshots in this view.</p></div>
+              <div className="empty-state"><p>{dt("No screenshots in this view.")}</p></div>
             )}
             {shots.map((i) => (
               <label key={i.path} className="model-row">
@@ -229,10 +229,8 @@ export default function Desktop({ onRecovered }: { onRecovered: (bytes: number) 
                   <span className="finding-name">{i.name}</span>
                   <span className="model-meta">
                     {i.age_days != null
-                      ? i.age_days < 1
-                        ? "Today"
-                        : `${i.age_days} days old`
-                      : "Unknown date"}
+                      ? dt(i.age_days < 1 ? "Today" : "{n} days old", { n: i.age_days })
+                      : dt("Unknown date")}
                   </span>
                 </div>
                 <div className="finding-size">
@@ -245,7 +243,7 @@ export default function Desktop({ onRecovered }: { onRecovered: (bytes: number) 
                     invoke("reveal_path", { path: i.path }).catch(() => {});
                   }}
                 >
-                  Show
+                  {dt("Show")}
                 </button>
               </label>
             ))}

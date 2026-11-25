@@ -41,6 +41,7 @@ export interface ScanResult {
 export interface CleanOutcome {
   freed_bytes: number;
   errors: string[];
+  docker_in_use?: string[];
 }
 
 export interface DeepEntry {

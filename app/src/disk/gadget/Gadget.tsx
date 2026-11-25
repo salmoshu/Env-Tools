@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { invoke } from "../adapter";
 import { getCurrentWindow } from "../adapter";
 import { formatBytes, isMac, isWindows } from "../format";
+import { dt, useLang } from "../i18n";
 
 type Mode = "bar" | "card";
 
@@ -62,10 +63,10 @@ const pct = (used: number, total: number) => (total > 0 ? Math.round((used / tot
 
 function untilFull(days: number | null): string | null {
   if (days === null) return null;
-  if (days < 1) return "full today";
-  if (days < 14) return `full in ${days} d`;
-  if (days < 60) return `full in ${Math.round(days / 7)} wk`;
-  return `full in ${Math.round(days / 30)} mo`;
+  if (days < 1) return dt("full today");
+  if (days < 14) return dt("full in {n} d", { n: days });
+  if (days < 60) return dt("full in {n} wk", { n: Math.round(days / 7) });
+  return dt("full in {n} mo", { n: Math.round(days / 30) });
 }
 
 /// Free space shown in a ring's centre: "84G", "512M".
@@ -129,6 +130,7 @@ function dragFrom(e: React.MouseEvent) {
 }
 
 export default function Gadget() {
+  useLang();
   const [mode, setMode] = useState<Mode>("bar");
   const [snap, setSnap] = useState<Snapshot | null>(null);
   const [clean, setClean] = useState<CleanState>({ phase: "idle" });
@@ -220,28 +222,28 @@ export default function Gadget() {
       <div ref={box} className="g-shell g-bar" onMouseDown={dragFrom}>
         <span className="g-stat">
           <Ring value={cpu} size={24} stroke={3} tone="cpu" />
-          <span className="g-k">CPU</span>
+          <span className="g-k">{dt("CPU")}</span>
           <span className="g-v">{cpu}%</span>
         </span>
         <span className="g-stat">
           <Ring value={mem} size={24} stroke={3} tone="mem" />
-          <span className="g-k">RAM</span>
+          <span className="g-k">{dt("RAM")}</span>
           <span className="g-v">{mem}%</span>
         </span>
         {d && (
           <>
             <span className="g-divider" />
-            <span className="g-stat" title={d.forecast}>
+            <span className="g-stat" title={dt(d.forecast)}>
               <span className="g-k">{d.mount}</span>
               <span className={`g-v ${diskUsed >= 90 ? "is-high" : ""}`}>{formatBytes(d.free)}</span>
-              <span className="g-k">{full ?? "free"}</span>
+              <span className="g-k">{full ?? dt("free")}</span>
             </span>
           </>
         )}
         <span className="g-actions">
-          <IconButton name="open" label="Open Env-Tools" onClick={openMain} />
-          <IconButton name="down" label="Show more" onClick={() => switchTo("card")} />
-          <IconButton name="close" label="Turn the gadget off" onClick={turnOff} />
+          <IconButton name="open" label={dt("Open Env-Tools")} onClick={openMain} />
+          <IconButton name="down" label={dt("Show more")} onClick={() => switchTo("card")} />
+          <IconButton name="close" label={dt("Turn the gadget off")} onClick={turnOff} />
         </span>
       </div>
     );
@@ -250,100 +252,85 @@ export default function Gadget() {
   return (
     <div ref={box} className="g-shell g-card">
       <div className="g-head" onMouseDown={dragFrom}>
-        <span className="g-title">Env-Tools</span>
-        <span className="g-k">{snap ? `${snap.processes} processes` : "reading…"}</span>
+        <span className="g-title">{dt("Env-Tools")}</span>
+        <span className="g-k">{snap ? dt("{p0} processes", { p0: snap.processes }) : dt("reading…")}</span>
         <span className="g-actions">
-          <IconButton name="open" label="Open Env-Tools" onClick={openMain} />
-          <IconButton name="up" label="Make it a bar" onClick={() => switchTo("bar")} />
-          <IconButton name="close" label="Turn the gadget off" onClick={turnOff} />
+          <IconButton name="open" label={dt("Open Env-Tools")} onClick={openMain} />
+          <IconButton name="up" label={dt("Make it a bar")} onClick={() => switchTo("bar")} />
+          <IconButton name="close" label={dt("Turn the gadget off")} onClick={turnOff} />
         </span>
       </div>
 
       <div className="g-rings" onMouseDown={dragFrom}>
         <div className="g-gauge">
           <Ring value={cpu} size={60} stroke={5} tone="cpu" label={`${cpu}%`} />
-          <span className="g-k">CPU</span>
+          <span className="g-k">{dt("CPU")}</span>
         </div>
-        <div className="g-gauge" title={`${formatBytes(snap?.memory_used ?? 0)} of ${formatBytes(snap?.memory_total ?? 0)}`}>
+        <div className="g-gauge" title={dt("{p0} of {p1}", { p0: formatBytes(snap?.memory_used ?? 0), p1: formatBytes(snap?.memory_total ?? 0) })}>
           <Ring value={mem} size={60} stroke={5} tone="mem" label={`${mem}%`} />
-          <span className="g-k">Memory</span>
+          <span className="g-k">{dt("Memory")}</span>
         </div>
         {d && (
-          <div className="g-gauge" title={`${formatBytes(d.free)} free of ${formatBytes(d.total)}`}>
+          <div className="g-gauge" title={dt("{p0} free of {p1}", { p0: formatBytes(d.free), p1: formatBytes(d.total) })}>
             <Ring value={diskUsed} size={60} stroke={5} tone="disk" label={shortFree(d.free)} />
-            <span className="g-k">{d.mount} free</span>
+            <span className="g-k">{dt("{mount} free", { mount: d.mount })}</span>
           </div>
         )}
       </div>
-      {d && <p className="g-note">{d.forecast}</p>}
+      {d && <p className="g-note">{dt(d.forecast)}</p>}
 
-      <div className="g-section">Busiest now</div>
+      <div className="g-section">{dt("Busiest now")}</div>
       <ul className="g-top">
         {(snap?.top ?? []).map((p) => (
           <li key={p.name}>
-            <span className="g-name" title={p.processes > 1 ? `${p.processes} processes` : undefined}>
+            <span className="g-name" title={p.processes > 1 ? dt("{p0} processes", { p0: p.processes }) : undefined}>
               {p.name}
             </span>
             <span className="g-v">{p.cpu.toFixed(0)}%</span>
             <span className="g-k g-mem">{formatBytes(p.memory)}</span>
           </li>
         ))}
-        {snap && snap.top.length === 0 && <li className="g-k">Nothing busy right now.</li>}
+        {snap && snap.top.length === 0 && <li className="g-k">{dt("Nothing busy right now.")}</li>}
       </ul>
 
       <div className="g-clean">
         {clean.phase === "idle" && (
-          <button className="g-btn is-accent" onClick={findSafe}>
-            Clean safe caches
-          </button>
+          <button className="g-btn is-accent" onClick={findSafe}>{dt("Clean safe caches")}</button>
         )}
-        {clean.phase === "looking" && <span className="g-k">Looking for caches that are safe to clear…</span>}
+        {clean.phase === "looking" && <span className="g-k">{dt("Looking for caches that are safe to clear…")}</span>}
         {clean.phase === "confirm" &&
           (clean.run.removed.length === 0 ? (
             <span className="g-k">
-              Nothing is safe to clear right now
-              {clean.run.skipped.length > 0 && ` (${clean.run.skipped.length} caches checked; Space history says why)`}.{" "}
-              <button className="g-link" onClick={() => setClean({ phase: "idle" })}>
-                OK
-              </button>
+              {dt("Nothing is safe to clear right now")}
+              {clean.run.skipped.length > 0 && dt(" ({n} caches checked; Space history says why)", { n: clean.run.skipped.length })}.{dt(" ")}
+              <button className="g-link" onClick={() => setClean({ phase: "idle" })}>{dt("OK")}</button>
             </span>
           ) : (
             <span className="g-confirm">
-              <span>
-                {clean.run.removed.length} {clean.run.removed.length === 1 ? "cache" : "caches"},{" "}
-                {formatBytes(clean.run.freed_bytes)} to the {BIN}.
-              </span>
-              <button className="g-btn is-accent" onClick={() => runClean(clean.run)}>
-                Clean
-              </button>
-              <button className="g-link" onClick={() => setClean({ phase: "idle" })}>
-                Cancel
-              </button>
+              <span>{dt(clean.run.removed.length === 1 ? "{n} cache, {size} to the {bin}." : "{n} caches, {size} to the {bin}.", {
+                n: clean.run.removed.length, size: formatBytes(clean.run.freed_bytes), bin: dt(BIN),
+              })}</span>
+              <button className="g-btn is-accent" onClick={() => runClean(clean.run)}>{dt("Clean")}</button>
+              <button className="g-link" onClick={() => setClean({ phase: "idle" })}>{dt("Cancel")}</button>
             </span>
           ))}
-        {clean.phase === "cleaning" && <span className="g-k">Moving caches to the {BIN}…</span>}
+        {clean.phase === "cleaning" && <span className="g-k">{dt("Moving caches to the {bin}…", { bin: dt(BIN) })}</span>}
         {clean.phase === "done" && (
           <span className="g-k">
-            Freed {formatBytes(clean.run.freed_bytes)}
-            {clean.run.skipped.length > 0 && `, ${clean.run.skipped.length} left in place`}.{" "}
-            <button className="g-link" onClick={() => setClean({ phase: "idle" })}>
-              OK
-            </button>
+            {dt("Freed {size}", { size: formatBytes(clean.run.freed_bytes) })}
+            {clean.run.skipped.length > 0 && dt(", {n} left in place", { n: clean.run.skipped.length })}.{dt(" ")}
+            <button className="g-link" onClick={() => setClean({ phase: "idle" })}>{dt("OK")}</button>
           </span>
         )}
         {clean.phase === "error" && (
           <span className="g-k g-err">
-            {clean.message}{" "}
-            <button className="g-link" onClick={() => setClean({ phase: "idle" })}>
-              OK
-            </button>
+            {clean.message}{dt(" ")}
+            <button className="g-link" onClick={() => setClean({ phase: "idle" })}>{dt("OK")}</button>
           </span>
         )}
       </div>
 
-      <button className="g-btn" onClick={openMain}>
-        Open Env-Tools
-      </button>
+      <button className="g-btn" onClick={openMain}>{dt("Open Env-Tools")}</button>
     </div>
   );
 }

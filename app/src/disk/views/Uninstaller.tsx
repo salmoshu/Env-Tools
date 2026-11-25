@@ -2,8 +2,10 @@ import { useEffect, useState } from "react";
 import { invoke } from "../adapter";
 import { formatBytes } from "../format";
 import type { AppInfo, CleanOutcome, LeftoverEntry } from "../types";
+import { dt, useLang } from "../i18n";
 
 export default function Uninstaller({ onRecovered }: { onRecovered: (bytes: number) => void }) {
+  useLang();
   const [apps, setApps] = useState<AppInfo[] | null>(null);
   const [scanning, setScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -95,25 +97,25 @@ export default function Uninstaller({ onRecovered }: { onRecovered: (bytes: numb
     <>
       <div className="view-head">
         <div>
-          <h2 className="view-title">Uninstaller</h2>
-          <p className="view-sub">Remove an app together with everything it left behind</p>
+          <h2 className="view-title">{dt("Uninstaller")}</h2>
+          <p className="view-sub">{dt("Remove an app together with everything it left behind")}</p>
         </div>
         <button className="btn" onClick={scan} disabled={scanning}>
-          {scanning ? "Scanning…" : "Rescan"}
+          {dt(scanning ? "Scanning…" : "Rescan")}
         </button>
       </div>
 
       {error && (
         <div className="banner-error">
           <span>{error}</span>
-          <button className="btn-ghost" onClick={() => setError(null)}>Dismiss</button>
+          <button className="btn-ghost" onClick={() => setError(null)}>{dt("Dismiss")}</button>
         </div>
       )}
 
       {scanning && !apps && (
         <div className="empty-state">
           <div className="spinner" />
-          <p>Listing installed apps and their sizes…</p>
+          <p>{dt("Listing installed apps and their sizes…")}</p>
         </div>
       )}
 
@@ -126,16 +128,14 @@ export default function Uninstaller({ onRecovered }: { onRecovered: (bytes: numb
               onClick={() => select(a)}
             >
               <span className="finding-name">{a.name}</span>
-              {a.version && <span className="badge stale">v{a.version}</span>}
+              {a.version && <span className="badge stale">{dt("v")}{a.version}</span>}
               {a.last_used_days != null && a.last_used_days > 90 && (
-                <span className="badge safety-caution">
-                  Unused {Math.round(a.last_used_days / 30)} mo
-                </span>
+                <span className="badge safety-caution">{dt("Unused {n} mo", { n: Math.round(a.last_used_days / 30) })}</span>
               )}
               <span className="app-size">
                 {formatBytes(a.size_bytes)}
                 {a.data_bytes > 0 && (
-                  <span className="app-data"> + {formatBytes(a.data_bytes)} data</span>
+                  <span className="app-data">{dt(" + {size} data", { size: formatBytes(a.data_bytes) })}</span>
                 )}
               </span>
             </button>
@@ -146,7 +146,7 @@ export default function Uninstaller({ onRecovered }: { onRecovered: (bytes: numb
           <div className="panel">
             <div className="panel-head">
               <span className="finding-name">{selected.name}</span>
-              <button className="btn-ghost sm" onClick={() => setSelected(null)}>Close</button>
+              <button className="btn-ghost sm" onClick={() => setSelected(null)}>{dt("Close")}</button>
             </div>
             {selected.bundle_id && <code className="finding-path">{selected.bundle_id}</code>}
 
@@ -156,15 +156,15 @@ export default function Uninstaller({ onRecovered }: { onRecovered: (bytes: numb
                 checked={checked.has(selected.path)}
                 onChange={() => toggle(selected.path)}
               />
-              <span className="child-name">App bundle</span>
+              <span className="child-name">{dt("App bundle")}</span>
               <span className="child-size">{formatBytes(selected.size_bytes)}</span>
             </label>
 
             <h3 className="section-title" style={{ marginTop: 14 }}>
-              Related data {leftovers ? `(${leftovers.length})` : ""}
+              {dt("Related data")} {leftovers ? dt("({p0})", { p0: leftovers.length }) : dt("")}
             </h3>
             {!leftovers && <div className="spinner sm" />}
-            {leftovers?.length === 0 && <p className="view-sub">No leftover data found.</p>}
+            {leftovers?.length === 0 && <p className="view-sub">{dt("No leftover data found.")}</p>}
             {leftovers?.map((l) => (
               <label key={l.path} className="check-row" title={l.path}>
                 <input
@@ -172,8 +172,8 @@ export default function Uninstaller({ onRecovered }: { onRecovered: (bytes: numb
                   checked={checked.has(l.path)}
                   onChange={() => toggle(l.path)}
                 />
-                <span className="child-name">{l.label}</span>
-                {!l.confident && <span className="badge safety-caution">Name match</span>}
+                <span className="child-name">{dt(l.label)}</span>
+                {!l.confident && <span className="badge safety-caution">{dt("Name match")}</span>}
                 <span className="child-size">{formatBytes(l.size_bytes)}</span>
               </label>
             ))}
@@ -182,9 +182,9 @@ export default function Uninstaller({ onRecovered }: { onRecovered: (bytes: numb
               {confirming ? (
                 <span className="confirm">
                   <button className="btn-danger" onClick={uninstall} disabled={working}>
-                    {working ? "Removing…" : `Move ${formatBytes(selectedTotal)} to Trash`}
+                    {dt(working ? "Removing…" : "Move {size} to Trash", { size: formatBytes(selectedTotal) })}
                   </button>
-                  <button className="btn-ghost" onClick={() => setConfirming(false)}>Cancel</button>
+                  <button className="btn-ghost" onClick={() => setConfirming(false)}>{dt("Cancel")}</button>
                 </span>
               ) : (
                 <button
@@ -192,7 +192,7 @@ export default function Uninstaller({ onRecovered }: { onRecovered: (bytes: numb
                   disabled={checked.size === 0 || working}
                   onClick={() => setConfirming(true)}
                 >
-                  Uninstall ({formatBytes(selectedTotal)})
+                  {dt("Uninstall ({size})", { size: formatBytes(selectedTotal) })}
                 </button>
               )}
             </div>

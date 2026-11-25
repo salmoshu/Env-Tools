@@ -11,6 +11,7 @@ import type {
   BuildRemoveOutcome,
   BuildReport,
 } from "../types/projects";
+import { dt, useLang } from "../i18n";
 
 type AgeFilter = 0 | 30 | 90 | 180;
 type Sort = "size" | "age";
@@ -25,11 +26,11 @@ const SAFETY_LABEL: Record<Safety, string> = {
 };
 
 function ageLabel(days: number | null): string {
-  if (days == null) return "unknown";
-  if (days < 1) return "today";
-  if (days < 30) return `${days}d ago`;
-  if (days < 365) return `${Math.round(days / 30)} mo ago`;
-  return `${(days / 365).toFixed(1)} yr ago`;
+  if (days == null) return dt("unknown");
+  if (days < 1) return dt("today");
+  if (days < 30) return dt("{n}d ago", { n: days });
+  if (days < 365) return dt("{n} mo ago", { n: Math.round(days / 30) });
+  return dt("{n} yr ago", { n: (days / 365).toFixed(1) });
 }
 
 function baseName(path: string): string {
@@ -61,17 +62,18 @@ function saveRoots(roots: string[]) {
 function phaseText(p: BuildProgress): string {
   switch (p.phase) {
     case "find":
-      return "Looking for projects";
+      return dt("Looking for projects");
     case "size":
-      return "Measuring build folders";
+      return dt("Measuring build folders");
     case "source":
-      return "Checking when each project last changed";
+      return dt("Checking when each project last changed");
     case "remove":
-      return `Moving build folders to the ${BIN}`;
+      return dt("Moving build folders to the {bin}", { bin: dt(BIN) });
   }
 }
 
 export default function Projects({ onRecovered }: { onRecovered: (bytes: number) => void }) {
+  useLang();
   const [report, setReport] = useState<BuildReport | null>(null);
   const [scanning, setScanning] = useState(false);
   const [removing, setRemoving] = useState(false);
@@ -105,7 +107,7 @@ export default function Projects({ onRecovered }: { onRecovered: (bytes: number)
     } catch (e) {
       const text = String(e);
       if (!text.includes("cancelled")) setError(text);
-      else setError("Scan cancelled. Nothing was changed.");
+      else setError(dt("Scan cancelled. Nothing was changed."));
     } finally {
       activeToken.current = null;
       setScanning(false);
@@ -208,7 +210,7 @@ export default function Projects({ onRecovered }: { onRecovered: (bytes: number)
   };
 
   const folderCount = allProjects.reduce((a, p) => a + p.folders.length, 0);
-  const title = `Move ${selectedFolders.length} build folder${selectedFolders.length === 1 ? "" : "s"} to the ${BIN}?`;
+  const title = dt("Move {n} build folders to the {bin}?", { n: selectedFolders.length, bin: dt(BIN) });
 
   return (
     <>
@@ -218,7 +220,7 @@ export default function Projects({ onRecovered }: { onRecovered: (bytes: number)
             kind: "build",
             title,
             items: selectedFolders.map((f) =>
-              f.paths.length > 1 ? `${f.id} (+${f.paths.length - 1} more)` : f.id
+              f.paths.length > 1 ? dt("{path} (+{n} more)", { path: f.id, n: f.paths.length - 1 }) : f.id
             ),
             bytes: selectedBytes,
             risky: selectedFolders.some((f) => f.safety === "risky"),
@@ -231,23 +233,22 @@ export default function Projects({ onRecovered }: { onRecovered: (bytes: number)
 
       <div className="view-head">
         <div>
-          <h2 className="view-title">Build folders</h2>
+          <h2 className="view-title">{dt("Build folders")}</h2>
           <p className="view-sub">
-            <code>node_modules</code>, Rust <code>target</code>, <code>.next</code>, virtualenvs and
-            other build output inside your projects — each one confirmed by the project beside it
+            {dt("node_modules, Rust target, .next, virtualenvs and other build output inside your projects — each one confirmed by the project beside it")}
           </p>
         </div>
         <button className="btn" onClick={scan} disabled={busy}>
-          {scanning ? "Scanning…" : "Rescan"}
+          {dt(scanning ? "Scanning…" : "Rescan")}
         </button>
       </div>
 
       <div className="bf-roots">
-        <span>Searching your home folder{roots.length > 0 ? " and" : ""}</span>
+        <span>{dt("Searching your home folder{extra}", { extra: roots.length > 0 ? dt(" and") : "" })}</span>
         {roots.map((r) => (
           <span key={r} className="bf-root-chip">
             <code>{r}</code>
-            <button onClick={() => dropRoot(r)} disabled={busy} title="Stop searching here" aria-label={`Remove ${r}`}>
+            <button onClick={() => dropRoot(r)} disabled={busy} title={dt("Stop searching here")} aria-label={dt("Remove {path}", { path: r })}>
               ×
             </button>
           </span>
@@ -255,19 +256,19 @@ export default function Projects({ onRecovered }: { onRecovered: (bytes: number)
         <input
           className="bf-root-input"
           value={rootInput}
-          placeholder={isWindows ? "Add a folder, e.g. D:\\code" : "Add a folder, e.g. /Volumes/Work/code"}
+          placeholder={dt(isWindows ? "Add a folder, e.g. D:\\code" : "Add a folder, e.g. /Volumes/Work/code")}
           onChange={(e) => setRootInput(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && addRoot()}
         />
         <button className="btn-ghost sm" onClick={addRoot} disabled={!rootInput.trim()}>
-          Add
+          {dt("Add")}
         </button>
       </div>
 
       {error && (
         <div className="banner-error">
           <span>{error}</span>
-          <button className="btn-ghost" onClick={() => setError(null)}>Dismiss</button>
+          <button className="btn-ghost" onClick={() => setError(null)}>{dt("Dismiss")}</button>
         </div>
       )}
 
@@ -276,11 +277,11 @@ export default function Projects({ onRecovered }: { onRecovered: (bytes: number)
           <div className="meter-head">
             <span>
               {phaseText(progress)}
-              {progress.current && ` · ${progress.current}`}
+              {progress.current && dt(" · {p0}", { p0: progress.current })}
             </span>
             {progress.total > 0 && (
               <span className="meter-value">
-                {Math.min(progress.done, progress.total)} of {progress.total}
+                {Math.min(progress.done, progress.total)}{dt(" ")}{dt("of")}{dt(" ")}{progress.total}
               </span>
             )}
           </div>
@@ -298,11 +299,11 @@ export default function Projects({ onRecovered }: { onRecovered: (bytes: number)
           <div className="bf-progress-actions">
             <p className="model-meta">
               {progress.phase === "remove"
-                ? `Large folders can take a while. Cancel stops after the folder it is on; nothing already in the ${BIN} is touched.`
-                : "Scanning only reads your disk. You can keep using Env-Tools in the meantime."}
+                ? dt("Large folders can take a while. Cancel stops after the folder it is on; nothing already in the {p0} is touched.", { p0: dt(BIN) })
+                : dt("Scanning only reads your disk. You can keep using Env-Tools in the meantime.")}
             </p>
             <button className="btn" onClick={cancel} disabled={cancelling}>
-              {cancelling ? "Cancelling…" : "Cancel"}
+              {cancelling ? dt("Cancelling…") : dt("Cancel")}
             </button>
           </div>
         </div>
@@ -311,20 +312,19 @@ export default function Projects({ onRecovered }: { onRecovered: (bytes: number)
       {outcome && !removing && (
         <div className="banner-info">
           {outcome.removed.length > 0 && (
-            <>
-              Moved {outcome.removed.length} build folder{outcome.removed.length === 1 ? "" : "s"} to
-              the {BIN} ({formatBytes(outcome.freed_bytes)}). Your source files were not touched.{" "}
+            <>{dt("Moved {n} build folders to the {bin} ({size}). Your source files were not touched.", {
+              n: outcome.removed.length, bin: dt(BIN), size: formatBytes(outcome.freed_bytes),
+            })}{dt(" ")}
             </>
           )}
           {outcome.already_gone.length > 0 && (
-            <>{outcome.already_gone.length} had already disappeared. </>
+            <>{outcome.already_gone.length}{dt(" ")}{dt("had already disappeared.")}</>
           )}
           {outcome.cancelled && (
-            <>Cancelled: {outcome.not_started} folder{outcome.not_started === 1 ? "" : "s"} not started. </>
+            <>{dt("Cancelled: {n} folders not started.", { n: outcome.not_started })}</>
           )}
           {outcome.skipped.length > 0 && (
-            <>
-              Skipped {outcome.skipped.length}:
+            <>{dt("Skipped")}{dt(" ")}{outcome.skipped.length}:
               <ul className="wt-reasons">
                 {outcome.skipped.map((s) => (
                   <li key={s}>{s}</li>
@@ -336,14 +336,12 @@ export default function Projects({ onRecovered }: { onRecovered: (bytes: number)
             outcome.already_gone.length === 0 &&
             outcome.skipped.length === 0 &&
             !outcome.cancelled &&
-            "Nothing was moved."}
+            dt("Nothing was moved.")}
         </div>
       )}
 
       {report && report.skipped_roots.length > 0 && (
-        <div className="banner-info">
-          Not searched:
-          <ul className="wt-reasons">
+        <div className="banner-info">{dt("Not searched:")}{dt(" ")}<ul className="wt-reasons">
             {report.skipped_roots.map((s) => (
               <li key={s}>{s}</li>
             ))}
@@ -354,7 +352,7 @@ export default function Projects({ onRecovered }: { onRecovered: (bytes: number)
       {scanning && !report && (
         <div className="empty-state">
           <div className="spinner" />
-          <p>Looking through your projects for build folders…</p>
+          <p>{dt("Looking through your projects for build folders…")}</p>
         </div>
       )}
 
@@ -362,65 +360,56 @@ export default function Projects({ onRecovered }: { onRecovered: (bytes: number)
         <>
           <section className="metrics">
             <div className="metric">
-              <span className="metric-label">All build folders</span>
+              <span className="metric-label">{dt("All build folders")}</span>
               <span className="metric-value">{formatBytes(report.total_bytes)}</span>
             </div>
             <div className="metric accent">
-              <span className="metric-label">Rated safe</span>
+              <span className="metric-label">{dt("Rated safe")}</span>
               <span className="metric-value">{formatBytes(report.safe_bytes)}</span>
             </div>
             <div className="metric">
-              <span className="metric-label">Projects</span>
+              <span className="metric-label">{dt("Projects")}</span>
               <span className="metric-value">
-                {allProjects.length} · {folderCount} folder{folderCount === 1 ? "" : "s"}
+                {allProjects.length} · {dt("{n} folders", { n: folderCount })}
               </span>
             </div>
           </section>
 
-          <div className="banner-info">
-            Env-Tools offers a folder only when the project beside it confirms what it is, such as a{" "}
-            <code>package.json</code> next to <code>node_modules</code> or a <code>Cargo.toml</code> next
-            to <code>target</code>. It moves folders to the {BIN}, never your source, and checks each one
-            again just before moving it. Anything a dev server or build tool is using is left alone.
-          </div>
+          <div className="banner-info">{dt("Env-Tools offers a folder only when the project beside it confirms what it is, such as a")}{dt(" ")}
+            <code>{dt("package.json")}</code>{dt(" ")}{dt("next to")}{dt(" ")}<code>{dt("node_modules")}</code>{dt(" ")}{dt("or a")}{dt(" ")}<code>{dt("Cargo.toml")}</code>{dt(" ")}{dt("next to")}{dt(" ")}<code>{dt("target")}</code>{dt(". It moves folders to the")}{dt(" ")}{dt(BIN)}{dt(", never your source, and checks each one again just before moving it. Anything a dev server or build tool is using is left alone.")}</div>
 
           <div className="filter-row">
-            <div className="filter-tabs" role="group" aria-label="Project age">
+            <div className="filter-tabs" role="group" aria-label={dt("Project age")}>
               {([0, 30, 90, 180] as AgeFilter[]).map((d) => (
                 <button
                   key={d}
                   className={`filter-tab ${age === d ? "is-active" : ""}`}
                   onClick={() => setAge(d)}
                 >
-                  {d === 0 ? "All projects" : `Untouched ${d}+ days`}
+                  {d === 0 ? dt("All projects") : dt("Untouched {p0}+ days", { p0: d })}
                 </button>
               ))}
             </div>
             <div className="bf-toolbar">
-              <label className="model-meta">
-                Sort by{" "}
+              <label className="model-meta">{dt("Sort by")}{dt(" ")}
                 <select value={sort} onChange={(e) => setSort(e.target.value as Sort)}>
-                  <option value="size">Size</option>
-                  <option value="age">Longest untouched</option>
+                  <option value="size">{dt("Size")}</option>
+                  <option value="age">{dt("Longest untouched")}</option>
                 </select>
               </label>
               <button
                 className="btn-ghost sm"
                 disabled={busy || safeVisible.length === 0}
                 onClick={() => setSelected(new Set(safeVisible.map((f) => f.id)))}
-              >
-                Select all safe
-              </button>
+              >{dt("Select all safe")}</button>
               <button
                 className="btn-ghost sm"
                 disabled={busy || selected.size === 0}
                 onClick={() => setSelected(new Set())}
-              >
-                Clear
-              </button>
+              >{dt("Clear")}</button>
               {selectedFolders.length > 0 && (
                 <button className="btn-clean" disabled={busy} onClick={() => setConfirming(true)}>
-                  {`Remove ${selectedFolders.length} selected (${formatBytes(selectedBytes)})`}
+                  {dt("Remove {p0} selected ({p1})", { p0: selectedFolders.length, p1: formatBytes(selectedBytes) })}
                 </button>
               )}
             </div>
@@ -430,8 +419,8 @@ export default function Projects({ onRecovered }: { onRecovered: (bytes: number)
             <div className="empty-state">
               <p>
                 {allProjects.length === 0
-                  ? "No build folders found in your projects."
-                  : "No projects match this filter."}
+                  ? dt("No build folders found in your projects.")
+                  : dt("No projects match this filter.")}
               </p>
             </div>
           )}
@@ -447,19 +436,9 @@ export default function Projects({ onRecovered }: { onRecovered: (bytes: number)
             />
           ))}
 
-          <p className="footnote">
-            Folders are pre-selected only when they are rated Safe and the project's own files have not
-            changed for 30 days. Safe means the build tool brings the folder back by itself, or a
-            lockfile makes the reinstall identical. Virtual environments and CMake folders are rated
-            Caution because they need a reinstall or the original configure options. "Last changed"
-            looks at the project's source files, not at its build output.
-          </p>
+          <p className="footnote">{dt("Folders are pre-selected only when they are rated Safe and the project's own files have not changed for 30 days. Safe means the build tool brings the folder back by itself, or a lockfile makes the reinstall identical. Virtual environments and CMake folders are rated Caution because they need a reinstall or the original configure options. \"Last changed\" looks at the project's source files, not at its build output.")}</p>
           {isWindows && (
-            <p className="footnote">
-              Windows deletes a folder for good, without asking, when it is larger than the Recycle
-              Bin's size limit or the Recycle Bin is turned off for that drive. Check the limit in the
-              Recycle Bin's Properties before removing very large folders.
-            </p>
+            <p className="footnote">{dt("Windows deletes a folder for good, without asking, when it is larger than the Recycle Bin's size limit or the Recycle Bin is turned off for that drive. Check the limit in the Recycle Bin's Properties before removing very large folders.")}</p>
           )}
         </>
       )}
@@ -505,7 +484,7 @@ function ProjectCard({
         <span className="size">{formatBytes(project.total_bytes)}</span>
       </div>
       <p className="bf-project-meta">
-        {project.project_type} · source files last changed {ageLabel(project.source_modified_days)} ·{" "}
+        {project.project_type}{dt(" ")}{dt("· source files last changed")}{dt(" ")}{ageLabel(project.source_modified_days)} ·{dt(" ")}
         <code>{project.path}</code>
       </p>
       <div className="findings">
@@ -516,24 +495,23 @@ function ProjectCard({
               checked={selected.has(f.id) && !f.in_use}
               disabled={f.in_use || busy}
               onChange={() => onToggle(f)}
-              title={f.in_use ? "In use right now, so Env-Tools will not remove it" : undefined}
+              title={f.in_use ? dt("In use right now, so Env-Tools will not remove it") : undefined}
             />
             <div className="model-main">
               <div className="finding-title">
                 <span className="finding-name">{folderName(f)}</span>
                 <span className="badge cat-dev_cache">{f.label}</span>
-                <span className={`badge safety-${f.safety}`}>{SAFETY_LABEL[f.safety]}</span>
-                {f.in_use && <span className="badge safety-caution">In use</span>}
+                <span className={`badge safety-${f.safety}`}>{dt(SAFETY_LABEL[f.safety])}</span>
+                {f.in_use && <span className="badge safety-caution">{dt("In use")}</span>}
               </div>
               <code className="finding-path">{f.id}</code>
-              <p className="bf-rebuild">
-                Comes back with <code>{f.rebuild}</code>
+              <p className="bf-rebuild">{dt("Comes back with")}{dt(" ")}<code>{f.rebuild}</code>
               </p>
               <ul className="safety-reasons">
                 {f.reasons.map((r) => (
                   <li key={r.text} className={`reason-${r.level}`}>
                     <span className="reason-mark" aria-hidden>
-                      {r.level === "ok" ? "✓" : r.level === "warn" ? "!" : "✕"}
+                      {r.level === "ok" ? dt("✓") : r.level === "warn" ? dt("!") : dt("✕")}
                     </span>
                     {r.text}
                   </li>
@@ -549,9 +527,7 @@ function ProjectCard({
                 e.preventDefault();
                 invoke("reveal_path", { path: f.id }).catch((err) => onError(String(err)));
               }}
-            >
-              Show
-            </button>
+            >{dt("Show")}</button>
           </label>
         ))}
       </div>

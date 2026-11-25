@@ -9,6 +9,8 @@ use crate::jharu_host::AppHandle;
 struct CleanOutcome {
     freed_bytes: u64,
     errors: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    docker_in_use: Vec<String>,
 }
 
 async fn scan_system() -> Result<crate::scanner::ScanResult, String> {
@@ -25,27 +27,72 @@ async fn clean_paths(paths: Vec<String>, source: Option<String>) -> Result<Clean
         let _busy = crate::autocare::activity();
         let mut freed = 0u64;
         let mut errors = vec![];
+        let mut docker_in_use = vec![];
+        let docker_rule = crate::rules::all_rules().into_iter().find(|rule| rule.id == "docker");
+        let docker_roots = docker_rule.as_ref().map(|rule| rule.paths()).unwrap_or_default();
+        let mut docker_running = None;
         for raw in paths {
             let path = PathBuf::from(&raw);
             if !path.exists() {
                 continue;
             }
+            let is_docker = docker_roots.iter().any(|root| crate::safety::is_under(&path, root));
+            let mut skip_docker = || {
+                errors.push(format!("{raw}: Docker is using this disk. Quit Docker Desktop or stop the Docker service and try again."));
+                docker_in_use.push(raw.clone());
+            };
+            if is_docker && *docker_running.get_or_insert_with(|| {
+                let facts = crate::safety::Facts::gather();
+                docker_rule.as_ref().is_some_and(|rule| rule.tools.iter().any(|tool| facts.running.contains(*tool)))
+                    || crate::settings::running_wsl_distros().iter().any(|name| crate::settings::is_docker_wsl_distro(name))
+            }) {
+                skip_docker();
+                continue;
+            }
             let size = crate::usage::reclaimable(&path);
-            match crate::trashlog::to_bin(std::slice::from_ref(&path)) {
+            match crate::trashlog::to_bin_detailed(std::slice::from_ref(&path)) {
                 Ok(()) => {
                     freed += size;
                     crate::trashlog::record(&path, size, source.as_deref().unwrap_or("Env-Tools"));
                 }
-                Err(e) if path.exists() && e.to_string().contains("aborted") => errors.push(format!(
+                Err(e) if is_docker && recycle_bin_sharing_error(&e) => skip_docker(),
+                Err(e) if path.exists() && (recycle_bin_sharing_error(&e) || e.to_string().contains("aborted")) => errors.push(format!(
                     "{raw}: something inside is open in another program, so nothing was moved. Close programs that may be using it and try again."
                 )),
                 Err(e) => errors.push(format!("{raw}: {e}")),
             }
         }
-        CleanOutcome { freed_bytes: freed, errors }
+        CleanOutcome { freed_bytes: freed, errors, docker_in_use }
     })
     .await
     .map_err(|e| e.to_string())
+}
+
+fn recycle_bin_sharing_error(error: &trash::Error) -> bool {
+    // IFileOperation reports shell HRESULTs as well as HRESULT_FROM_WIN32.
+    matches!(error, trash::Error::Os { code, .. }
+        if matches!(*code as u32, 0x8027_0027 | 0x8027_0028 | 0x8007_0020 | 0x8007_0021))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_shell_sharing_errors_without_relying_on_localized_text() {
+        let error = |code| trash::Error::Os { code, description: String::new() };
+        assert!(recycle_bin_sharing_error(&error(-2144927704)));
+        assert!(recycle_bin_sharing_error(&error(0x8007_0020u32 as i32)));
+        assert!(!recycle_bin_sharing_error(&error(0x8007_0005u32 as i32)));
+    }
+
+    #[test]
+    fn only_the_docker_internal_distros_block_docker_cleanup() {
+        assert!(crate::settings::is_docker_wsl_distro("docker-desktop"));
+        assert!(crate::settings::is_docker_wsl_distro("Docker-Desktop-Data"));
+        assert!(!crate::settings::is_docker_wsl_distro("Ubuntu-22.04"));
+        assert!(!crate::settings::is_docker_wsl_distro("docker-desktop-backup"));
+    }
 }
 
 fn arg<T: DeserializeOwned>(args: &Value, name: &str) -> Result<T, String> {

@@ -58,28 +58,6 @@
   justify-content: space-between;
   margin-bottom: 24px;
 }
-.jharu-root .brand{
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-.jharu-root .brand-logo{
-  width: 38px;
-  height: 38px;
-  border-radius: 10px;
-  background: #faeeda;
-  padding: 5px;
-  box-sizing: border-box;
-  flex: none;
-}
-.jharu-root .brand h1{
-  font-size: 18px;
-  font-weight: 600;
-}
-.jharu-root .subtitle{
-  font-size: 12.5px;
-  color: var(--text-2);
-}
 .jharu-root .topbar-right{
   display: flex;
   align-items: center;
@@ -927,6 +905,13 @@
   justify-content: flex-end;
   gap: 8px;
   margin-top: 18px;
+}
+.jharu-root .confirm-clean-actions > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  line-height: 1.35;
 }
 .jharu-root .filter-row{
   display: flex;
@@ -3230,7 +3215,6 @@ body.disk-gadget-window { background: transparent !important; }
 .jharu-root .sidebar { position: relative; height: 100%; min-height: 0; }
 .jharu-root .main-col { min-width: 0; min-height: 0; height: 100%; }
 .jharu-root .content-scroll { height: 100%; min-height: 0; overflow-y: auto; }
-.jharu-root .disk-brand-mark { display: flex; align-items: center; justify-content: center; color: #185fa5; font-size: 14px; font-weight: 700; }
 .jharu-root.gadget-root { min-height: 0; height: 100vh; background: transparent; overflow: visible; }
 .jharu-root.gadget-root .g-shell { -webkit-app-region: drag; }
 .jharu-root.gadget-root button { -webkit-app-region: no-drag; }

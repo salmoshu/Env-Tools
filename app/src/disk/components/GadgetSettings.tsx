@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "../adapter";
+import { dt, useLang } from "../i18n";
 
 type Mode = "bar" | "card";
 
@@ -10,6 +11,7 @@ interface Settings {
 
 /// The option that turns the floating gadget on or off. Off by default.
 export default function GadgetSettings() {
+  useLang();
   const [s, setS] = useState<Settings | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -39,15 +41,11 @@ export default function GadgetSettings() {
       <label className="gs-main">
         <input type="checkbox" checked={s.enabled} onChange={(e) => apply({ ...s, enabled: e.target.checked })} />
         <span>
-          <strong>Floating gadget</strong>
-          <span className="gs-sub">
-            A small window that stays on top of others: CPU, memory, free space on the system drive and
-            when it runs out, the busiest programs, and one-click cleaning of safe caches. It reads a
-            few numbers every two seconds and never scans the disk in the background.
-          </span>
+          <strong>{dt("Floating gadget")}</strong>
+          <span className="gs-sub">{dt("A small window that stays on top of others: CPU, memory, free space on the system drive and when it runs out, the busiest programs, and one-click cleaning of safe caches. It reads a few numbers every two seconds and never scans the disk in the background.")}</span>
         </span>
       </label>
-      <div className="gs-modes" role="radiogroup" aria-label="Gadget size">
+      <div className="gs-modes" role="radiogroup" aria-label={dt("Gadget size")}>
         {(["bar", "card"] as Mode[]).map((m) => (
           <button
             key={m}
@@ -57,10 +55,10 @@ export default function GadgetSettings() {
             disabled={!s.enabled}
             onClick={() => apply({ ...s, mode: m })}
           >
-            {m === "bar" ? "Slim bar" : "Card"}
+            {dt(m === "bar" ? "Slim bar" : "Card")}
           </button>
         ))}
-        <span className="gs-sub">Drag it anywhere; it opens where you left it. ✕ on the gadget turns it off.</span>
+        <span className="gs-sub">{dt("Drag it anywhere; it opens where you left it. ✕ on the gadget turns it off.")}</span>
       </div>
       {error && <p className="gs-error">{error}</p>}
     </div>

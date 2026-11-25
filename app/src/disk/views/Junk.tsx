@@ -4,6 +4,7 @@ import { listen, type UnlistenFn } from "../adapter";
 import { formatBytes, isWindows } from "../format";
 import ConfirmClean from "../components/ConfirmClean";
 import type { CleanOutcome, JunkGroup, JunkItem, LocationOutcome } from "../types";
+import { dt, useLang } from "../i18n";
 
 const BIN = isWindows ? "Recycle Bin" : "Trash";
 
@@ -12,30 +13,31 @@ const BIN = isWindows ? "Recycle Bin" : "Trash";
 function describe(o: LocationOutcome, adminLabels: string[]): string | null {
   const parts: string[] = [];
   if (o.moved > 0) {
-    parts.push(
-      `Moved ${o.moved.toLocaleString()} item${o.moved === 1 ? "" : "s"} (${formatBytes(o.freed_bytes)}) to the ${BIN}.`
-    );
+    parts.push(dt(o.moved === 1 ? "Moved {n} item ({size}) to the {bin}." : "Moved {n} items ({size}) to the {bin}.", {
+      n: o.moved.toLocaleString(), size: formatBytes(o.freed_bytes), bin: dt(BIN),
+    }));
   }
   if (o.left > 0) {
     const names = o.left_names.length ? ` (${o.left_names.join(", ")}${o.left > o.left_names.length ? ", …" : ""})` : "";
-    parts.push(
-      `${o.left.toLocaleString()} ${o.left === 1 ? "item is" : "items are"} open in a running program and stayed${names}. They usually clear after a restart.`
-    );
+    parts.push(dt(o.left === 1 ? "{n} item is open in a running program and stayed{names}. They usually clear after a restart." : "{n} items are open in a running program and stayed{names}. They usually clear after a restart.", {
+      n: o.left.toLocaleString(), names,
+    }));
   }
   if (o.recent > 0) {
-    parts.push(
-      `${o.recent.toLocaleString()} ${o.recent === 1 ? "item" : "items"} changed in the last day ${o.recent === 1 ? "was" : "were"} left alone, in case a program still needs ${o.recent === 1 ? "it" : "them"}.`
-    );
+    parts.push(dt(o.recent === 1 ? "{n} item changed in the last day was left alone, in case a program still needs it." : "{n} items changed in the last day were left alone, in case a program still needs them.", {
+      n: o.recent.toLocaleString(),
+    }));
   }
   if (o.admin_declined) {
-    parts.push(
-      `Administrator permission was declined, so ${adminLabels.join(", ") || "the system folders"} ${adminLabels.length === 1 ? "was" : "were"} left as ${adminLabels.length === 1 ? "it was" : "they were"}.`
-    );
+    parts.push(dt(adminLabels.length === 1 ? "Administrator permission was declined, so {names} was left unchanged." : "Administrator permission was declined, so {names} were left unchanged.", {
+      names: adminLabels.join(", ") || dt("the system folders"),
+    }));
   }
   return parts.length ? parts.join(" ") : null;
 }
 
 export default function Junk({ onRecovered }: { onRecovered: (bytes: number) => void }) {
+  useLang();
   const [groups, setGroups] = useState<JunkGroup[] | null>(null);
   const [scanning, setScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -113,8 +115,8 @@ export default function Junk({ onRecovered }: { onRecovered: (bytes: number) => 
 
   const progressLabel = (label: string) =>
     label === "admin"
-      ? "Waiting for the administrator helper — approve the Windows prompt if it is showing"
-      : groups?.flatMap((g) => g.items).find((i) => i.location === label)?.label ?? label;
+      ? dt("Waiting for the administrator helper — approve the Windows prompt if it is showing")
+      : dt(groups?.flatMap((g) => g.items).find((i) => i.location === label)?.label ?? label);
 
   const total = groups?.filter((g) => g.cleanable).reduce((a, g) => a + g.total_bytes, 0) ?? 0;
 
@@ -136,7 +138,7 @@ export default function Junk({ onRecovered }: { onRecovered: (bytes: number) => 
             <span>{progressLabel(progress.label)}</span>
             {progress.total > 0 && (
               <span className="meter-value">
-                {progress.done.toLocaleString()} of {progress.total.toLocaleString()} items
+                {dt("{done} of {total} items", { done: progress.done.toLocaleString(), total: progress.total.toLocaleString() })}
               </span>
             )}
           </div>
@@ -151,16 +153,14 @@ export default function Junk({ onRecovered }: { onRecovered: (bytes: number) => 
               />
             </div>
           )}
-          <p className="model-meta">
-            Folders with many small files take a while to move to the {BIN}.
-          </p>
+          <p className="model-meta">{dt("Folders with many small files take a while to move to the {bin}.", { bin: dt(BIN) })}</p>
         </div>
       )}
 
       {notice && (
         <div className="banner-info">
-          {notice}{" "}
-          <button className="btn-ghost sm" onClick={() => setNotice(null)}>Dismiss</button>
+          {notice}{dt(" ")}
+          <button className="btn-ghost sm" onClick={() => setNotice(null)}>{dt("Dismiss")}</button>
         </div>
       )}
     </>
@@ -174,8 +174,8 @@ export default function Junk({ onRecovered }: { onRecovered: (bytes: number) => 
             pendingGroup
               ? {
                   kind: pendingKind,
-                  title: `Clean ${pendingGroup.title}?`,
-                  items: pendingSafe.map((i) => i.label),
+                  title: dt("Clean {name}?", { name: dt(pendingGroup.title) }),
+                  items: pendingSafe.map((i) => dt(i.label)),
                   bytes: pendingSafe.reduce((a, i) => a + i.size_bytes, 0),
                   risky: false,
                   admin: pendingAdmin,
@@ -183,8 +183,8 @@ export default function Junk({ onRecovered }: { onRecovered: (bytes: number) => 
               : {
                   kind: pendingKind,
                   title: pendingItem!.location
-                    ? `Clean out ${pendingItem!.label}?`
-                    : `Move ${pendingItem!.label} to the ${BIN}?`,
+                    ? dt("Clean out {name}?", { name: dt(pendingItem!.label) })
+                    : dt("Move {name} to the {bin}?", { name: dt(pendingItem!.label), bin: dt(BIN) }),
                   items: [pendingItem!.path],
                   bytes: pendingItem!.size_bytes,
                   risky: !pendingItem!.safe,
@@ -203,41 +203,39 @@ export default function Junk({ onRecovered }: { onRecovered: (bytes: number) => 
 
       <div className="view-head">
         <div>
-          <h2 className="view-title">Junk files</h2>
-          <p className="view-sub">
-            Not caches — forgotten files that quietly take up space
-          </p>
+          <h2 className="view-title">{dt("Junk files")}</h2>
+          <p className="view-sub">{dt("Not caches — forgotten files that quietly take up space")}</p>
         </div>
         <button className="btn" onClick={scan} disabled={scanning}>
-          {scanning ? "Scanning…" : "Rescan"}
+          {dt(scanning ? "Scanning…" : "Rescan")}
         </button>
       </div>
 
       {error && (
         <div className="banner-error">
           <span>{error}</span>
-          <button className="btn-ghost" onClick={() => setError(null)}>Dismiss</button>
+          <button className="btn-ghost" onClick={() => setError(null)}>{dt("Dismiss")}</button>
         </div>
       )}
 
       {scanning && !groups && (
         <div className="empty-state">
           <div className="spinner" />
-          <p>Looking for installers, backups, logs, and large unused files…</p>
+          <p>{dt("Looking for installers, backups, logs, and large unused files…")}</p>
         </div>
       )}
 
       {groups && (
         <section className="metrics" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
           <div className="metric accent">
-            <span className="metric-label">Junk found</span>
+            <span className="metric-label">{dt("Junk found")}</span>
             <span className="metric-value">{formatBytes(total)}</span>
           </div>
         </section>
       )}
 
       {groups?.length === 0 && (
-        <div className="empty-state"><p>No junk found — nice and tidy.</p></div>
+        <div className="empty-state"><p>{dt("No junk found — nice and tidy.")}</p></div>
       )}
 
       {groups?.map((g) => {
@@ -247,9 +245,9 @@ export default function Junk({ onRecovered }: { onRecovered: (bytes: number) => 
           <div key={g.id} className="browser-card">
             <div className="browser-head">
               <div>
-                <span className="finding-name">{g.title}</span>
+                <span className="finding-name">{dt(g.title)}</span>
                 <span className="view-sub" style={{ marginLeft: 10 }}>{formatBytes(g.total_bytes)}</span>
-                <p className="view-sub" style={{ marginTop: 2 }}>{g.note}</p>
+                <p className="view-sub" style={{ marginTop: 2 }}>{dt(g.note)}</p>
               </div>
               {g.cleanable && safeItems.length > 0 && (
                 <button
@@ -257,7 +255,7 @@ export default function Junk({ onRecovered }: { onRecovered: (bytes: number) => 
                   disabled={cleaning != null}
                   onClick={() => setConfirming(g.id)}
                 >
-                  {cleaning === g.id ? "Cleaning…" : `Clean safe items (${formatBytes(safeTotal)})`}
+                  {dt(cleaning === g.id ? "Cleaning…" : "Clean safe items ({size})", { size: formatBytes(safeTotal) })}
                 </button>
               )}
             </div>
@@ -265,23 +263,19 @@ export default function Junk({ onRecovered }: { onRecovered: (bytes: number) => 
             <div className="browser-items">
               {g.items.map((i) => (
                 <div key={i.path} className="junk-item">
-                  <span className="child-name" title={i.path}>{i.label}</span>
+                  <span className="child-name" title={i.path}>{dt(i.label)}</span>
                   <span className="junk-badges">
                     <span className={`badge ${i.safe ? "safety-safe" : "safety-caution"}`}>
-                      {i.safe ? "Safe" : "Review"}
+                      {dt(i.safe ? "Safe" : "Review")}
                     </span>
                     {i.stale_days != null && i.stale_days > 30 && (
-                      <span className="badge stale">{Math.round(i.stale_days / 30)} mo old</span>
+                      <span className="badge stale">{dt("{n} mo old", { n: Math.round(i.stale_days / 30) })}</span>
                     )}
                     {i.needs_admin && (
-                      <span className="badge stale" title="Windows asks for administrator permission when you clean this">
-                        Admin
-                      </span>
+                      <span className="badge stale" title={dt("Windows asks for administrator permission when you clean this")}>{dt("Admin")}</span>
                     )}
                     {i.read_error && (
-                      <span className="badge safety-risky" title={i.read_error}>
-                        Partly unreadable
-                      </span>
+                      <span className="badge safety-risky" title={i.read_error}>{dt("Partly unreadable")}</span>
                     )}
                   </span>
                   <span className="child-size">{formatBytes(i.size_bytes)}</span>
@@ -289,7 +283,7 @@ export default function Junk({ onRecovered }: { onRecovered: (bytes: number) => 
                     className="btn-ghost sm"
                     onClick={() => invoke("reveal_path", { path: i.path }).catch((e) => setError(String(e)))}
                   >
-                    Show
+                    {dt("Show")}
                   </button>
                   {g.cleanable && (
                     <button
@@ -297,7 +291,7 @@ export default function Junk({ onRecovered }: { onRecovered: (bytes: number) => 
                       disabled={cleaning != null}
                       onClick={() => setConfirming(i.path)}
                     >
-                      {cleaning === i.path ? "Cleaning…" : "Clean"}
+                      {dt(cleaning === i.path ? "Cleaning…" : "Clean")}
                     </button>
                   )}
                 </div>

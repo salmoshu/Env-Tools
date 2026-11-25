@@ -65,19 +65,24 @@ fn journal_path() -> Option<PathBuf> {
 /// tests on macOS never fill the user's real Trash: there the fixture is
 /// deleted instead. Tests on Windows and Linux use the real bin and put
 /// their items back, which macOS offers no API for.
-#[cfg(not(all(test, target_os = "macos")))]
 pub fn to_bin<P: AsRef<Path>>(paths: &[P]) -> Result<(), String> {
+    to_bin_detailed(paths).map_err(|e| e.to_string())
+}
+
+#[cfg(not(all(test, target_os = "macos")))]
+pub fn to_bin_detailed<P: AsRef<Path>>(paths: &[P]) -> Result<(), trash::Error> {
     let refs: Vec<&Path> = paths.iter().map(|p| p.as_ref()).collect();
-    trash::delete_all(refs).map_err(|e| e.to_string())
+    trash::delete_all(refs)
 }
 
 #[cfg(all(test, target_os = "macos"))]
-pub fn to_bin<P: AsRef<Path>>(paths: &[P]) -> Result<(), String> {
+pub fn to_bin_detailed<P: AsRef<Path>>(paths: &[P]) -> Result<(), trash::Error> {
     for p in paths {
         let p = p.as_ref();
-        let meta = p.symlink_metadata().map_err(|e| format!("{}: {e}", p.display()))?;
+        let error = |e: std::io::Error| trash::Error::Unknown { description: format!("{}: {e}", p.display()) };
+        let meta = p.symlink_metadata().map_err(error)?;
         let r = if meta.is_dir() { std::fs::remove_dir_all(p) } else { std::fs::remove_file(p) };
-        r.map_err(|e| format!("{}: {e}", p.display()))?;
+        r.map_err(error)?;
     }
     Ok(())
 }

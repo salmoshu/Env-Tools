@@ -3,8 +3,10 @@ import { invoke } from "../adapter";
 import { formatBytes } from "../format";
 import ConfirmClean from "../components/ConfirmClean";
 import type { CleanOutcome, PyEnv, PyReport } from "../types";
+import { dt, useLang } from "../i18n";
 
 export default function Python({ onRecovered }: { onRecovered: (bytes: number) => void }) {
+  useLang();
   const [report, setReport] = useState<PyReport | null>(null);
   const [scanning, setScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -49,7 +51,7 @@ export default function Python({ onRecovered }: { onRecovered: (bytes: number) =
         <ConfirmClean
           request={{
             kind: "environment",
-            title: `Remove the ${confirming.name} environment?`,
+            title: dt("Remove the {name} environment?", { name: confirming.name }),
             items: [confirming.path],
             bytes: confirming.size_bytes,
             risky: confirming.stale_days == null || confirming.stale_days < 90,
@@ -62,27 +64,25 @@ export default function Python({ onRecovered }: { onRecovered: (bytes: number) =
 
       <div className="view-head">
         <div>
-          <h2 className="view-title">Python environments</h2>
-          <p className="view-sub">
-            Where your virtualenvs and conda environments go, and what they duplicate
-          </p>
+          <h2 className="view-title">{dt("Python environments")}</h2>
+          <p className="view-sub">{dt("Where your virtualenvs and conda environments go, and what they duplicate")}</p>
         </div>
         <button className="btn" onClick={scan} disabled={scanning}>
-          {scanning ? "Scanning…" : "Rescan"}
+          {dt(scanning ? "Scanning…" : "Rescan")}
         </button>
       </div>
 
       {error && (
         <div className="banner-error">
           <span>{error}</span>
-          <button className="btn-ghost" onClick={() => setError(null)}>Dismiss</button>
+          <button className="btn-ghost" onClick={() => setError(null)}>{dt("Dismiss")}</button>
         </div>
       )}
 
       {scanning && !report && (
         <div className="empty-state">
           <div className="spinner" />
-          <p>Looking for environments and measuring their packages…</p>
+          <p>{dt("Looking for environments and measuring their packages…")}</p>
         </div>
       )}
 
@@ -90,27 +90,27 @@ export default function Python({ onRecovered }: { onRecovered: (bytes: number) =
         <>
           <section className="metrics">
             <div className="metric">
-              <span className="metric-label">All environments</span>
+              <span className="metric-label">{dt("All environments")}</span>
               <span className="metric-value">{formatBytes(report.total_bytes)}</span>
             </div>
             <div className="metric accent">
-              <span className="metric-label">Wasted on duplicates</span>
+              <span className="metric-label">{dt("Wasted on duplicates")}</span>
               <span className="metric-value">{formatBytes(report.wasted_bytes)}</span>
             </div>
             <div className="metric">
-              <span className="metric-label">Environments</span>
+              <span className="metric-label">{dt("Environments")}</span>
               <span className="metric-value">{report.envs.length}</span>
             </div>
           </section>
 
           {report.duplicates.length > 0 && (
             <section>
-              <h2 className="section-title">Packages installed in more than one environment</h2>
+              <h2 className="section-title">{dt("Packages installed in more than one environment")}</h2>
               <div className="findings">
                 {report.duplicates.slice(0, 12).map((d) => (
                   <div key={d.name} className="dup-row">
                     <span className="finding-name">{d.name}</span>
-                    <span className="badge stale">{d.copies} copies</span>
+                    <span className="badge stale">{dt("{n} copies", { n: d.copies })}</span>
                     <div className="child-bar">
                       <div
                         className="child-fill"
@@ -122,25 +122,22 @@ export default function Python({ onRecovered }: { onRecovered: (bytes: number) =
                         }}
                       />
                     </div>
-                    <span className="child-size">{formatBytes(d.total_bytes)} total</span>
-                    <span className="dup-waste">{formatBytes(d.wasted_bytes)} duplicated</span>
+                    <span className="child-size">{dt("{size} total", { size: formatBytes(d.total_bytes) })}</span>
+                    <span className="dup-waste">{dt("{size} duplicated", { size: formatBytes(d.wasted_bytes) })}</span>
                   </div>
                 ))}
               </div>
-              <p className="footnote">
-                Duplicated size is what you would save if each package existed only once. Removing an
-                environment you no longer use is the safe way to reclaim it.
-              </p>
+              <p className="footnote">{dt("Duplicated size is what you would save if each package existed only once. Removing an environment you no longer use is the safe way to reclaim it.")}</p>
             </section>
           )}
 
           <section>
             <h2 className="section-title">
-              Environments <span className="count">{report.envs.length}</span>
+              {dt("Environments")} <span className="count">{report.envs.length}</span>
             </h2>
             <div className="findings">
               {report.envs.length === 0 && (
-                <div className="empty-state"><p>No Python environments found.</p></div>
+                <div className="empty-state"><p>{dt("No Python environments found.")}</p></div>
               )}
               {report.envs.map((env) => (
                 <div key={env.path} className="finding">
@@ -148,35 +145,33 @@ export default function Python({ onRecovered }: { onRecovered: (bytes: number) =
                     <button
                       className="expander"
                       onClick={() => setExpanded(expanded === env.path ? null : env.path)}
-                      aria-label="Toggle packages"
+                      aria-label={dt("Toggle packages")}
                     >
-                      {expanded === env.path ? "▾" : "▸"}
+                      {expanded === env.path ? dt("▾") : dt("▸")}
                     </button>
                     <div className="finding-main">
                       <div className="finding-title">
                         <span className="finding-name">{env.name}</span>
                         <span className="badge cat-dev_cache">{env.kind}</span>
                         {env.stale_days != null && env.stale_days > 90 && (
-                          <span className="badge safety-caution">
-                            Untouched {Math.round(env.stale_days / 30)} mo
-                          </span>
+                          <span className="badge safety-caution">{dt("Untouched {n} mo", { n: Math.round(env.stale_days / 30) })}</span>
                         )}
                       </div>
                       <code className="finding-path">{env.path}</code>
                     </div>
                     <div className="finding-size">
                       <span className="size">{formatBytes(env.size_bytes)}</span>
-                      <span className="files">{env.packages.length} packages</span>
+                      <span className="files">{dt("{n} packages", { n: env.packages.length })}</span>
                     </div>
                     <div className="finding-actions">
                       <button
                         className="btn-ghost"
                         onClick={() => invoke("reveal_path", { path: env.path }).catch(() => {})}
                       >
-                        Explore
+                        {dt("Explore")}
                       </button>
                       <button className="btn-clean" onClick={() => setConfirming(env)}>
-                        Remove
+                        {dt("Remove")}
                       </button>
                     </div>
                   </div>

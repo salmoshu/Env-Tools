@@ -3,6 +3,7 @@ import { invoke } from "../adapter";
 import { listen, type UnlistenFn } from "../adapter";
 import { formatBytes, isWindows } from "../format";
 import type { Reason, Safety } from "../types";
+import { dt } from "../i18n";
 
 interface Fact {
   label: string;
@@ -95,7 +96,7 @@ function Reasons({ reasons }: { reasons: Reason[] }) {
       {reasons.map((r) => (
         <li key={r.text} className={`reason-${r.level}`}>
           <span className="reason-mark" aria-hidden>
-            {r.level === "ok" ? "✓" : r.level === "warn" ? "!" : "✕"}
+            {r.level === "ok" ? dt("✓") : r.level === "warn" ? dt("!") : dt("✕")}
           </span>
           {r.text}
         </li>
@@ -207,10 +208,7 @@ export default function SystemSpace({ onRecovered }: { onRecovered: (bytes: numb
             <h3 className="modal-title">{confirming.action.label}?</h3>
             <p className="modal-body">{confirming.action.cost}</p>
             {confirming.action.permanent ? (
-              <p className="modal-warn">
-                This cannot be undone. It does not go to the {isWindows ? "Recycle Bin" : "Trash"}, and
-                there is no command that brings it back.
-              </p>
+              <p className="modal-warn">{dt("This cannot be undone. It does not go to the")}{dt(" ")}{isWindows ? dt("Recycle Bin") : dt("Trash")}{dt(", and there is no command that brings it back.")}</p>
             ) : (
               confirming.action.undo && (
                 <p className="modal-body">
@@ -220,14 +218,10 @@ export default function SystemSpace({ onRecovered }: { onRecovered: (bytes: numb
             )}
             {confirming.action.admin && (
               <p className="modal-body">
-                {isWindows ? "Windows" : "macOS"} will ask for {ADMIN_WORD} permission. Env-Tools itself keeps
-                running without it, and only this one command is run with it.
-              </p>
+                {isWindows ? dt("Windows") : dt("macOS")}{dt(" ")}{dt("will ask for")}{dt(" ")}{ADMIN_WORD}{dt(" ")}{dt("permission. Env-Tools itself keeps running without it, and only this one command is run with it.")}</p>
             )}
             {confirming.action.slow && (
-              <p className="modal-body">
-                This takes a while. Keep the computer on until it finishes; you can use Env-Tools meanwhile.
-              </p>
+              <p className="modal-body">{dt("This takes a while. Keep the computer on until it finishes; you can use Env-Tools meanwhile.")}</p>
             )}
             <div className="modal-items">
               {confirming.action.commands.map((c) => (
@@ -236,27 +230,21 @@ export default function SystemSpace({ onRecovered }: { onRecovered: (bytes: numb
             </div>
             {confirming.action.est_bytes != null && (
               <div className="modal-total">
-                <span>{confirming.action.est_note ? "Expected (estimate)" : "Space freed"}</span>
+                <span>{confirming.action.est_note ? dt("Expected (estimate)") : dt("Space freed")}</span>
                 <strong>{formatBytes(confirming.action.est_bytes)}</strong>
               </div>
             )}
             {confirming.action.safety === "risky" && (
               <label className="ss-understand">
-                <input type="checkbox" checked={understood} onChange={(e) => setUnderstood(e.target.checked)} />
-                I understand what I lose and that Env-Tools rates this as risky.
-              </label>
+                <input type="checkbox" checked={understood} onChange={(e) => setUnderstood(e.target.checked)} />{dt(" ")}{dt("I understand what I lose and that Env-Tools rates this as risky.")}</label>
             )}
             <div className="modal-actions">
-              <button className="btn" onClick={() => setConfirming(null)}>
-                No, keep it
-              </button>
+              <button className="btn" onClick={() => setConfirming(null)}>{dt("No, keep it")}</button>
               <button
                 className="btn-danger"
                 disabled={confirming.action.safety === "risky" && !understood}
                 onClick={() => run(confirming.item, confirming.action)}
-              >
-                Yes, run it
-              </button>
+              >{dt("Yes, run it")}</button>
             </div>
           </div>
         </div>
@@ -264,21 +252,20 @@ export default function SystemSpace({ onRecovered }: { onRecovered: (bytes: numb
 
       <div className="view-head">
         <div>
-          <h2 className="view-title">System space</h2>
-          <p className="view-sub">
-            Large things the system keeps that are not ordinary files:{" "}
-            {isWindows ? "hibernation, restore points, snapshots, Docker" : "local snapshots, the sleep image, Docker"}
+          <h2 className="view-title">{dt("System space")}</h2>
+          <p className="view-sub">{dt("Large things the system keeps that are not ordinary files:")}{dt(" ")}
+            {isWindows ? dt("hibernation, restore points, snapshots, Docker") : dt("local snapshots, the sleep image, Docker")}
           </p>
         </div>
         <button className="btn" onClick={scan} disabled={scanning || working}>
-          {scanning ? "Scanning…" : "Rescan"}
+          {scanning ? dt("Scanning…") : dt("Rescan")}
         </button>
       </div>
 
       {error && (
         <div className="banner-error">
           <span>{error}</span>
-          <button className="btn-ghost" onClick={() => setError(null)}>Dismiss</button>
+          <button className="btn-ghost" onClick={() => setError(null)}>{dt("Dismiss")}</button>
         </div>
       )}
 
@@ -289,9 +276,7 @@ export default function SystemSpace({ onRecovered }: { onRecovered: (bytes: numb
               {busy.label} · {busy.stage}
             </span>
             {busy.cancellable && (
-              <button className="btn-ghost sm" onClick={cancel}>
-                Cancel
-              </button>
+              <button className="btn-ghost sm" onClick={cancel}>{dt("Cancel")}</button>
             )}
           </div>
           <div className="meter-track">
@@ -299,8 +284,8 @@ export default function SystemSpace({ onRecovered }: { onRecovered: (bytes: numb
           </div>
           <p className="model-meta">
             {busy.cancellable
-              ? "Cancel stops waiting for the command; Docker may finish what it had started."
-              : "System commands are not interrupted half way. You can keep using Env-Tools meanwhile."}
+              ? dt("Cancel stops waiting for the command; Docker may finish what it had started.")
+              : dt("System commands are not interrupted half way. You can keep using Env-Tools meanwhile.")}
           </p>
         </div>
       )}
@@ -313,34 +298,30 @@ export default function SystemSpace({ onRecovered }: { onRecovered: (bytes: numb
             ))}
             {notice.output && (
               <details>
-                <summary>Command output</summary>
+                <summary>{dt("Command output")}</summary>
                 <pre className="ss-output">{notice.output}</pre>
               </details>
             )}
           </div>
-          <button className="btn-ghost" onClick={() => setNotice(null)}>Dismiss</button>
+          <button className="btn-ghost" onClick={() => setNotice(null)}>{dt("Dismiss")}</button>
         </div>
       )}
 
       {scanning && !report && (
         <div className="empty-state">
           <div className="spinner" />
-          <p>Reading file sizes and asking the system what it keeps…</p>
+          <p>{dt("Reading file sizes and asking the system what it keeps…")}</p>
         </div>
       )}
 
       {report && (
         <>
-          <div className="banner-info">
-            None of this can go to the {isWindows ? "Recycle Bin" : "Trash"}, so every action says
-            what it costs, whether it can be undone, and shows the exact command Env-Tools will run. Looking
-            changes nothing; Env-Tools checks again right before it acts and skips anything that changed.
-            {report.is_admin && " Env-Tools is running as administrator."}
+          <div className="banner-info">{dt("None of this can go to the")}{dt(" ")}{isWindows ? dt("Recycle Bin") : dt("Trash")}{dt(", so every action says what it costs, whether it can be undone, and shows the exact command Env-Tools will run. Looking changes nothing; Env-Tools checks again right before it acts and skips anything that changed.")}{dt(" ")}{report.is_admin && dt(" Env-Tools is running as administrator.")}
           </div>
 
           {report.items.length === 0 && (
             <div className="empty-state">
-              <p>Nothing to show on this system.</p>
+              <p>{dt("Nothing to show on this system.")}</p>
             </div>
           )}
 
@@ -350,12 +331,12 @@ export default function SystemSpace({ onRecovered }: { onRecovered: (bytes: numb
                 <div className="ss-head-main">
                   <h3 className="ss-title">
                     {item.title}
-                    {item.info_only && <span className="badge stale">Information only</span>}
+                    {item.info_only && <span className="badge stale">{dt("Information only")}</span>}
                   </h3>
                   <p className="ss-summary">{item.summary}</p>
                 </div>
                 <div className="ss-size">
-                  <span className="size">{item.size_bytes != null ? formatBytes(item.size_bytes) : "—"}</span>
+                  <span className="size">{item.size_bytes != null ? formatBytes(item.size_bytes) : dt("—")}</span>
                   {item.size_note && <span className="model-meta">{item.size_note}</span>}
                 </div>
               </div>
@@ -379,13 +360,12 @@ export default function SystemSpace({ onRecovered }: { onRecovered: (bytes: numb
                 <div className="ss-inspect">
                   <div>
                     <code className="ss-command">{item.inspect.command}</code>
-                    <p className="model-meta">
-                      Read-only.{item.inspect.admin && ` Asks for ${ADMIN_WORD} permission.`}
-                      {item.inspect.slow && " Takes a minute or two."}
+                    <p className="model-meta">{dt("Read-only.")}{item.inspect.admin && dt(" Asks for {p0} permission.", { p0: ADMIN_WORD })}
+                      {item.inspect.slow && dt(" Takes a minute or two.")}
                     </p>
                   </div>
                   <button className="btn" disabled={working} onClick={() => inspect(item)}>
-                    {item.inspect.done ? "Check again" : item.inspect.label}
+                    {item.inspect.done ? dt("Check again") : item.inspect.label}
                   </button>
                 </div>
               )}
@@ -395,14 +375,14 @@ export default function SystemSpace({ onRecovered }: { onRecovered: (bytes: numb
                   <div className="ss-action-head">
                     <div className="finding-title">
                       <span className="finding-name">{a.label}</span>
-                      <span className={`badge safety-${a.safety}`}>{SAFETY_LABEL[a.safety]}</span>
-                      {a.admin && <span className="badge stale">Needs administrator</span>}
-                      <span className="badge stale">{a.permanent ? "Cannot be undone" : "Reversible"}</span>
+                      <span className={`badge safety-${a.safety}`}>{dt(SAFETY_LABEL[a.safety])}</span>
+                      {a.admin && <span className="badge stale">{dt("Needs administrator")}</span>}
+                      <span className="badge stale">{a.permanent ? dt("Cannot be undone") : dt("Reversible")}</span>
                     </div>
                     <div className="ss-action-run">
                       {a.est_bytes != null && (
                         <span className="ss-est">
-                          {a.est_note ? "≈ " : ""}
+                          {a.est_note ? dt("≈ ") : dt("")}
                           {formatBytes(a.est_bytes)}
                         </span>
                       )}
@@ -414,13 +394,11 @@ export default function SystemSpace({ onRecovered }: { onRecovered: (bytes: numb
                           setUnderstood(false);
                           setConfirming({ item, action: a });
                         }}
-                      >
-                        Run…
-                      </button>
+                      >{dt("Run…")}</button>
                     </div>
                   </div>
                   <p className="ss-cost">
-                    <strong>Costs:</strong> {a.cost}
+                    <strong>{dt("Costs:")}</strong> {a.cost}
                   </p>
                   {!a.enabled && a.disabled_reason && <p className="model-meta">{a.disabled_reason}</p>}
                   <Reasons reasons={a.reasons} />
@@ -429,7 +407,7 @@ export default function SystemSpace({ onRecovered }: { onRecovered: (bytes: numb
                       <code key={c} className="ss-command">{c}</code>
                     ))}
                   </div>
-                  {a.undo && <p className="model-meta">Undo: {withCode(a.undo)}</p>}
+                  {a.undo && <p className="model-meta">{dt("Undo:")}{dt(" ")}{withCode(a.undo)}</p>}
                   {a.est_note && <p className="model-meta">{a.est_note}</p>}
                 </div>
               ))}
@@ -438,8 +416,8 @@ export default function SystemSpace({ onRecovered }: { onRecovered: (bytes: numb
 
           <p className="footnote">
             {isWindows
-              ? "Page file and sleep image are listed for information only: Env-Tools never changes them. Windows reports its tools' results in the system language; where Env-Tools cannot read a figure it says so and shows the tool's own output."
-              : "The sleep image is listed for information only: Env-Tools never changes it. Where Env-Tools cannot read a figure from a system tool it says so and shows the tool's own output."}
+              ? dt("Page file and sleep image are listed for information only: Env-Tools never changes them. Windows reports its tools' results in the system language; where Env-Tools cannot read a figure it says so and shows the tool's own output.")
+              : dt("The sleep image is listed for information only: Env-Tools never changes it. Where Env-Tools cannot read a figure from a system tool it says so and shows the tool's own output.")}
           </p>
         </>
       )}

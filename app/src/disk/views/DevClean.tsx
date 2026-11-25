@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "../adapter";
-import { formatBytes } from "../format";
+import { formatBytes, isWindows } from "../format";
 import ConfirmClean from "../components/ConfirmClean";
 import type { CleanOutcome, Finding, ScanResult, Category, Safety } from "../types";
+import { dt, useLang } from "../i18n";
 
 const CATEGORY_LABEL: Record<Category, string> = {
   ml_models: "ML models",
@@ -17,6 +18,7 @@ const SAFETY_LABEL: Record<Safety, string> = {
 };
 
 export default function DevClean({ onRecovered }: { onRecovered: (bytes: number) => void }) {
+  useLang();
   const [result, setResult] = useState<ScanResult | null>(null);
   const [scanning, setScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -79,6 +81,7 @@ export default function DevClean({ onRecovered }: { onRecovered: (bytes: number)
 
   const clean = async (finding: Finding) => {
     setCleaning(finding.path);
+    setError(null);
     setConfirming(null);
     setExpanded(null);
     try {
@@ -87,7 +90,14 @@ export default function DevClean({ onRecovered }: { onRecovered: (bytes: number)
         // The Recycle Bin tab calls only what was rated safe here a safe cache.
         source: finding.safety === "safe" ? "Dev clean" : "Dev clean (not rated safe)",
       });
-      if (outcome.errors.length) setError(outcome.errors.join("; "));
+      if (outcome.errors.length) {
+        setError(outcome.docker_in_use?.includes(finding.path)
+          ? isWindows
+            ? dt("Docker is using this disk. Quit Docker Desktop and, if its WSL distro is still running, stop that distro before retrying.")
+            : dt("Docker is using this disk. Quit Docker Desktop (or stop the Docker service) and try again.")
+          : outcome.errors.join("; "));
+        return;
+      }
       onRecovered(outcome.freed_bytes);
       setResult((r) =>
         r ? { ...r, findings: r.findings.filter((f) => f.path !== finding.path) } : r
@@ -118,8 +128,8 @@ export default function DevClean({ onRecovered }: { onRecovered: (bytes: number)
       {confirming && (
         <ConfirmClean
           request={{
-            kind: confirming.category === "ml_models" ? "model" : "cache",
-            title: `Clean ${confirming.name}?`,
+            kind: confirming.rule_id === "docker" ? "docker" : confirming.category === "ml_models" ? "model" : "cache",
+            title: dt("Clean {name}?", { name: confirming.name }),
             items: [confirming.path],
             bytes: confirming.reclaimable_bytes,
             risky: confirming.safety === "risky",
@@ -132,25 +142,25 @@ export default function DevClean({ onRecovered }: { onRecovered: (bytes: number)
 
       <div className="view-head">
         <div>
-          <h2 className="view-title">Dev clean</h2>
-          <p className="view-sub">Known developer and ML cache locations</p>
+          <h2 className="view-title">{dt("Dev clean")}</h2>
+          <p className="view-sub">{dt("Known developer and ML cache locations")}</p>
         </div>
         <button className="btn" onClick={runScan} disabled={scanning}>
-          {scanning ? "Scanning…" : "Rescan"}
+          {dt(scanning ? "Scanning…" : "Rescan")}
         </button>
       </div>
 
       {error && (
         <div className="banner-error">
           <span>{error}</span>
-          <button className="btn-ghost" onClick={() => setError(null)}>Dismiss</button>
+          <button className="btn-ghost" onClick={() => setError(null)}>{dt("Dismiss")}</button>
         </div>
       )}
 
       {scanning && !result && (
         <div className="empty-state">
           <div className="spinner" />
-          <p>Scanning known cache and model locations…</p>
+          <p>{dt("Scanning known cache and model locations…")}</p>
         </div>
       )}
 
@@ -158,19 +168,19 @@ export default function DevClean({ onRecovered }: { onRecovered: (bytes: number)
         <>
           <section className="metrics">
             <div className="metric accent">
-              <span className="metric-label">Reclaimable now</span>
+              <span className="metric-label">{dt("Reclaimable now")}</span>
               <span className="metric-value">{formatBytes(stats.reclaimable)}</span>
             </div>
             <div className="metric">
-              <span className="metric-label">ML model data</span>
+              <span className="metric-label">{dt("ML model data")}</span>
               <span className="metric-value">{formatBytes(stats.ml)}</span>
             </div>
             <div className="metric">
-              <span className="metric-label">Dev caches</span>
+              <span className="metric-label">{dt("Dev caches")}</span>
               <span className="metric-value">{formatBytes(stats.dev)}</span>
             </div>
             <div className="metric">
-              <span className="metric-label">Disk used</span>
+              <span className="metric-label">{dt("Disk used")}</span>
               <span className="metric-value">
                 {formatBytes(stats.used)}
                 <span className="metric-sub"> / {formatBytes(result.disk_total)}</span>
@@ -179,14 +189,14 @@ export default function DevClean({ onRecovered }: { onRecovered: (bytes: number)
           </section>
 
           <section>
-            <h2 className="section-title">Storage breakdown</h2>
+            <h2 className="section-title">{dt("Storage breakdown")}</h2>
             <div className="breakdown">
               {segments.map((s) => (
                 <div
                   key={s.label}
                   className={`seg ${s.cls}`}
                   style={{ width: `${(s.size / result.disk_total) * 100}%` }}
-                  title={`${s.label} · ${formatBytes(s.size)}`}
+                  title={dt("{p0} · {p1}", { p0: dt(s.label), p1: formatBytes(s.size) })}
                 />
               ))}
             </div>
@@ -194,7 +204,7 @@ export default function DevClean({ onRecovered }: { onRecovered: (bytes: number)
               {segments.map((s) => (
                 <span key={s.label} className="legend-item">
                   <i className={`dot ${s.cls}`} />
-                  {s.label} · {formatBytes(s.size)}
+                  {dt(s.label)} · {formatBytes(s.size)}
                 </span>
               ))}
             </div>
@@ -202,11 +212,11 @@ export default function DevClean({ onRecovered }: { onRecovered: (bytes: number)
 
           <section>
             <h2 className="section-title">
-              Findings <span className="count">{result.findings.length}</span>
+              {dt("Findings")} <span className="count">{result.findings.length}</span>
             </h2>
             <div className="findings">
               {result.findings.length === 0 && (
-                <div className="empty-state"><p>Nothing found — your disk is already clean.</p></div>
+                <div className="empty-state"><p>{dt("Nothing found — your disk is already clean.")}</p></div>
               )}
               {result.findings.map((f) => (
                 <div key={f.path} className="finding">
@@ -214,22 +224,20 @@ export default function DevClean({ onRecovered }: { onRecovered: (bytes: number)
                     <button
                       className="expander"
                       onClick={() => setExpanded(expanded === f.path ? null : f.path)}
-                      aria-label="Toggle details"
+                      aria-label={dt("Toggle details")}
                     >
-                      {expanded === f.path ? "▾" : "▸"}
+                      {expanded === f.path ? dt("▾") : dt("▸")}
                     </button>
                     <div className="finding-main">
                       <div className="finding-title">
                         <span className="finding-name">{f.name}</span>
-                        <span className={`badge cat-${f.category}`}>{CATEGORY_LABEL[f.category]}</span>
-                        <span className={`badge safety-${f.safety}`}>{SAFETY_LABEL[f.safety]}</span>
+                        <span className={`badge cat-${f.category}`}>{dt(CATEGORY_LABEL[f.category])}</span>
+                        <span className={`badge safety-${f.safety}`}>{dt(SAFETY_LABEL[f.safety])}</span>
                         {f.stale_days != null && f.stale_days > 90 && (
-                          <span className="badge stale">Unused {Math.round(f.stale_days / 30)} mo</span>
+                          <span className="badge stale">{dt("Unused {n} mo", { n: Math.round(f.stale_days / 30) })}</span>
                         )}
                         {f.read_error && (
-                          <span className="badge safety-risky" title={f.read_error}>
-                            Partly unreadable
-                          </span>
+                          <span className="badge safety-risky" title={f.read_error}>{dt("Partly unreadable")}</span>
                         )}
                       </div>
                       <code className="finding-path">{f.path}</code>
@@ -237,42 +245,37 @@ export default function DevClean({ onRecovered }: { onRecovered: (bytes: number)
                         {f.reasons.map((r) => (
                           <li key={r.text} className={`reason-${r.level}`}>
                             <span className="reason-mark" aria-hidden>
-                              {r.level === "ok" ? "✓" : r.level === "warn" ? "!" : "✕"}
+                              {r.level === "ok" ? dt("✓") : r.level === "warn" ? dt("!") : dt("✕")}
                             </span>
-                            {r.text}
+                            {dt(r.text)}
                           </li>
                         ))}
                       </ul>
                       {f.size_bytes - f.reclaimable_bytes >= 1e8 && (
                         <p className="finding-desc">
-                          {f.reclaimable_exact
-                            ? `Clearing it frees ${formatBytes(f.reclaimable_bytes)}.`
-                            : `Clearing it frees at most ${formatBytes(f.reclaimable_bytes)} — checking hard links for the exact figure…`}{" "}
-                          {f.reclaimable_exact ? "" : "At least "}
-                          {formatBytes(f.size_bytes - f.reclaimable_bytes)} of these files are also used
-                          elsewhere through hard links (usually your virtual environments or projects),
-                          so they stay on disk until those are removed too.
+                          {dt(f.reclaimable_exact ? "Clearing it frees {size}." : "Clearing it frees at most {size} — checking hard links for the exact figure…", { size: formatBytes(f.reclaimable_bytes) })}{dt(" ")}
+                          {dt(f.reclaimable_exact ? "{size} of these files are also used elsewhere through hard links (usually your virtual environments or projects), so they stay on disk until those are removed too." : "At least {size} of these files are also used elsewhere through hard links (usually your virtual environments or projects), so they stay on disk until those are removed too.", { size: formatBytes(f.size_bytes - f.reclaimable_bytes) })}
                         </p>
                       )}
                     </div>
                     <div className="finding-size">
                       <span className="size">{formatBytes(f.size_bytes)}</span>
-                      <span className="files">{f.file_count.toLocaleString()} files</span>
+                      <span className="files">{dt("{n} files", { n: f.file_count.toLocaleString() })}</span>
                     </div>
                     <div className="finding-actions">
-                      <button className="btn-ghost" onClick={() => reveal(f.path)}>Explore</button>
+                      <button className="btn-ghost" onClick={() => reveal(f.path)}>{dt("Explore")}</button>
                       <button
                         className="btn-clean"
                         disabled={cleaning === f.path}
                         onClick={() => setConfirming(f)}
                       >
-                        {cleaning === f.path ? "Cleaning…" : "Clean"}
+                        {dt(cleaning === f.path ? "Cleaning…" : "Clean")}
                       </button>
                     </div>
                   </div>
                   {expanded === f.path && (
                     <div className="finding-detail">
-                      <p className="finding-desc">{f.description}</p>
+                      <p className="finding-desc">{dt(f.description)}</p>
                       {f.children.length > 0 && (
                         <div className="children">
                           {f.children.map((c) => (
@@ -285,7 +288,7 @@ export default function DevClean({ onRecovered }: { onRecovered: (bytes: number)
                                 />
                               </div>
                               <span className="child-size">{formatBytes(c.size_bytes)}</span>
-                              <button className="btn-ghost sm" onClick={() => reveal(c.path)}>Show</button>
+                              <button className="btn-ghost sm" onClick={() => reveal(c.path)}>{dt("Show")}</button>
                             </div>
                           ))}
                         </div>

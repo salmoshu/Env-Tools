@@ -88,16 +88,7 @@ pub fn wsl_homes() -> Vec<PathBuf> {
     }
     let mut homes = Vec::new();
     for distro in available_wsl_distros() {
-        let home_root = PathBuf::from(format!("\\\\wsl.localhost\\{distro}\\home"));
-        let Ok(users) = std::fs::read_dir(&home_root) else {
-            continue;
-        };
-        for user in users.flatten() {
-            let path = user.path();
-            if path.is_dir() {
-                homes.push(path);
-            }
-        }
+        homes.extend(wsl_distro_homes(&distro));
     }
     homes.sort();
     homes
@@ -105,7 +96,9 @@ pub fn wsl_homes() -> Vec<PathBuf> {
 
 /// 指定 WSL 发行版的用户家目录（UNC）。找不到时返回空列表。
 pub fn wsl_distro_homes(distro: &str) -> Vec<PathBuf> {
-    if !cfg!(windows) || distro.trim().is_empty() {
+    // Docker's internal distros have no user agents. Reading their UNC roots
+    // can also wake Docker and reattach the disk just after the user quit it.
+    if !cfg!(windows) || distro.trim().is_empty() || is_docker_wsl_distro(distro) {
         return Vec::new();
     }
     let home_root = PathBuf::from(format!("\\\\wsl.localhost\\{distro}\\home"));
@@ -219,6 +212,10 @@ pub fn available_wsl_distros() -> Vec<String> {
 /// 仅当前正在运行的发行版：进程检测等场景不为查询去启动已停止的发行版。
 pub fn running_wsl_distros() -> Vec<String> {
     wsl_distro_names(&["--list", "--running", "--quiet"])
+}
+
+pub(crate) fn is_docker_wsl_distro(name: &str) -> bool {
+    name.eq_ignore_ascii_case("docker-desktop") || name.eq_ignore_ascii_case("docker-desktop-data")
 }
 
 /// 数据源环境列表：本机原生环境；Windows 上若装有 WSL 则追加 "wsl"。

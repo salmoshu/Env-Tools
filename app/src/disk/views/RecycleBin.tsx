@@ -3,6 +3,7 @@ import { invoke } from "../adapter";
 import { listen, type UnlistenFn } from "../adapter";
 import { formatBytes, isWindows } from "../format";
 import type { Reason, Safety } from "../types";
+import { dt } from "../i18n";
 
 const BIN = isWindows ? "Recycle Bin" : "Trash";
 /// Rows drawn at once; a bin can hold tens of thousands of items.
@@ -97,12 +98,12 @@ function inScope(i: BinItem, scope: Scope, days: number): boolean {
 }
 
 function agoLabel(days: number | null): string {
-  if (days == null) return "at an unknown time";
-  if (days < 1) return "today";
-  if (days === 1) return "yesterday";
-  if (days < 30) return `${days} days ago`;
-  if (days < 365) return `${Math.round(days / 30)} mo ago`;
-  return `${(days / 365).toFixed(1)} yr ago`;
+  if (days == null) return dt("at an unknown time");
+  if (days < 1) return dt("today");
+  if (days === 1) return dt("yesterday");
+  if (days < 30) return dt("{n} days ago", { n: days });
+  if (days < 365) return dt("{n} mo ago", { n: Math.round(days / 30) });
+  return dt("{n} yr ago", { n: (days / 365).toFixed(1) });
 }
 
 function whenLabel(unixSeconds: number): string {
@@ -240,10 +241,10 @@ export default function RecycleBin({ onRecovered }: { onRecovered: (bytes: numbe
 
   const planTitle = (p: Plan) =>
     p.scope === "all"
-      ? `Empty the ${BIN}?`
+      ? dt("Empty the {bin}?", { bin: dt(BIN) })
       : p.scope === "older"
-        ? `Empty items older than ${p.days} days?`
-        : `Empty Env-Tools's items older than ${p.days} days?`;
+        ? dt("Empty items older than {n} days?", { n: p.days })
+        : dt("Empty Env-Tools's items older than {n} days?", { n: p.days });
 
   const restorable = (log?.entries ?? []).filter((e) => e.in_bin && !e.destination_taken && e.bin_id);
 
@@ -253,39 +254,29 @@ export default function RecycleBin({ onRecovered }: { onRecovered: (bytes: numbe
         <div className="modal-backdrop" role="dialog" aria-modal="true" onClick={() => setPlan(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h3 className="modal-title">{planTitle(plan)}</h3>
-            <p className="modal-warn">
-              This deletes them permanently. It cannot be undone: once they leave the {BIN} they
-              cannot be restored, by Env-Tools or by anything else.
-            </p>
+            <p className="modal-warn">{dt("This deletes them permanently. It cannot be undone: once they leave the")}{dt(" ")}{dt(BIN)}{dt(" ")}{dt("they cannot be restored, by Env-Tools or by anything else.")}</p>
             <p className="modal-body">
               {plan.scope === "jharu_older"
-                ? "Only items Env-Tools itself moved here are included. Your own deleted files stay."
+                ? dt("Only items Env-Tools itself moved here are included. Your own deleted files stay.")
                 : plan.items.some((i) => !i.by_jharu)
-                  ? "This includes files you deleted yourself, not only what Env-Tools moved here."
-                  : "Everything included was moved here by Env-Tools."}{" "}
-              Each item is checked again just before it goes; anything that changed is skipped.
-            </p>
+                  ? dt("This includes files you deleted yourself, not only what Env-Tools moved here.")
+                  : dt("Everything included was moved here by Env-Tools.")}{dt(" ")}{dt(" ")}{dt("Each item is checked again just before it goes; anything that changed is skipped.")}</p>
             <div className="modal-items">
               {plan.items.slice(0, 4).map((i) => (
                 <code key={i.id} className="modal-item">{i.original_path ?? i.name}</code>
               ))}
               {plan.items.length > 4 && (
-                <span className="modal-more">and {(plan.items.length - 4).toLocaleString()} more</span>
+                <span className="modal-more">{dt("and")}{dt(" ")}{(plan.items.length - 4).toLocaleString()}{dt(" ")}{dt("more")}</span>
               )}
             </div>
             <div className="modal-total">
               <span>
-                {plural(plan.items.length, "item", "items")} · space freed
-              </span>
+                {plural(plan.items.length, dt("item"), dt("items"))}{dt(" ")}{dt("· space freed")}</span>
               <strong>{formatBytes(plan.items.reduce((a, i) => a + i.size_bytes, 0))}</strong>
             </div>
             <div className="modal-actions">
-              <button className="btn" onClick={() => setPlan(null)}>
-                No, keep them
-              </button>
-              <button className="btn-danger" onClick={purge} disabled={plan.items.length === 0}>
-                Delete permanently
-              </button>
+              <button className="btn" onClick={() => setPlan(null)}>{dt("No, keep them")}</button>
+              <button className="btn-danger" onClick={purge} disabled={plan.items.length === 0}>{dt("Delete permanently")}</button>
             </div>
           </div>
         </div>
@@ -293,21 +284,18 @@ export default function RecycleBin({ onRecovered }: { onRecovered: (bytes: numbe
 
       <div className="view-head">
         <div>
-          <h2 className="view-title">{BIN}</h2>
-          <p className="view-sub">
-            What is waiting in the {BIN}, and everything Env-Tools has moved there — put it back or
-            empty it for real
-          </p>
+          <h2 className="view-title">{dt(BIN)}</h2>
+          <p className="view-sub">{dt("What is waiting in the {bin}, and everything Env-Tools has moved there — put it back or empty it for real", { bin: dt(BIN) })}</p>
         </div>
         <button className="btn" onClick={refresh} disabled={loading || busy}>
-          {loading ? "Reading…" : "Rescan"}
+          {loading ? dt("Reading…") : dt("Rescan")}
         </button>
       </div>
 
       {error && (
         <div className="banner-error">
           <span>{error}</span>
-          <button className="btn-ghost" onClick={() => setError(null)}>Dismiss</button>
+          <button className="btn-ghost" onClick={() => setError(null)}>{dt("Dismiss")}</button>
         </div>
       )}
 
@@ -315,11 +303,11 @@ export default function RecycleBin({ onRecovered }: { onRecovered: (bytes: numbe
         <div className="banner-info bin-progress">
           <div className="meter-head">
             <span>
-              {progress.phase === "purge" ? `Emptying the ${BIN} permanently` : `Putting items back`}
-              {progress.current && ` · ${progress.current}`}
+              {progress.phase === "purge" ? dt("Emptying the {p0} permanently", { p0: dt(BIN) }) : dt("Putting items back", {  })}
+              {progress.current && dt(" · {p0}", { p0: progress.current })}
             </span>
             <span className="meter-value">
-              {Math.min(progress.done, progress.total).toLocaleString()} of{" "}
+              {Math.min(progress.done, progress.total).toLocaleString()}{dt(" ")}{dt("of")}{dt(" ")}
               {progress.total.toLocaleString()}
             </span>
           </div>
@@ -333,22 +321,18 @@ export default function RecycleBin({ onRecovered }: { onRecovered: (bytes: numbe
             />
           </div>
           {progress.phase === "purge" && (
-            <button className="btn-ghost sm" onClick={cancel}>
-              Stop after this batch
-            </button>
+            <button className="btn-ghost sm" onClick={cancel}>{dt("Stop after this batch")}</button>
           )}
         </div>
       )}
 
       {purged && !progress && (
         <div className="banner-info">
-          {purged.cancelled && "Stopped. "}
-          Permanently deleted {plural(purged.purged, "item", "items")} ({formatBytes(purged.freed_bytes)}).{" "}
+          {purged.cancelled && dt("Stopped. ")}{dt(" ")}{dt("Permanently deleted")}{dt(" ")}{plural(purged.purged, dt("item"), dt("items"))} ({formatBytes(purged.freed_bytes)}).{dt(" ")}
           {purged.already_gone > 0 &&
-            `${plural(purged.already_gone, "item was", "items were")} already gone. `}
+            dt("{p0} already gone. ", { p0: plural(purged.already_gone, "item was", "items were") })}
           {purged.skipped.length > 0 && (
-            <>
-              Skipped {purged.skipped.length}:
+            <>{dt("Skipped")}{dt(" ")}{purged.skipped.length}:
               <ul className="bin-list-plain">
                 {purged.skipped.slice(0, 8).map((s) => (
                   <li key={s}>{s}</li>
@@ -362,11 +346,10 @@ export default function RecycleBin({ onRecovered }: { onRecovered: (bytes: numbe
       {restored && !progress && (
         <div className="banner-info">
           {restored.restored.length > 0 && (
-            <>Put back {plural(restored.restored.length, "item", "items")}. </>
+            <>{dt("Put back")}{dt(" ")}{plural(restored.restored.length, dt("item"), dt("items"))}. </>
           )}
           {restored.skipped.length > 0 && (
-            <>
-              Skipped {restored.skipped.length}:
+            <>{dt("Skipped")}{dt(" ")}{restored.skipped.length}:
               <ul className="bin-list-plain">
                 {restored.skipped.slice(0, 8).map((s) => (
                   <li key={s}>{s}</li>
@@ -374,40 +357,38 @@ export default function RecycleBin({ onRecovered }: { onRecovered: (bytes: numbe
               </ul>
             </>
           )}
-          {restored.restored.length === 0 && restored.skipped.length === 0 && "Nothing to put back."}
+          {restored.restored.length === 0 && restored.skipped.length === 0 && dt("Nothing to put back.")}
         </div>
       )}
 
       {loading && !report && (
         <div className="empty-state">
           <div className="spinner" />
-          <p>Reading the {BIN}…</p>
+          <p>{dt("Reading the")}{dt(" ")}{dt(BIN)}…</p>
         </div>
       )}
 
       {report && !report.supported && (
-        <div className="banner-info">
-          Env-Tools can manage the {BIN} on Windows and macOS only.
-        </div>
+        <div className="banner-info">{dt("Env-Tools can manage the {bin} on Windows and macOS only.", { bin: dt(BIN) })}</div>
       )}
 
       {report && report.supported && (
         <>
           <section className="metrics">
             <div className="metric accent">
-              <span className="metric-label">In the {BIN}</span>
+              <span className="metric-label">{dt("In the {bin}", { bin: dt(BIN) })}</span>
               <span className="metric-value">{formatBytes(report.total_bytes)}</span>
-              <span className="metric-sub">{plural(report.total_items, "item", "items")}</span>
+              <span className="metric-sub">{plural(report.total_items, dt("item"), dt("items"))}</span>
             </div>
             <div className="metric">
-              <span className="metric-label">Moved here by Env-Tools</span>
+              <span className="metric-label">{dt("Moved here by Env-Tools")}</span>
               <span className="metric-value">{formatBytes(report.jharu_bytes)}</span>
-              <span className="metric-sub">{plural(report.jharu_items, "item", "items")}</span>
+              <span className="metric-sub">{plural(report.jharu_items, dt("item"), dt("items"))}</span>
             </div>
             <div className="metric">
-              <span className="metric-label">Your own deleted files</span>
+              <span className="metric-label">{dt("Your own deleted files")}</span>
               <span className="metric-value">{formatBytes(report.other_bytes)}</span>
-              <span className="metric-sub">{plural(report.other_items, "item", "items")}</span>
+              <span className="metric-sub">{plural(report.other_items, dt("item"), dt("items"))}</span>
             </div>
           </section>
 
@@ -416,14 +397,12 @@ export default function RecycleBin({ onRecovered }: { onRecovered: (bytes: numbe
               <button
                 className={`filter-tab ${tab === "bin" ? "is-active" : ""}`}
                 onClick={() => setTab("bin")}
-              >
-                In the {BIN} ({report.total_items.toLocaleString()})
+              >{dt("In the {bin} ({n})", { bin: dt(BIN), n: report.total_items.toLocaleString() })}
               </button>
               <button
                 className={`filter-tab ${tab === "log" ? "is-active" : ""}`}
                 onClick={() => setTab("log")}
-              >
-                Restore log ({(log?.total_logged ?? 0).toLocaleString()})
+              >{dt("Restore log ({n})", { n: (log?.total_logged ?? 0).toLocaleString() })}
               </button>
             </div>
           </div>
@@ -434,58 +413,48 @@ export default function RecycleBin({ onRecovered }: { onRecovered: (bytes: numbe
 
               <section className="bin-empty-panel">
                 <div className="bin-empty-head">
-                  <h2 className="section-title">Empty the {BIN}</h2>
-                  <label className="bin-days">
-                    Older than
-                    <input
+                  <h2 className="section-title">{dt("Empty the {bin}", { bin: dt(BIN) })}</h2>
+                  <label className="bin-days">{dt("Older than")}{dt(" ")}<input
                       type="number"
                       min={0}
                       max={3650}
                       value={Number.isFinite(days) ? days : 0}
                       onChange={(e) => setDays(parseInt(e.target.value, 10))}
                       disabled={busy}
-                    />
-                    days
-                  </label>
+                    />{dt(" ")}{dt("days")}</label>
                 </div>
                 <div className="bin-empty-actions">
                   <button
                     className="btn-clean"
                     disabled={busy || counts.jharuOlder.n === 0}
                     onClick={() => choose("jharu_older")}
-                  >
-                    Env-Tools's items older than {days0} days · {counts.jharuOlder.n.toLocaleString()} ·{" "}
+                  >{dt("Env-Tools's items older than")}{dt(" ")}{days0}{dt(" ")}{dt("days ·")}{dt(" ")}{counts.jharuOlder.n.toLocaleString()} ·{dt(" ")}
                     {formatBytes(counts.jharuOlder.bytes)}
                   </button>
                   <button
                     className="btn-clean"
                     disabled={busy || counts.older.n === 0}
                     onClick={() => choose("older")}
-                  >
-                    Everything older than {days0} days · {counts.older.n.toLocaleString()} ·{" "}
+                  >{dt("Everything older than")}{dt(" ")}{days0}{dt(" ")}{dt("days ·")}{dt(" ")}{counts.older.n.toLocaleString()} ·{dt(" ")}
                     {formatBytes(counts.older.bytes)}
                   </button>
                   <button
                     className="btn-clean"
                     disabled={busy || counts.all.n === 0}
                     onClick={() => choose("all")}
-                  >
-                    Empty everything · {counts.all.n.toLocaleString()} · {formatBytes(counts.all.bytes)}
+                  >{dt("Empty everything ·")}{dt(" ")}{counts.all.n.toLocaleString()} · {formatBytes(counts.all.bytes)}
                   </button>
                 </div>
-                <p className="model-meta">
-                  Emptying is permanent. Env-Tools asks once more with the total before it deletes
-                  anything.
-                </p>
+                <p className="model-meta">{dt("Emptying is permanent. Env-Tools asks once more with the total before it deletes anything.")}</p>
               </section>
 
               <div className="filter-row">
                 <div className="filter-tabs">
                   {(
                     [
-                      ["all", `All (${report.total_items.toLocaleString()})`],
-                      ["jharu", `Moved by Env-Tools (${report.jharu_items.toLocaleString()})`],
-                      ["other", `Your own (${report.other_items.toLocaleString()})`],
+                      ["all", dt("All ({p0})", { p0: report.total_items.toLocaleString() })],
+                      ["jharu", dt("Moved by Env-Tools ({p0})", { p0: report.jharu_items.toLocaleString() })],
+                      ["other", dt("Your own ({p0})", { p0: report.other_items.toLocaleString() })],
                     ] as [Filter, string][]
                   ).map(([id, label]) => (
                     <button
@@ -506,8 +475,8 @@ export default function RecycleBin({ onRecovered }: { onRecovered: (bytes: numbe
                 <div className="empty-state">
                   <p>
                     {report.total_items === 0
-                      ? `The ${BIN} is empty.`
-                      : "Nothing in this group."}
+                      ? dt("The {p0} is empty.", { p0: dt(BIN) })
+                      : dt("Nothing in this group.")}
                   </p>
                 </div>
               )}
@@ -523,15 +492,15 @@ export default function RecycleBin({ onRecovered }: { onRecovered: (bytes: numbe
                           {i.source && <span className="badge cat-dev_cache">{i.source}</span>}
                         </div>
                         <span className="model-meta">
-                          {i.is_dir ? "Folder" : "File"} · deleted {agoLabel(i.age_days)}
-                          {i.deleted_at != null && ` (${whenLabel(i.deleted_at)})`}
+                          {i.is_dir ? dt("Folder") : dt("File")}{dt(" ")}{dt("· deleted")}{dt(" ")}{agoLabel(i.age_days)}
+                          {i.deleted_at != null && dt(" ({p0})", { p0: whenLabel(i.deleted_at) })}
                         </span>
                         {i.original_folder && <code className="finding-path">{i.original_folder}</code>}
                         <ul className="safety-reasons">
                           {i.reasons.map((r) => (
                             <li key={r.text} className={`reason-${r.level}`}>
                               <span className="reason-mark" aria-hidden>
-                                {r.level === "ok" ? "✓" : r.level === "warn" ? "!" : "✕"}
+                                {r.level === "ok" ? dt("✓") : r.level === "warn" ? dt("!") : dt("✕")}
                               </span>
                               {r.text}
                             </li>
@@ -546,23 +515,18 @@ export default function RecycleBin({ onRecovered }: { onRecovered: (bytes: numbe
                         disabled={busy || !i.original_path}
                         title={
                           i.original_path
-                            ? `Put back at ${i.original_path}`
-                            : "Env-Tools does not know where this came from"
+                            ? dt("Put back at {p0}", { p0: i.original_path })
+                            : dt("Env-Tools does not know where this came from")
                         }
                         onClick={() => restore([i.id])}
-                      >
-                        Put back
-                      </button>
+                      >{dt("Put back")}</button>
                     </div>
                   ))}
                 </div>
               )}
               {visible.length > shown && (
                 <div className="bin-more">
-                  <button className="btn" onClick={() => setShown((s) => s + PAGE)}>
-                    Show {Math.min(PAGE, visible.length - shown).toLocaleString()} more (
-                    {(visible.length - shown).toLocaleString()} not shown)
-                  </button>
+                  <button className="btn" onClick={() => setShown((s) => s + PAGE)}>{dt("Show")}{dt(" ")}{Math.min(PAGE, visible.length - shown).toLocaleString()}{dt(" ")}{dt("more (")}{dt(" ")}{(visible.length - shown).toLocaleString()}{dt(" ")}{dt("not shown)")}</button>
                 </div>
               )}
             </>
@@ -570,32 +534,24 @@ export default function RecycleBin({ onRecovered }: { onRecovered: (bytes: numbe
 
           {tab === "log" && log && (
             <>
-              <div className="banner-info">
-                Env-Tools writes down everything it moves to the {BIN}: where it was, how big, when,
-                and which tab did it. Items that are still in the {BIN} can be put back with one
-                click. Once an item leaves the {BIN} (restored, or emptied) it stays in the log
-                for the record but cannot be put back.
-              </div>
+              <div className="banner-info">{dt("Env-Tools writes down everything it moves to the")}{dt(" ")}{dt(BIN)}{dt(": where it was, how big, when, and which tab did it. Items that are still in the")}{dt(" ")}{dt(BIN)}{dt(" ")}{dt("can be put back with one click. Once an item leaves the")}{dt(" ")}{dt(BIN)}{dt(" ")}{dt("(restored, or emptied) it stays in the log for the record but cannot be put back.")}</div>
               <div className="filter-row">
                 <span className="model-meta">
-                  {log.in_bin.toLocaleString()} of {log.total_logged.toLocaleString()} logged items
-                  are still in the {BIN}
+                  {log.in_bin.toLocaleString()}{dt(" ")}{dt("of")}{dt(" ")}{log.total_logged.toLocaleString()}{dt(" ")}{dt("logged items are still in the")}{dt(" ")}{dt(BIN)}
                   {log.total_logged > log.entries.length &&
-                    ` · showing the newest ${log.entries.length}`}
+                    dt(" · showing the newest {p0}", { p0: log.entries.length })}
                 </span>
                 {restorable.length > 0 && (
                   <button
                     className="btn"
                     disabled={busy}
                     onClick={() => restore(restorable.map((e) => e.bin_id as string))}
-                  >
-                    Put back all {restorable.length.toLocaleString()} that can be
-                  </button>
+                  >{dt("Put back all")}{dt(" ")}{restorable.length.toLocaleString()}{dt(" ")}{dt("that can be")}</button>
                 )}
               </div>
               {log.entries.length === 0 ? (
                 <div className="empty-state">
-                  <p>Nothing logged yet. Items Env-Tools moves to the {BIN} will appear here.</p>
+                  <p>{dt("Nothing logged yet. Items Env-Tools moves to the")}{dt(" ")}{dt(BIN)}{dt(" ")}{dt("will appear here.")}</p>
                 </div>
               ) : (
                 <div className="findings">
@@ -605,12 +561,11 @@ export default function RecycleBin({ onRecovered }: { onRecovered: (bytes: numbe
                         <div className="finding-title">
                           <span className="finding-name">{e.name}</span>
                           <span className="badge cat-dev_cache">{e.source}</span>
-                          {!e.in_bin && <span className="badge stale">Left the {BIN}</span>}
+                          {!e.in_bin && <span className="badge stale">{dt("Left the")}{dt(" ")}{dt(BIN)}</span>}
                         </div>
-                        <span className="model-meta">
-                          Moved {whenLabel(e.time)} · {formatBytes(e.size_bytes)}
-                          {!e.in_bin && " · restored or emptied since"}
-                          {e.in_bin && e.destination_taken && " · something is at the original place now"}
+                        <span className="model-meta">{dt("Moved")}{dt(" ")}{whenLabel(e.time)} · {formatBytes(e.size_bytes)}
+                          {!e.in_bin && dt(" · restored or emptied since")}
+                          {e.in_bin && e.destination_taken && dt(" · something is at the original place now")}
                         </span>
                         <code className="finding-path">{e.path}</code>
                       </div>
@@ -620,17 +575,13 @@ export default function RecycleBin({ onRecovered }: { onRecovered: (bytes: numbe
                           disabled={busy || e.destination_taken}
                           title={
                             e.destination_taken
-                              ? "Move or rename what is there first; Env-Tools never overwrites"
-                              : `Put back at ${e.path}`
+                              ? dt("Move or rename what is there first; Env-Tools never overwrites")
+                              : dt("Put back at {p0}", { p0: e.path })
                           }
                           onClick={() => restore([e.bin_id as string])}
-                        >
-                          Put back
-                        </button>
+                        >{dt("Put back")}</button>
                       ) : (
-                        <button className="btn-ghost sm" onClick={() => reveal(e.path)}>
-                          Show
-                        </button>
+                        <button className="btn-ghost sm" onClick={() => reveal(e.path)}>{dt("Show")}</button>
                       )}
                     </div>
                   ))}
@@ -638,19 +589,13 @@ export default function RecycleBin({ onRecovered }: { onRecovered: (bytes: numbe
               )}
               {log.entries.length > shown && (
                 <div className="bin-more">
-                  <button className="btn" onClick={() => setShown((s) => s + PAGE)}>
-                    Show more
-                  </button>
+                  <button className="btn" onClick={() => setShown((s) => s + PAGE)}>{dt("Show more")}</button>
                 </div>
               )}
             </>
           )}
 
-          <p className="footnote">
-            Rating: what Env-Tools removed from a cache that its tool rebuilds by itself is safe to empty;
-            everything else is your own data or Env-Tools cannot tell what it is, so it is marked
-            "check first". Putting an item back never overwrites a file that is already in its place.
-          </p>
+          <p className="footnote">{dt("Rating: what Env-Tools removed from a cache that its tool rebuilds by itself is safe to empty; everything else is your own data or Env-Tools cannot tell what it is, so it is marked \"check first\". Putting an item back never overwrites a file that is already in its place.")}</p>
         </>
       )}
     </>

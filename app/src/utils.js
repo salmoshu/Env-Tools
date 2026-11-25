@@ -46,11 +46,7 @@ export const QUOTA_RESET_THRESHOLD = 80;
 
 // 指定窗口（按标签片段匹配，如 "5h" / "7d"）的用量百分比；无数据返回 0
 export function windowUsagePct(account, labelPart) {
-  const w = (account.windows || []).find((item) => {
-    const label = String(item.label || "");
-    // GLM 重置卡仅用于 BigModel，Start Plan 是另一条独立通道。
-    return !label.startsWith("Start") && label.includes(labelPart);
-  });
+  const w = (account.windows || []).find((item) => String(item.label || "").includes(labelPart));
   return w && w.used_percent != null ? Number(w.used_percent) : 0;
 }
 

@@ -788,10 +788,6 @@ td b { font-weight: 600; }
   margin-top: 9px; font-size: 10.5px; color: var(--faint);
   font-family: var(--font-num); font-variant-numeric: tabular-nums;
 }
-/* GLM 双通道（BigModel / StartPlan）切换下拉，置于 plan 标签右侧——
-   kselect 紧凑触发器（22px），浮层规格与全尺寸一致 */
-.kselect-trigger.plan-switch { height: 22px; font-size: 11px; padding: 0 3px 0 6px; }
-.kselect-trigger.plan-switch .kselect-caret { width: 12px; height: 12px; }
 .qextra {
   font-size: 11px; color: var(--faint); font-family: var(--font-num);
   font-variant-numeric: tabular-nums; white-space: nowrap;
@@ -1520,12 +1516,8 @@ td b { font-weight: 600; }
 .toast-close:hover { opacity: 1; background: var(--hover); }
 @media (prefers-reduced-motion: reduce) { .overlay, .dialog, .app-toast { animation: none; } }
 
-/* --- 速率卡内的最新会话列表（项目 / 会话 id / 模型 / 速率） --- */
-.rate-card { container-type: inline-size; }
-.rate-agent-name { display: none; }
-@container (min-width: 250px) {
-  .rate-card .rate-agent-name { display: inline; }
-}
+/* 按速率卡的实际宽度切换列，给窄窗口的项目名和速率留足空间。 */
+.rate-card { container: token-rate / inline-size; }
 .rate-rows { margin-top: 8px; display: grid; gap: 4px; min-width: 0; }
 .rate-row {
   display: flex; align-items: center; justify-content: space-between;
@@ -1539,8 +1531,12 @@ td b { font-weight: 600; }
   font-family: var(--font-num); color: var(--accent-text); flex-shrink: 0;
 }
 .rate-row .rate-model {
+  display: none; max-width: 55%;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   color: var(--faint); min-width: 0;
+}
+@container token-rate (min-width: 280px) {
+  .rate-row .rate-model { display: block; }
 }
 .rate-row .rate-model .brand-icon { margin-right: 4px; }
 .rate-row .rate-val {

@@ -61,6 +61,7 @@ let usageFetchPromise = null;
 // 请求降级为 ok:false 结构，由渲染层占位卡片呈现，不阻塞界面。
 let backendPort = 0;
 let backendChild = null;
+let backendRestartTimer = null;
 // 置顶期间周期性补挂 WS_EX_TOPMOST 的巡检定时器：
 // WSLg 的 RAIL 窗口在焦点切换、尺寸变化等场景下可能重建或重排 Z 序，
 // 导致之前用 SetWindowPos 设置的置顶样式丢失（表现：切应用后看板被盖住，
@@ -148,18 +149,22 @@ function killStaleBackend() {
   }
 }
 
-function startBackend() {
+function startBackend(recovering = false) {
+  if (backendChild) return;
   killStaleBackend();
   const spec = backendSpec();
   if (!spec) return;
   try {
-    backendChild = spawn(spec.command, spec.args, {
-      stdio: ["ignore", "pipe", "pipe"],
+    const child = spawn(spec.command, spec.args, {
+      // An unread stderr pipe eventually blocks Rust at the next log write.
+      stdio: ["ignore", "pipe", app.isPackaged ? "ignore" : "inherit"],
       windowsHide: true,
       env: spec.env,
     });
+    backendChild = child;
     let buffer = "";
     const onData = (chunk) => {
+      if (backendChild !== child) return;
       buffer += String(chunk);
       let index;
       while ((index = buffer.indexOf("\n")) >= 0) {
@@ -170,18 +175,27 @@ function startBackend() {
           backendPort = Number(match[1]);
           console.log(`[backend] env-tools-api listening on 127.0.0.1:${backendPort}`);
           setTimeout(() => restoreDiskGadget(), 0);
+          if (recovering) {
+            pushUsage().catch(() => {});
+            for (const w of liveWindows()) w.webContents.send("analytics-invalidated");
+          }
         } else if (line.startsWith("ENVTOOLS_NOTIFICATION ")) {
           try { showDesktopNotification(JSON.parse(line.slice("ENVTOOLS_NOTIFICATION ".length))); } catch {}
         }
       }
     };
-    backendChild.stdout.on("data", onData);
-    backendChild.on("close", () => {
-      // 后端退出（或被单实例回收）后标记为不可用，后续请求走降级结构
-      if (backendChild) backendPort = 0;
-    });
-    backendChild.on("error", () => {
+    child.stdout.on("data", onData);
+    child.once("close", () => {
+      if (backendChild !== child) return;
+      backendChild = null;
       backendPort = 0;
+      backendRestartTimer = setTimeout(() => {
+        backendRestartTimer = null;
+        startBackend(true);
+      }, REFRESH_INTERVAL_MS);
+    });
+    child.on("error", (err) => {
+      console.warn(`[backend] ${err.message}`);
     });
   } catch {
     backendPort = 0;
@@ -189,10 +203,12 @@ function startBackend() {
 }
 
 function stopBackend() {
-  if (!backendChild) return;
-  try { backendChild.kill(); } catch { /* 已退出 */ }
+  clearTimeout(backendRestartTimer);
+  backendRestartTimer = null;
+  const child = backendChild;
   backendChild = null;
   backendPort = 0;
+  try { child?.kill(); } catch { /* 已退出 */ }
 }
 
 async function backendFetch(pathname, timeoutMs = ANALYTICS_TIMEOUT_MS + 15000, body = null) {
@@ -210,6 +226,9 @@ async function backendFetch(pathname, timeoutMs = ANALYTICS_TIMEOUT_MS + 15000, 
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return await response.json();
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error(`Request timed out after ${timeoutMs / 1000}s`);
+    throw error;
   } finally {
     clearTimeout(timer);
   }
@@ -340,9 +359,23 @@ if (!gotLock) {
 
 // --- 数据引擎（env-tools-api）与广播 ------------------------------------------
 
+let lastGoodUsage = null;
+
 async function fetchUsage() {
-  // v0.7.0 起配额只走原生后端；不可用时返回错误结构，由占位卡片呈现
-  return backendJson("/api/usage", null, FETCH_TIMEOUT_MS);
+  const result = await backendJson("/api/usage", null, FETCH_TIMEOUT_MS);
+  if (result?.ok && result.data) {
+    lastGoodUsage = result.data;
+    return result;
+  }
+  if (!lastGoodUsage) return result;
+  // 后端暂时不可用时，保留上次实测配额并标明陈旧，下一轮刷新会替换。
+  return {
+    ...result,
+    data: {
+      ...lastGoodUsage,
+      accounts: (lastGoodUsage.accounts || []).map((account) => ({ ...account, stale: true })),
+    },
+  };
 }
 
 let lastUsageJson = "";
@@ -607,18 +640,12 @@ ipcMain.on("window-close", (event) => {
   if (window) window.close();
 });
 ipcMain.on("refresh", async (event) => {
-  const usageRefresh = pushUsage().catch(() => {});
   // 手动刷新同时失效分析/速率缓存：前端随即重拉的 analytics 是新鲜数据
   try {
-    if (backendPort) {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 5000);
-      await fetch(`http://127.0.0.1:${backendPort}/api/cache-clear`, { method: "POST", signal: controller.signal });
-      clearTimeout(timer);
-    }
+    if (backendPort) await backendFetch("/api/cache-clear", 5000, {});
   } catch {}
   for (const w of liveWindows()) w.webContents.send("analytics-invalidated");
-  await usageRefresh;
+  await pushUsage().catch(() => {});
   if (!event.sender.isDestroyed()) event.sender.send("refresh-complete");
 });
 // 全量窗口 ⇄ 用量看板：互相打开对方窗口；设置页自 v0.7.0 起住主窗口内
@@ -873,7 +900,8 @@ ipcMain.handle("list-targets", async () => {
         .replace(/\0/g, "")
         .split("\n")
         .map((line) => line.trim())
-        .filter(Boolean);
+        // Docker's internal WSL distros aren't agent data sources.
+        .filter((name) => name && !/^docker-desktop(?:-data)?$/i.test(name));
       for (const distro of distros) {
         targets.push({
           id: `wsl:${distro}`,
@@ -1107,7 +1135,8 @@ ipcMain.handle("get-analytics-rolling", async (_event, agent, seconds, targetId,
   }
 });
 
-ipcMain.handle("get-analytics", async (_event, days, agent, targetId) => {  const aggregate = targetId === "aggregate";
+ipcMain.handle("get-analytics", async (_event, days, agent, targetId) => {
+  const aggregate = targetId === "aggregate";
   const query = `?days=${encodeURIComponent(days || 30)}&agent=${encodeURIComponent(agent || "all")}` +
     `${aggregate ? "&aggregate=1" : ""}`;
   if (aggregate) {
@@ -1265,7 +1294,8 @@ ipcMain.handle("get-agent-accounts", (_event, provider) => {
 ipcMain.handle("update-agent-accounts", async (_event, provider, values) => {
   const pathname = agentAccountsPath(provider);
   if (!pathname) return { ok: false, error: `unknown provider: ${provider}` };
-  const result = await backendJson(pathname, values || {});
+  const result = await backendJson(pathname, values || {},
+    values?.action === "set-active" ? FETCH_TIMEOUT_MS : SETTINGS_TIMEOUT_MS);
   if (result && result.ok) {
     if (WSL_BACKEND && (values || {}).action === "set-active" && result.account_sync) {
       const host = await syncWindowsHostActiveAccount(provider, values.id || "default");

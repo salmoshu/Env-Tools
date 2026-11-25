@@ -5,6 +5,7 @@ import { formatBytes, isWindows } from "../format";
 import ConfirmClean from "../components/ConfirmClean";
 import Treemap from "../components/Treemap";
 import type { CleanOutcome, DeepEntry, Verdict } from "../types";
+import { dt, useLang } from "../i18n";
 
 const KIND_LABEL: Record<DeepEntry["kind"], string> = {
   system: "System",
@@ -18,10 +19,10 @@ const KIND_LABEL: Record<DeepEntry["kind"], string> = {
 const ROOT = "__root__";
 
 function verdictLabel(v: Verdict): string {
-  if (v.basis === "unknown") return "Unknown — look inside";
-  if (v.safety === "safe") return "Safe to remove";
-  if (v.safety === "caution") return "Remove with care";
-  return "Review first";
+  if (v.basis === "unknown") return dt("Unknown — look inside");
+  if (v.safety === "safe") return dt("Safe to remove");
+  if (v.safety === "caution") return dt("Remove with care");
+  return dt("Review first");
 }
 
 const BASIS_HINT: Record<Verdict["basis"], string> = {
@@ -31,6 +32,7 @@ const BASIS_HINT: Record<Verdict["basis"], string> = {
 };
 
 export default function DeepClean({ onRecovered }: { onRecovered: (bytes: number) => void }) {
+  useLang();
   const [crumbs, setCrumbs] = useState<string[]>([]);
   const [entries, setEntries] = useState<DeepEntry[]>([]);
   const [scanning, setScanning] = useState(false);
@@ -127,7 +129,7 @@ export default function DeepClean({ onRecovered }: { onRecovered: (bytes: number
         <ConfirmClean
           request={{
             kind: confirming.kind === "user_data" ? "userfile" : "cache",
-            title: `Move ${confirming.name} to the Trash?`,
+            title: dt("Move {name} to the {bin}?", { name: confirming.name, bin: dt(isWindows ? "Recycle Bin" : "Trash") }),
             items: [confirming.path],
             bytes: confirming.size_bytes,
             risky: confirming.verdict ? confirming.verdict.safety !== "safe" : true,
@@ -139,25 +141,23 @@ export default function DeepClean({ onRecovered }: { onRecovered: (bytes: number
 
       <div className="view-head">
         <div>
-          <h2 className="view-title">Deep clean</h2>
-          <p className="view-sub">
-            Full-disk analysis — see what every folder actually holds
-          </p>
+          <h2 className="view-title">{dt("Deep clean")}</h2>
+          <p className="view-sub">{dt("Full-disk analysis — see what every folder actually holds")}</p>
         </div>
         <button className="btn" onClick={() => scan(currentPath, true)} disabled={scanning}>
-          {scanning ? "Scanning…" : "Rescan"}
+          {dt(scanning ? "Scanning…" : "Rescan")}
         </button>
       </div>
 
       {error && (
         <div className="banner-error">
           <span>{error}</span>
-          <button className="btn-ghost" onClick={() => setError(null)}>Dismiss</button>
+          <button className="btn-ghost" onClick={() => setError(null)}>{dt("Dismiss")}</button>
         </div>
       )}
 
       <div className="crumbs">
-        <button className="crumb" onClick={() => jumpTo(-1)}>This computer</button>
+        <button className="crumb" onClick={() => jumpTo(-1)}>{dt("This computer")}</button>
         {crumbs.map((c, i) => (
           <span key={c}>
             <span className="crumb-sep">/</span>
@@ -167,9 +167,7 @@ export default function DeepClean({ onRecovered }: { onRecovered: (bytes: number
           </span>
         ))}
         <span className="crumb-total">
-          {scanning
-            ? "Measuring…"
-            : `${formatBytes(totalSize)} in ${entries.filter((e) => !e.is_virtual).length} items`}
+          {dt(scanning ? "Measuring…" : "{size} in {n} items", { size: formatBytes(totalSize), n: entries.filter((e) => !e.is_virtual).length })}
         </span>
       </div>
 
@@ -180,14 +178,14 @@ export default function DeepClean({ onRecovered }: { onRecovered: (bytes: number
             aria-pressed={mode === "map"}
             onClick={() => setMode("map")}
           >
-            Map
+            {dt("Map")}
           </button>
           <button
             className={`filter-tab ${mode === "list" ? "is-active" : ""}`}
             aria-pressed={mode === "list"}
             onClick={() => setMode("list")}
           >
-            List
+            {dt("List")}
           </button>
         </div>
         {mode === "list" && (
@@ -201,7 +199,7 @@ export default function DeepClean({ onRecovered }: { onRecovered: (bytes: number
             ].map(([cls, label]) => (
               <span key={label} className="legend-item">
                 <i className={`dot ${cls}`} />
-                {label}
+                {dt(label)}
               </span>
             ))}
           </div>
@@ -212,28 +210,18 @@ export default function DeepClean({ onRecovered }: { onRecovered: (bytes: number
         <>
           {unreadable.length > 0 && !scanning && (
             <div className="banner-info">
-              Env-Tools could not read everything in {unreadable.length} folder
-              {unreadable.length === 1 ? "" : "s"}, so {unreadable.length === 1 ? "it is" : "they are"}{" "}
-              smaller on the map than on disk, or missing from it:{" "}
-              <strong>{unreadable.map((e) => e.name).join(", ")}</strong>.{" "}
-              {isWindows
-                ? "Run Env-Tools as an administrator to measure them."
-                : "Grant Full Disk Access in System Settings → Privacy and Security to measure them."}
+              {dt(unreadable.length === 1 ? "Env-Tools could not read everything in {n} folder, so it is smaller on the map than on disk, or missing from it: {names}." : "Env-Tools could not read everything in {n} folders, so they are smaller on the map than on disk, or missing from it: {names}.", { n: unreadable.length, names: unreadable.map((e) => e.name).join(", ") })}{dt(" ")}
+              {dt(isWindows ? "Run Env-Tools as an administrator to measure them." : "Grant Full Disk Access in System Settings → Privacy and Security to measure them.")}
             </div>
           )}
           {scanning && (
             <div className="map-scanning">
               <div className="spinner sm" />
-              <span className="view-sub">Measuring — blocks appear as each folder finishes…</span>
+              <span className="view-sub">{dt("Measuring — blocks appear as each folder finishes…")}</span>
             </div>
           )}
           <Treemap entries={entries} onOpen={navigate} />
-          <p className="footnote">
-            Each block is a folder, sized by what it holds and coloured by how safe it is to remove,
-            the same rating the List shows. Click a block (or Tab to it and press Enter) to go inside.
-            Hatched grey stands for items too small to draw — switch to List to see everything and to
-            clean.
-          </p>
+          <p className="footnote">{dt("Each block is a folder, sized by what it holds and coloured by how safe it is to remove, the same rating the List shows. Click a block (or Tab to it and press Enter) to go inside. Hatched grey stands for items too small to draw — switch to List to see everything and to clean.")}</p>
         </>
       )}
 
@@ -246,49 +234,47 @@ export default function DeepClean({ onRecovered }: { onRecovered: (bytes: number
               className="deep-name"
               onClick={() => navigate(e)}
               disabled={!e.is_dir}
-              title={e.hint}
+              title={dt(e.hint)}
             >
-              <span className="deep-icon">{e.is_dir ? "▸" : "·"}</span>
+              <span className="deep-icon">{e.is_dir ? dt("▸") : dt("·")}</span>
               {e.name}
             </button>
             {e.verdict ? (
               <span
                 className={`badge safety-${e.verdict.basis === "unknown" ? "caution" : e.verdict.safety}`}
-                title={`${BASIS_HINT[e.verdict.basis]} ${e.verdict.reasons.map((r) => r.text).join(" ")}`}
+                title={dt("{p0} {p1}", { p0: dt(BASIS_HINT[e.verdict.basis]), p1: e.verdict.reasons.map((r) => dt(r.text)).join(" ") })}
               >
-                {verdictLabel(e.verdict)}
+                {dt(verdictLabel(e.verdict))}
               </span>
             ) : (
-              <span className={`badge kind-${e.kind}`}>{KIND_LABEL[e.kind]}</span>
+              <span className={`badge kind-${e.kind}`}>{dt(KIND_LABEL[e.kind])}</span>
             )}
-            {e.protected && !e.is_virtual && <span className="badge safety-risky">Protected</span>}
+            {e.protected && !e.is_virtual && <span className="badge safety-risky">{dt("Protected")}</span>}
             {e.is_virtual && (
-              <span className="badge stale" title={e.hint}>
-                Needs admin to see
-              </span>
+              <span className="badge stale" title={dt(e.hint)}>{dt("Needs admin to see")}</span>
             )}
             {e.unreadable > 0 && (
               <span
                 className="badge stale"
-                title={`${e.unreadable.toLocaleString()} ${e.unreadable === 1 ? "item" : "items"} inside could not be read, so the size shown is less than the folder holds.`}
+                title={dt(e.unreadable === 1 ? "{n} item inside could not be read, so the size shown is less than the folder holds." : "{n} items inside could not be read, so the size shown is less than the folder holds.", { n: e.unreadable.toLocaleString() })}
               >
-                Partly unreadable
+                {dt("Partly unreadable")}
               </span>
             )}
             {e.online_only_bytes >= 1e8 && (
               <span
                 className="badge cat-dev_cache"
-                title="Cloud files (OneDrive, iCloud) that are listed here but stored only online. They use no space on this disk and are not in the size shown."
+                title={dt("Cloud files (OneDrive, iCloud) that are listed here but stored only online. They use no space on this disk and are not in the size shown.")}
               >
-                +{formatBytes(e.online_only_bytes)} online-only
+                {dt("+{size} online-only", { size: formatBytes(e.online_only_bytes) })}
               </span>
             )}
             {e.shared_bytes >= 1e8 && (
               <span
                 className="badge stale"
-                title="Files here that are hard links to files already counted in another folder, so they take no extra space and are not in the size shown. Removing only this folder would not free them."
+                title={dt("Files here that are hard links to files already counted in another folder, so they take no extra space and are not in the size shown. Removing only this folder would not free them.")}
               >
-                +{formatBytes(e.shared_bytes)} shared
+                {dt("+{size} shared", { size: formatBytes(e.shared_bytes) })}
               </span>
             )}
             <div className="deep-bar">
@@ -299,26 +285,26 @@ export default function DeepClean({ onRecovered }: { onRecovered: (bytes: number
             </div>
             <span className="deep-size">{formatBytes(e.size_bytes)}</span>
             <span className="deep-files">
-              {e.is_virtual ? "" : `${e.file_count.toLocaleString()} files`}
+              {e.is_virtual ? dt("") : dt("{n} files", { n: e.file_count.toLocaleString() })}
             </span>
             <div className="finding-actions">
               {!e.is_virtual && (
-                <button className="btn-ghost sm" onClick={() => reveal(e.path)}>Show</button>
+                <button className="btn-ghost sm" onClick={() => reveal(e.path)}>{dt("Show")}</button>
               )}
               {!e.protected && (e.verdict?.clean_here ?? true) && (
-                <button className="btn-clean sm" onClick={() => setConfirming(e)}>Clean</button>
+                <button className="btn-clean sm" onClick={() => setConfirming(e)}>{dt("Clean")}</button>
               )}
             </div>
           </div>
           {e.verdict && (
             <ul className="safety-reasons deep-why">
-              {e.verdict.what && <li className="deep-what">{e.verdict.what}</li>}
+              {e.verdict.what && <li className="deep-what">{dt(e.verdict.what)}</li>}
               {e.verdict.reasons.map((r) => (
                 <li key={r.text} className={`reason-${r.level}`}>
                   <span className="reason-mark" aria-hidden>
-                    {r.level === "ok" ? "✓" : r.level === "warn" ? "!" : "✕"}
+                    {r.level === "ok" ? dt("✓") : r.level === "warn" ? dt("!") : dt("✕")}
                   </span>
-                  {r.text}
+                  {dt(r.text)}
                 </li>
               ))}
             </ul>
@@ -328,17 +314,15 @@ export default function DeepClean({ onRecovered }: { onRecovered: (bytes: number
         {scanning && (
           <div className="deep-row scanning-row">
             <div className="spinner sm" />
-            <span className="view-sub">Measuring folders — large ones appear as they finish…</span>
+            <span className="view-sub">{dt("Measuring folders — large ones appear as they finish…")}</span>
           </div>
         )}
       </div>
       )}
 
       <p className="footnote">
-        System locations are protected and can never be cleaned from Env-Tools.{" "}
-        {isWindows
-          ? "If some folders show 0 B, they need administrator rights to read — run Env-Tools as an administrator to measure them."
-          : "If some folders show 0 B, grant Full Disk Access in System Settings → Privacy & Security."}
+        {dt("System locations are protected and can never be cleaned from Env-Tools.")}{dt(" ")}
+        {dt(isWindows ? "If some folders show 0 B, they need administrator rights to read — run Env-Tools as an administrator to measure them." : "If some folders show 0 B, grant Full Disk Access in System Settings → Privacy & Security.")}
       </p>
     </>
   );

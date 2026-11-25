@@ -3,8 +3,10 @@ import { invoke } from "../adapter";
 import { formatBytes } from "../format";
 import ConfirmClean from "../components/ConfirmClean";
 import type { BrowserReport, CleanOutcome } from "../types";
+import { dt, useLang } from "../i18n";
 
 export default function Browsers({ onRecovered }: { onRecovered: (bytes: number) => void }) {
+  useLang();
   const [reports, setReports] = useState<BrowserReport[] | null>(null);
   const [scanning, setScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -51,7 +53,7 @@ export default function Browsers({ onRecovered }: { onRecovered: (bytes: number)
         <ConfirmClean
           request={{
             kind: "cache",
-            title: `Clear ${pending.name} cache?`,
+            title: dt("Clear {name} cache?", { name: pending.name }),
             items: pendingSafe.map((i) => i.label),
             bytes: pendingSafe.reduce((a, i) => a + i.size_bytes, 0),
           }}
@@ -63,31 +65,29 @@ export default function Browsers({ onRecovered }: { onRecovered: (bytes: number)
 
       <div className="view-head">
         <div>
-          <h2 className="view-title">Browsers</h2>
-          <p className="view-sub">Cache data per installed browser</p>
+          <h2 className="view-title">{dt("Browsers")}</h2>
+          <p className="view-sub">{dt("Cache data per installed browser")}</p>
         </div>
         <button className="btn" onClick={scan} disabled={scanning}>
-          {scanning ? "Scanning…" : "Rescan"}
+          {dt(scanning ? "Scanning…" : "Rescan")}
         </button>
       </div>
 
-      <div className="banner-info">
-        Quit a browser before cleaning its caches — open browsers may recreate or lock files.
-      </div>
+      <div className="banner-info">{dt("Quit a browser before cleaning its caches — open browsers may recreate or lock files.")}</div>
 
       {error && (
         <div className="banner-error">
           <span>{error}</span>
-          <button className="btn-ghost" onClick={() => setError(null)}>Dismiss</button>
+          <button className="btn-ghost" onClick={() => setError(null)}>{dt("Dismiss")}</button>
         </div>
       )}
 
       {scanning && !reports && (
-        <div className="empty-state"><div className="spinner" /><p>Detecting browsers…</p></div>
+        <div className="empty-state"><div className="spinner" /><p>{dt("Detecting browsers…")}</p></div>
       )}
 
       {reports && reports.length === 0 && (
-        <div className="empty-state"><p>No browser cache data found.</p></div>
+        <div className="empty-state"><p>{dt("No browser cache data found.")}</p></div>
       )}
 
       {reports?.map((b) => {
@@ -99,7 +99,7 @@ export default function Browsers({ onRecovered }: { onRecovered: (bytes: number)
               <div>
                 <span className="finding-name">{b.name}</span>
                 <span className="view-sub" style={{ marginLeft: 10 }}>
-                  {formatBytes(b.total_bytes)} cache
+                  {dt("{size} cache", { size: formatBytes(b.total_bytes) })}
                 </span>
               </div>
               {safeItems.length > 0 && (
@@ -108,16 +108,16 @@ export default function Browsers({ onRecovered }: { onRecovered: (bytes: number)
                   disabled={cleaning === b.name}
                   onClick={() => setConfirming(b.name)}
                 >
-                  {cleaning === b.name ? "Cleaning…" : `Clean all safe (${formatBytes(safeTotal)})`}
+                  {dt(cleaning === b.name ? "Cleaning…" : "Clean all safe ({size})", { size: formatBytes(safeTotal) })}
                 </button>
               )}
             </div>
             <div className="browser-items">
               {b.items.map((i) => (
                 <div key={i.path} className="browser-item">
-                  <span className="child-name" title={i.path}>{i.label}</span>
+                  <span className="child-name" title={i.path}>{dt(i.label)}</span>
                   <span className={`badge ${i.safe ? "safety-safe" : "safety-caution"}`}>
-                    {i.safe ? "Safe" : "Review"}
+                    {dt(i.safe ? "Safe" : "Review")}
                   </span>
                   <div className="child-bar">
                     <div

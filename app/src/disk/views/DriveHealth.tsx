@@ -3,13 +3,14 @@ import { invoke } from "../adapter";
 import { formatBytes, isWindows } from "../format";
 import type { DriveInfo, Forecast, HealthReport } from "../types";
 import ForecastNote from "../components/ForecastNote";
+import { dt, useLang } from "../i18n";
 
 function Donut({ pct }: { pct: number }) {
   const r = 52;
   const c = 2 * Math.PI * r;
   const color = pct >= 90 ? "var(--danger)" : pct >= 80 ? "#BA7517" : "var(--c-dev)";
   return (
-    <svg width="140" height="140" viewBox="0 0 140 140" role="img" aria-label={`${Math.round(pct)}% used`}>
+    <svg width="140" height="140" viewBox="0 0 140 140" role="img" aria-label={dt("{pct}% used", { pct: Math.round(pct) })}>
       <circle cx="70" cy="70" r={r} fill="none" stroke="var(--surface-2)" strokeWidth="14" />
       <circle
         cx="70"
@@ -26,7 +27,7 @@ function Donut({ pct }: { pct: number }) {
         {Math.round(pct)}%
       </text>
       <text x="70" y="86" textAnchor="middle" style={{ fontSize: 12, fill: "var(--text-2)" }}>
-        used
+        {dt("used")}
       </text>
     </svg>
   );
@@ -66,13 +67,14 @@ function ForecastChart({ forecast, total }: { forecast: Forecast; total: number 
 
   return (
     <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img"
-      aria-label={`Disk usage over ${lastDay - firstDay} days${
-        forecast.days_until_full != null ? `, projected full in ${forecast.days_until_full} days` : ""
-      }`}
+      aria-label={dt("Disk usage over {days} days{projection}", {
+        days: lastDay - firstDay,
+        projection: forecast.days_until_full != null ? dt(", projected full in {days} days", { days: forecast.days_until_full }) : "",
+      })}
     >
       <line x1={padL} y1={y(total)} x2={W - padR} y2={y(total)} stroke="var(--border-strong, #c3c2b7)" strokeWidth="1" strokeDasharray="3 3" />
       <text x={padL} y={y(total) - 5} style={{ fontSize: 10, fill: "var(--text-3)" }}>
-        Full · {formatBytes(total)}
+        {dt("Full · {size}", { size: formatBytes(total) })}
       </text>
       {projection && (
         <polyline points={projection} fill="none" stroke="#BA7517" strokeWidth="2" strokeDasharray="5 4" strokeLinecap="round" />
@@ -83,8 +85,8 @@ function ForecastChart({ forecast, total }: { forecast: Forecast; total: number 
       <circle cx={x(last.day)} cy={y(last.used)} r="4" fill="var(--c-user)" stroke="var(--surface)" strokeWidth="2" />
       <text x={padL} y={H - 8} style={{ fontSize: 10.5, fill: "var(--text-3)" }}>
         {pts.length === 1
-          ? "First reading recorded today"
-          : `${pts.length} readings over ${pts[pts.length - 1].day - firstDay} days`}
+          ? dt("First reading recorded today")
+          : dt("{count} readings over {days} days", { count: pts.length, days: pts[pts.length - 1].day - firstDay })}
       </text>
     </svg>
   );
@@ -105,6 +107,7 @@ function Meter({ label, value, pct, tone }: { label: string; value: string; pct:
 }
 
 export default function DriveHealth() {
+  useLang();
   const [report, setReport] = useState<HealthReport | null>(null);
   const [scanning, setScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -129,23 +132,23 @@ export default function DriveHealth() {
     <>
       <div className="view-head">
         <div>
-          <h2 className="view-title">Drive health</h2>
-          <p className="view-sub">Capacity, trend, and hardware status for every mounted drive</p>
+          <h2 className="view-title">{dt("Drive health")}</h2>
+          <p className="view-sub">{dt("Capacity, trend, and hardware status for every mounted drive")}</p>
         </div>
         <button className="btn" onClick={scan} disabled={scanning}>
-          {scanning ? "Checking…" : "Refresh"}
+          {dt(scanning ? "Checking…" : "Refresh")}
         </button>
       </div>
 
       {error && (
         <div className="banner-error">
           <span>{error}</span>
-          <button className="btn-ghost" onClick={() => setError(null)}>Dismiss</button>
+          <button className="btn-ghost" onClick={() => setError(null)}>{dt("Dismiss")}</button>
         </div>
       )}
 
       {scanning && !report && (
-        <div className="empty-state"><div className="spinner" /><p>Reading drive information…</p></div>
+        <div className="empty-state"><div className="spinner" /><p>{dt("Reading drive information…")}</p></div>
       )}
 
       {report?.drives.map((d: DriveInfo) => {
@@ -166,7 +169,7 @@ export default function DriveHealth() {
                 <div className="drive-badges">
                   <span className="badge stale">{d.kind}</span>
                   <span className="badge stale">{d.file_system}</span>
-                  {d.removable && <span className="badge stale">Removable</span>}
+                  {d.removable && <span className="badge stale">{dt("Removable")}</span>}
                   {d.smart_status && (
                     // "Not Supported" means the volume cannot report SMART, not
                     // that the drive is unhealthy — only a real failure is red.
@@ -174,65 +177,60 @@ export default function DriveHealth() {
                       className={`badge ${
                         healthy ? "safety-safe" : failing ? "safety-risky" : "stale"
                       }`}
-                    >
-                      SMART: {d.smart_status}
+                    >{dt("SMART:")}{dt(" ")}{dt(d.smart_status)}
                     </span>
                   )}
                 </div>
                 <p className="drive-line">
-                  <strong>{formatBytes(d.available_bytes)}</strong> free of {formatBytes(d.total_bytes)}
+                  <strong>{formatBytes(d.available_bytes)}</strong> {dt("free of {total}", { total: formatBytes(d.total_bytes) })}
                 </p>
                 {pct >= 90 && (
-                  <p className="drive-warn">Nearly full — apps and updates may start failing.</p>
+                  <p className="drive-warn">{dt("Nearly full — apps and updates may start failing.")}</p>
                 )}
                 {pct >= 80 && pct < 90 && (
-                  <p className="drive-warn soft">Getting full — consider a cleanup pass.</p>
+                  <p className="drive-warn soft">{dt("Getting full — consider a cleanup pass.")}</p>
                 )}
               </div>
             </div>
 
             <div className="health-panels">
               <div className="health-panel">
-                <h3 className="section-title">Fill forecast</h3>
+                <h3 className="section-title">{dt("Fill forecast")}</h3>
                 {f && f.points.length > 0 ? (
                   <>
                     <ForecastChart forecast={f} total={d.total_bytes} />
                     <p className="forecast-note">
                       {f.days_until_full != null ? (
-                        <>
-                          Filling at about <strong>{formatBytes(Math.abs(f.bytes_per_day))} per day</strong> — full in
-                          roughly <strong>{Math.round(f.days_until_full / 7)} weeks</strong>.
-                        </>
+                        dt("Filling at about {size} per day — full in roughly {weeks} weeks.", {
+                          size: formatBytes(Math.abs(f.bytes_per_day)), weeks: Math.round(f.days_until_full / 7),
+                        })
                       ) : f.bytes_per_day < 0 ? (
-                        <>Free space is growing. No projection needed.</>
+                        dt("Free space is growing. No projection needed.")
                       ) : (
-                        <>
-                          One reading per day is recorded. After three days the line becomes a
-                          projection of when this drive fills up.
-                        </>
+                        dt("One reading per day is recorded. After three days the line becomes a projection of when this drive fills up.")
                       )}
                     </p>
                   </>
                 ) : (
-                  <p className="view-sub">No readings recorded yet.</p>
+                  <p className="view-sub">{dt("No readings recorded yet.")}</p>
                 )}
                 <ForecastNote mount={d.mount} />
               </div>
 
               <div className="health-panel">
-                <h3 className="section-title">Hardware</h3>
+                <h3 className="section-title">{dt("Hardware")}</h3>
                 <div className="meters">
                   {/* Always available, so the panel is never empty. */}
                   <Meter
-                    label="Capacity used"
+                    label={dt("Capacity used")}
                     value={`${Math.round(pct)}%`}
                     pct={pct}
                     tone={pct >= 90 ? "var(--danger)" : pct >= 80 ? "#BA7517" : "var(--c-dev)"}
                   />
                   <div className="meter-row">
-                    <span>SMART self-check</span>
+                    <span>{dt("SMART self-check")}</span>
                     <span className={healthy ? "meter-good" : undefined}>
-                      {d.smart_status ?? "Not reported"}
+                      {dt(d.smart_status ?? "Not reported")}
                     </span>
                   </div>
 
@@ -240,7 +238,7 @@ export default function DriveHealth() {
                     <>
                       {sd.percentage_used != null && (
                       <Meter
-                        label="Drive wear used"
+                        label={dt("Drive wear used")}
                         value={`${sd.percentage_used}%`}
                         pct={sd.percentage_used}
                         tone={sd.percentage_used >= 80 ? "var(--danger)" : "var(--c-dev)"}
@@ -248,7 +246,7 @@ export default function DriveHealth() {
                     )}
                     {sd.temperature_c != null && (
                       <Meter
-                        label="Temperature"
+                        label={dt("Temperature")}
                         value={`${sd.temperature_c} °C`}
                         pct={(sd.temperature_c / 90) * 100}
                         tone={sd.temperature_c >= 70 ? "var(--danger)" : "var(--c-dev)"}
@@ -256,20 +254,20 @@ export default function DriveHealth() {
                     )}
                     {sd.reallocated_sectors != null && (
                       <div className="meter-row">
-                        <span>Reallocated sectors</span>
+                        <span>{dt("Reallocated sectors")}</span>
                         <span className={sd.reallocated_sectors > 0 ? "meter-bad" : "meter-good"}>
                           {sd.reallocated_sectors === 0
-                            ? "0 · healthy"
-                            : `${sd.reallocated_sectors} · watch this`}
+                            ? dt("0 · healthy")
+                            : dt("{n} · watch this", { n: sd.reallocated_sectors })}
                         </span>
                       </div>
                     )}
-                      {sd.power_on_hours != null && (
-                        <div className="meter-row">
-                          <span>Power-on time</span>
-                          <span>{sd.power_on_hours.toLocaleString()} hours</span>
-                        </div>
-                      )}
+                    {sd.power_on_hours != null && (
+                      <div className="meter-row">
+                        <span>{dt("Power-on time")}</span>
+                        <span>{dt("{n} hours", { n: sd.power_on_hours.toLocaleString() })}</span>
+                      </div>
+                    )}
                     </>
                   )}
                 </div>
@@ -277,10 +275,10 @@ export default function DriveHealth() {
                 {!sd && (
                   <p className="footnote left" style={{ marginTop: 10 }}>
                     {report.smart_tool_available
-                      ? "This drive does not expose wear or temperature to smartctl."
+                      ? dt("This drive does not expose wear or temperature to smartctl.")
                       : isWindows
-                        ? "Wear level, temperature, and power-on hours are not read on Windows yet — capacity and the fill forecast above are still accurate."
-                        : "Wear level, temperature, and power-on hours need smartmontools — install it with brew install smartmontools, then refresh."}
+                        ? dt("Wear level, temperature, and power-on hours are not read on Windows yet — capacity and the fill forecast above are still accurate.")
+                        : dt("Wear level, temperature, and power-on hours need smartmontools — install it with brew install smartmontools, then refresh.")}
                   </p>
                 )}
               </div>

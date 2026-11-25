@@ -3,6 +3,7 @@ import { invoke } from "../adapter";
 import { listen, type UnlistenFn } from "../adapter";
 import { formatBytes, isWindows } from "../format";
 import type { Reason, Safety } from "../types";
+import { dt } from "../i18n";
 
 type Kind = "files" | "model" | "package";
 type Filter = "all" | "tools" | "files";
@@ -92,27 +93,27 @@ const SAFETY_LABEL: Record<Safety, string> = { safe: "Safe", caution: "Caution",
 const KIND_LABEL: Record<Kind, string> = { files: "Your files", model: "ML model", package: "Package" };
 
 function ageLabel(days: number | null): string {
-  if (days == null) return "unknown age";
-  if (days < 1) return "changed today";
-  if (days < 30) return `changed ${days}d ago`;
-  if (days < 365) return `changed ${Math.round(days / 30)} mo ago`;
-  return `changed ${(days / 365).toFixed(1)} yr ago`;
+  if (days == null) return dt("unknown age");
+  if (days < 1) return dt("changed today");
+  if (days < 30) return dt("changed {n}d ago", { n: days });
+  if (days < 365) return dt("changed {n} mo ago", { n: Math.round(days / 30) });
+  return dt("changed {n} yr ago", { n: (days / 365).toFixed(1) });
 }
 
 function phaseText(p: Progress): string {
   switch (p.phase) {
     case "listing":
-      return `Listing files · ${p.done.toLocaleString()} found`;
+      return dt("Listing files · {done} found", { done: p.done.toLocaleString() });
     case "checking":
-      return `Checking which files are the same file · ${p.done} of ${p.total}`;
+      return dt("Checking which files are the same file · {done} of {total}", { done: p.done, total: p.total });
     case "comparing":
-      return `Comparing the start and end of ${p.total} files · ${p.done} done`;
+      return dt("Comparing the start and end of {total} files · {done} done", { done: p.done, total: p.total });
     case "hashing":
-      return `Reading whole files · ${formatBytes(p.done)} of ${formatBytes(p.total)}`;
+      return dt("Reading whole files · {done} of {total}", { done: formatBytes(p.done), total: formatBytes(p.total) });
     case "removing":
-      return `Moving copies to the ${BIN} · ${Math.min(p.done, p.total)} of ${p.total}`;
+      return dt("Moving copies to the {bin} · {done} of {total}", { bin: dt(BIN), done: Math.min(p.done, p.total), total: p.total });
     default:
-      return "Working…";
+      return dt("Working…");
   }
 }
 
@@ -322,38 +323,31 @@ export default function Duplicates({ onRecovered }: { onRecovered: (bytes: numbe
       {confirming && (
         <div className="modal-backdrop" role="dialog" aria-modal="true" onClick={() => setConfirming(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h3 className="modal-title">
-              Move {planCopies.length} duplicate cop{planCopies.length === 1 ? "y" : "ies"} to the {BIN}?
+            <h3 className="modal-title">{dt("Move {n} duplicate copies to the {bin}?", { n: planCopies.length, bin: dt(BIN) })}
             </h3>
-            <p className="modal-body">
-              Every group keeps one copy. Just before moving anything, Env-Tools reads the copy you keep and each
-              copy you remove again and compares them with what the scan found. A copy that changed, is in
-              use, or is now rated worse is left where it is.
-            </p>
+            <p className="modal-body">{dt("Every group keeps one copy. Just before moving anything, Env-Tools reads the copy you keep and each copy you remove again and compares them with what the scan found. A copy that changed, is in use, or is now rated worse is left where it is.")}</p>
             {(planCaution > 0 || planRisky > 0) && (
               <p className="modal-warn">
                 {planCaution > 0 &&
-                  `${planCaution} of these ${planCaution === 1 ? "is" : "are"} rated Caution: the content stays in the copy you keep, but a program may still point at the one you remove. `}
+                  dt("{p0} of these {p1} rated Caution: the content stays in the copy you keep, but a program may still point at the one you remove. ", { p0: planCaution, p1: planCaution === 1 ? "is" : "are" })}
                 {planRisky > 0 &&
-                  `${planRisky} ${planRisky === 1 ? "is" : "are"} rated Risky (for example in a cloud-sync folder, where removing it also removes it from your other devices): check its reasons first.`}
+                  dt("{p0} {p1} rated Risky (for example in a cloud-sync folder, where removing it also removes it from your other devices): check its reasons first.", { p0: planRisky, p1: planRisky === 1 ? "is" : "are" })}
               </p>
             )}
             <div className="modal-items">
               {planCopies.slice(0, 4).map((c) => (
                 <code key={c.path} className="modal-item">{c.path}</code>
               ))}
-              {planCopies.length > 4 && <span className="modal-more">and {planCopies.length - 4} more</span>}
+              {planCopies.length > 4 && <span className="modal-more">{dt("and")}{dt(" ")}{planCopies.length - 4}{dt(" ")}{dt("more")}</span>}
             </div>
             <div className="modal-total">
-              <span>Space reclaimed</span>
+              <span>{dt("Space reclaimed")}</span>
               <strong>{formatBytes(planBytes)}</strong>
             </div>
-            <p className="modal-foot">
-              Everything moves to the {BIN}, so you can put it back until you empty it.
-            </p>
+            <p className="modal-foot">{dt("Everything moves to the")}{dt(" ")}{dt(BIN)}{dt(", so you can put it back until you empty it.")}</p>
             <div className="modal-actions">
-              <button className="btn" onClick={() => setConfirming(false)}>No, keep them</button>
-              <button className="btn-danger" onClick={removeSelected}>Yes, move to {BIN}</button>
+              <button className="btn" onClick={() => setConfirming(false)}>{dt("No, keep them")}</button>
+              <button className="btn-danger" onClick={removeSelected}>{dt("Yes, move to")}{dt(" ")}{dt(BIN)}</button>
             </div>
           </div>
         </div>
@@ -361,34 +355,32 @@ export default function Duplicates({ onRecovered }: { onRecovered: (bytes: numbe
 
       <div className="view-head">
         <div>
-          <h2 className="view-title">Duplicates</h2>
-          <p className="view-sub">
-            Identical files in your folders, and the same model or package stored by several tools
-          </p>
+          <h2 className="view-title">{dt("Duplicates")}</h2>
+          <p className="view-sub">{dt("Identical files in your folders, and the same model or package stored by several tools")}</p>
         </div>
         <button className="btn" onClick={scan} disabled={busy || roots.length + (includeCaches ? 1 : 0) === 0}>
-          {scanning ? "Scanning…" : report ? "Scan again" : "Find duplicates"}
+          {scanning ? dt("Scanning…") : report ? dt("Scan again") : dt("Find duplicates")}
         </button>
       </div>
 
       {error && (
         <div className="banner-error">
           <span>{error}</span>
-          <button className="btn-ghost" onClick={() => setError(null)}>Dismiss</button>
+          <button className="btn-ghost" onClick={() => setError(null)}>{dt("Dismiss")}</button>
         </div>
       )}
 
       <section className="dupes-setup">
         <div>
-          <h3>Folders to search</h3>
+          <h3>{dt("Folders to search")}</h3>
           <div className="dupes-roots" style={{ marginTop: 8 }}>
-            {roots.length === 0 && <span className="model-meta">No folders yet — add one below.</span>}
+            {roots.length === 0 && <span className="model-meta">{dt("No folders yet — add one below.")}</span>}
             {roots.map((r) => (
               <span key={r.path} className="dupes-chip" title={r.path}>
                 {r.label}
                 <code>{r.path}</code>
                 <button
-                  aria-label={`Do not search ${r.label}`}
+                  aria-label={dt("Do not search {p0}", { p0: r.label })}
                   disabled={busy}
                   onClick={() => setRoots((prev) => prev.filter((x) => x.path !== r.path))}
                 >
@@ -402,17 +394,15 @@ export default function Duplicates({ onRecovered }: { onRecovered: (bytes: numbe
           <input
             type="text"
             value={adding}
-            placeholder={isWindows ? "Add a folder, e.g. D:\\Photos" : "Add a folder, e.g. /Volumes/Archive"}
+            placeholder={isWindows ? dt("Add a folder, e.g. D:\\Photos") : dt("Add a folder, e.g. /Volumes/Archive")}
             onChange={(e) => setAdding(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && addFolder()}
             disabled={busy}
           />
-          <button className="btn" onClick={addFolder} disabled={busy || !adding.trim()}>Add folder</button>
+          <button className="btn" onClick={addFolder} disabled={busy || !adding.trim()}>{dt("Add folder")}</button>
         </div>
         <div className="dupes-options">
-          <label>
-            Ignore files smaller than
-            <select value={minBytes} onChange={(e) => setMinBytes(Number(e.target.value))} disabled={busy}>
+          <label>{dt("Ignore files smaller than")}{dt(" ")}<select value={minBytes} onChange={(e) => setMinBytes(Number(e.target.value))} disabled={busy}>
               {MIN_SIZES.map((m) => (
                 <option key={m.bytes} value={m.bytes}>{m.label}</option>
               ))}
@@ -424,9 +414,7 @@ export default function Duplicates({ onRecovered }: { onRecovered: (bytes: numbe
               checked={includeCaches}
               onChange={(e) => setIncludeCaches(e.target.checked)}
               disabled={busy}
-            />
-            Also compare ML model and package caches (Hugging Face, Ollama, LM Studio, PyTorch, pip, uv, conda)
-          </label>
+            />{dt(" ")}{dt("Also compare ML model and package caches (Hugging Face, Ollama, LM Studio, PyTorch, pip, uv, conda)")}</label>
         </div>
       </section>
 
@@ -446,27 +434,26 @@ export default function Duplicates({ onRecovered }: { onRecovered: (bytes: numbe
           </div>
           <div className="dupes-progress-actions">
             <span className="model-meta">
-              {progress.current ? progress.current : "Files are only read, never changed, while scanning."}
+              {progress.current ? progress.current : dt("Files are only read, never changed, while scanning.")}
             </span>
-            <button className="btn" onClick={cancel}>Cancel</button>
+            <button className="btn" onClick={cancel}>{dt("Cancel")}</button>
           </div>
         </div>
       )}
 
       {outcome && !progress && (
         <div className="banner-info">
-          {outcome.cancelled && <>Stopped before finishing. </>}
+          {outcome.cancelled && <>{dt("Stopped before finishing.")}</>}
           {outcome.removed.length > 0 ? (
-            <>
-              Moved {outcome.removed.length} file{outcome.removed.length === 1 ? "" : "s"} to the {BIN} (
-              {formatBytes(outcome.freed_bytes)}). The copies you kept were checked first.{" "}
+            <>{dt("Moved {n} files to the {bin} ({size}). The copies you kept were checked first.", {
+              n: outcome.removed.length, bin: dt(BIN), size: formatBytes(outcome.freed_bytes),
+            })}{dt(" ")}
             </>
           ) : (
-            !outcome.cancelled && <>Nothing was moved. </>
+            !outcome.cancelled && <>{dt("Nothing was moved.")}</>
           )}
           {outcome.skipped.length > 0 && (
-            <>
-              Left alone {outcome.skipped.length}:
+            <>{dt("Left alone")}{dt(" ")}{outcome.skipped.length}:
               <ul className="wt-reasons">
                 {outcome.skipped.map((s) => (
                   <li key={s}>{s}</li>
@@ -480,69 +467,61 @@ export default function Duplicates({ onRecovered }: { onRecovered: (bytes: numbe
       {scanning && !report && (
         <div className="empty-state">
           <div className="spinner" />
-          <p>Comparing sizes first, then only reading files that could really be the same…</p>
+          <p>{dt("Comparing sizes first, then only reading files that could really be the same…")}</p>
         </div>
       )}
 
       {report && (
         <>
           {report.cancelled && (
-            <div className="banner-info">The scan was cancelled, so no results are shown. Nothing was changed.</div>
+            <div className="banner-info">{dt("The scan was cancelled, so no results are shown. Nothing was changed.")}</div>
           )}
 
           <section className="metrics">
             <div className="metric accent">
-              <span className="metric-label">Could be freed</span>
+              <span className="metric-label">{dt("Could be freed")}</span>
               <span className="metric-value">{formatBytes(report.wasted_bytes)}</span>
             </div>
             <div className="metric">
-              <span className="metric-label">Rated Safe</span>
+              <span className="metric-label">{dt("Rated Safe")}</span>
               <span className="metric-value">{formatBytes(report.safe_bytes)}</span>
             </div>
             <div className="metric">
-              <span className="metric-label">Sets of duplicates</span>
+              <span className="metric-label">{dt("Sets of duplicates")}</span>
               <span className="metric-value">{groups.length}</span>
             </div>
             <div className="metric">
-              <span className="metric-label">Already sharing space</span>
+              <span className="metric-label">{dt("Already sharing space")}</span>
               <span className="metric-value">{formatBytes(report.hard_link_bytes)}</span>
             </div>
           </section>
 
           {!report.cancelled && (
-            <p className="footnote left">
-              Looked at {report.files_seen.toLocaleString()} files of {MIN_SIZES.find((m) => m.bytes === report.min_bytes)?.label ?? formatBytes(report.min_bytes)} or
-              more in {report.seconds.toFixed(1)} s.
-              {report.caches.length > 0 && <> Also compared the caches of {report.caches.join(", ")}.</>}
+            <p className="footnote left">{dt("Looked at")}{dt(" ")}{report.files_seen.toLocaleString()}{dt(" ")}{dt("files of")}{dt(" ")}{MIN_SIZES.find((m) => m.bytes === report.min_bytes)?.label ?? formatBytes(report.min_bytes)}{dt(" ")}{dt("or more in")}{dt(" ")}{report.seconds.toFixed(1)}{dt(" ")}{dt("s.")}{dt(" ")}{report.caches.length > 0 && <>{dt("Also compared the caches of")}{dt(" ")}{report.caches.join(", ")}.</>}
               {report.online_only_skipped > 0 && (
-                <> {report.online_only_skipped} cloud file{report.online_only_skipped === 1 ? " is" : "s are"} stored only online and were not read.</>
+                <> {report.online_only_skipped}{dt(" ")}{dt("cloud file")}{report.online_only_skipped === 1 ? dt(" is") : dt("s are")}{dt(" ")}{dt("stored only online and were not read.")}</>
               )}
               {report.unreadable_count > 0 && (
                 <span title={report.unreadable.join("\n")}>
-                  {" "}{report.unreadable_count} file{report.unreadable_count === 1 ? "" : "s"} could not be read (open in another program or no permission); hover for names.
-                </span>
+                  {dt(" ")}{dt("{n} files could not be read (open in another program or no permission); hover for names.", { n: report.unreadable_count })}</span>
               )}
             </p>
           )}
 
-          <div className="banner-info">
-            Files count as duplicates only when their whole content is identical (checked with a hash), never by
-            name or date. Hard links — several names for one file — are not duplicates and are listed
-            separately. Env-Tools keeps one copy of each set, moves the others to the {BIN}, and reads both again
-            right before it does.
-          </div>
+          <div className="banner-info">{dt("Files count as duplicates only when their whole content is identical (checked with a hash), never by name or date. Hard links — several names for one file — are not duplicates and are listed separately. Env-Tools keeps one copy of each set, moves the others to the")}{dt(" ")}{dt(BIN)}{dt(", and reads both again right before it does.")}</div>
 
           {report.hard_links.length > 0 && (
             <details className="dupes-shared">
               <summary>
-                {report.hard_links.length} file{report.hard_links.length === 1 ? "" : "s"} with several names
-                ({report.hard_links.some((h) => h.clones) ? "hard links or APFS clones" : "hard links"}) already
-                share space — {formatBytes(report.hard_link_bytes)} that is not wasted
-              </summary>
+                {dt("{n} files with several names ({kind}) already share space — {size} that is not wasted", {
+                  n: report.hard_links.length,
+                  kind: dt(report.hard_links.some((h) => h.clones) ? "hard links or APFS clones" : "hard links"),
+                  size: formatBytes(report.hard_link_bytes),
+                })}</summary>
               {report.hard_links.slice(0, 50).map((h) => (
                 <div key={h.paths[0]} className="dupes-shared-set">
                   <strong>
-                    {h.name} · {formatBytes(h.size_bytes)} stored once, {h.paths.length} {h.clones ? "clones" : "names"}
+                    {h.name} · {formatBytes(h.size_bytes)}{dt(" ")}{dt("stored once,")}{dt(" ")}{h.paths.length} {h.clones ? dt("clones") : dt("names")}
                   </strong>
                   {h.paths.map((p) => (
                     <code key={p}>{p}</code>
@@ -557,30 +536,24 @@ export default function Duplicates({ onRecovered }: { onRecovered: (bytes: numbe
               <button
                 className={`filter-tab ${filter === "all" ? "is-active" : ""}`}
                 onClick={() => { setFilter("all"); setShown(PAGE); }}
-              >
-                All ({groups.length})
+              >{dt("All (")}{groups.length})
               </button>
               <button
                 className={`filter-tab ${filter === "tools" ? "is-active" : ""}`}
                 onClick={() => { setFilter("tools"); setShown(PAGE); }}
-              >
-                ML models and packages ({toolGroups})
+              >{dt("ML models and packages (")}{toolGroups})
               </button>
               <button
                 className={`filter-tab ${filter === "files" ? "is-active" : ""}`}
                 onClick={() => { setFilter("files"); setShown(PAGE); }}
-              >
-                Your files ({groups.length - toolGroups})
+              >{dt("Your files (")}{groups.length - toolGroups})
               </button>
             </div>
             <div className="confirm">
-              <button className="btn-ghost sm" onClick={selectAllSafe} disabled={busy}>Select all Safe</button>
-              <button className="btn-ghost sm" onClick={() => setSelected(new Set())} disabled={busy || selected.size === 0}>
-                Clear
-              </button>
+              <button className="btn-ghost sm" onClick={selectAllSafe} disabled={busy}>{dt("Select all Safe")}</button>
+              <button className="btn-ghost sm" onClick={() => setSelected(new Set())} disabled={busy || selected.size === 0}>{dt("Clear")}</button>
               {planCopies.length > 0 && (
-                <button className="btn-clean" disabled={busy} onClick={() => setConfirming(true)}>
-                  Move {planCopies.length} cop{planCopies.length === 1 ? "y" : "ies"} to {BIN} ({formatBytes(planBytes)})
+                <button className="btn-clean" disabled={busy} onClick={() => setConfirming(true)}>{dt("Move {n} copies to {bin} ({size})", { n: planCopies.length, bin: dt(BIN), size: formatBytes(planBytes) })}
                 </button>
               )}
             </div>
@@ -588,7 +561,7 @@ export default function Duplicates({ onRecovered }: { onRecovered: (bytes: numbe
 
           {groups.length === 0 && !report.cancelled && (
             <div className="empty-state">
-              <p>No duplicates found in these folders.</p>
+              <p>{dt("No duplicates found in these folders.")}</p>
             </div>
           )}
 
@@ -600,17 +573,14 @@ export default function Duplicates({ onRecovered }: { onRecovered: (bytes: numbe
                   <div className="dupes-group-title">
                     <div className="finding-title">
                       <span className="finding-name" title={g.name}>{g.name}</span>
-                      <span className={`badge cat-${g.kind === "files" ? "app_data" : "ml_models"}`}>{KIND_LABEL[g.kind]}</span>
+                      <span className={`badge cat-${g.kind === "files" ? "app_data" : "ml_models"}`}>{dt(KIND_LABEL[g.kind])}</span>
                     </div>
                     <span className="model-meta">
-                      {g.copies.length} copies of {formatBytes(g.size_bytes)} each
-                    </span>
+                      {dt("{n} copies of {size} each", { n: g.copies.length, size: formatBytes(g.size_bytes) })}</span>
                   </div>
                   <div className="dupes-group-side">
                     <span className="size">{formatBytes(g.wasted_bytes)}</span>
-                    <button className="btn-ghost sm" disabled={busy} onClick={() => selectGroup(g)}>
-                      Select duplicates
-                    </button>
+                    <button className="btn-ghost sm" disabled={busy} onClick={() => selectGroup(g)}>{dt("Select duplicates")}</button>
                   </div>
                 </div>
                 {g.copies.map((c) => {
@@ -625,31 +595,26 @@ export default function Duplicates({ onRecovered }: { onRecovered: (bytes: numbe
                             checked={isKeeper}
                             disabled={busy}
                             onChange={() => chooseKeeper(g, c)}
-                          />
-                          Keep
-                        </label>
+                          />{dt(" ")}{dt("Keep")}</label>
                         <label className={isKeeper || !c.removable ? "is-off" : ""}>
                           <input
                             type="checkbox"
                             checked={!isKeeper && c.removable && selected.has(c.path)}
                             disabled={busy || isKeeper || !c.removable}
                             onChange={() => toggle(c)}
-                            title={c.removable ? undefined : "Env-Tools will not remove this one"}
-                          />
-                          Remove
-                        </label>
+                            title={c.removable ? undefined : dt("Env-Tools will not remove this one")}
+                          />{dt(" ")}{dt("Remove")}</label>
                       </div>
                       <div className="dupes-copy-main">
                         <div className="finding-title">
                           <span className="finding-name">{c.place}</span>
-                          <span className={`badge safety-${c.safety}`}>{SAFETY_LABEL[c.safety]}</span>
-                          {isKeeper && <span className="badge cat-dev_cache">Kept</span>}
+                          <span className={`badge safety-${c.safety}`}>{dt(SAFETY_LABEL[c.safety])}</span>
+                          {isKeeper && <span className="badge cat-dev_cache">{dt("Kept")}</span>}
                         </div>
                         <code className="finding-path">{c.path}</code>
                         <span className="model-meta">{ageLabel(c.modified_days)}</span>
                         {c.link_paths.length > 0 && (
-                          <span className="dupes-links">
-                            Same data, also at: {c.link_paths.join(" · ")}
+                          <span className="dupes-links">{dt("Same data, also at:")}{dt(" ")}{c.link_paths.join(" · ")}
                           </span>
                         )}
                         {isKeeper && c.keep_note && c.keep && !keepOverride[g.hash] && (
@@ -659,7 +624,7 @@ export default function Duplicates({ onRecovered }: { onRecovered: (bytes: numbe
                           {c.reasons.map((r) => (
                             <li key={r.text} className={`reason-${r.level}`}>
                               <span className="reason-mark" aria-hidden>
-                                {r.level === "ok" ? "✓" : r.level === "warn" ? "!" : "✕"}
+                                {r.level === "ok" ? dt("✓") : r.level === "warn" ? dt("!") : dt("✕")}
                               </span>
                               {r.text}
                             </li>
@@ -669,9 +634,7 @@ export default function Duplicates({ onRecovered }: { onRecovered: (bytes: numbe
                       <button
                         className="btn-ghost sm"
                         onClick={() => invoke("reveal_path", { path: c.path }).catch((err) => setError(String(err)))}
-                      >
-                        Show
-                      </button>
+                      >{dt("Show")}</button>
                     </div>
                   );
                 })}
@@ -681,19 +644,11 @@ export default function Duplicates({ onRecovered }: { onRecovered: (bytes: numbe
 
           {visible.length > shown && (
             <div className="dupes-more">
-              <button className="btn" onClick={() => setShown((n) => n + PAGE)}>
-                Show more ({visible.length - shown} more sets)
-              </button>
+              <button className="btn" onClick={() => setShown((n) => n + PAGE)}>{dt("Show more (")}{visible.length - shown}{dt(" ")}{dt("more sets)")}</button>
             </div>
           )}
 
-          <p className="footnote">
-            Safe means the tool rebuilds or re-downloads the copy by itself. Caution covers your own files
-            and models a tool will not fetch again for you: the content stays in the copy you keep, but check
-            which copy your apps and links use. Copies inside a Git repository, an app or a Python
-            environment are never offered for removal, and files inside OneDrive, iCloud, Dropbox and similar
-            folders are rated Risky because removing them there removes them everywhere.
-          </p>
+          <p className="footnote">{dt("Safe means the tool rebuilds or re-downloads the copy by itself. Caution covers your own files and models a tool will not fetch again for you: the content stays in the copy you keep, but check which copy your apps and links use. Copies inside a Git repository, an app or a Python environment are never offered for removal, and files inside OneDrive, iCloud, Dropbox and similar folders are rated Risky because removing them there removes them everywhere.")}</p>
         </>
       )}
     </>

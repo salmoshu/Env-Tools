@@ -4,17 +4,18 @@ import { listen, type UnlistenFn } from "../adapter";
 import { formatBytes, isWindows } from "../format";
 import ConfirmClean from "../components/ConfirmClean";
 import type { WorktreeItem, WorktreeRemoveOutcome, WorktreeReport } from "../types";
+import { dt, useLang } from "../i18n";
 
 type Filter = "all" | "removable" | "keep";
 
 const BIN = isWindows ? "Recycle Bin" : "Trash";
 
 function ageLabel(days: number | null): string {
-  if (days == null) return "unknown";
-  if (days < 1) return "today";
-  if (days < 30) return `${days}d ago`;
-  if (days < 365) return `${Math.round(days / 30)} mo ago`;
-  return `${(days / 365).toFixed(1)} yr ago`;
+  if (days == null) return dt("unknown");
+  if (days < 1) return dt("today");
+  if (days < 30) return dt("{n}d ago", { n: days });
+  if (days < 365) return dt("{n} mo ago", { n: Math.round(days / 30) });
+  return dt("{n} yr ago", { n: (days / 365).toFixed(1) });
 }
 
 /// Explanations quote git commands in `backticks`; show those as code.
@@ -33,6 +34,7 @@ interface Progress {
 }
 
 export default function Worktrees({ onRecovered }: { onRecovered: (bytes: number) => void }) {
+  useLang();
   const [report, setReport] = useState<WorktreeReport | null>(null);
   const [scanning, setScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -124,10 +126,9 @@ export default function Worktrees({ onRecovered }: { onRecovered: (bytes: number
   const keepCount = items.length - removableCount;
   const folderCount = items.filter((i) => i.verdict !== "record").length;
 
-  const title =
-    selectedFolders.length > 0
-      ? `Remove ${selectedFolders.length} worktree${selectedFolders.length === 1 ? "" : "s"}?`
-      : `Clear ${selectedRecords} stale record${selectedRecords === 1 ? "" : "s"}?`;
+  const title = selectedFolders.length > 0
+    ? dt(selectedFolders.length === 1 ? "Remove {n} worktree?" : "Remove {n} worktrees?", { n: selectedFolders.length })
+    : dt(selectedRecords === 1 ? "Clear {n} stale record?" : "Clear {n} stale records?", { n: selectedRecords });
 
   return (
     <>
@@ -137,7 +138,7 @@ export default function Worktrees({ onRecovered }: { onRecovered: (bytes: number
             kind: "worktree",
             title,
             items: selectedItems.map((i) =>
-              i.verdict === "record" ? `${i.path} (record only)` : i.path
+              i.verdict === "record" ? dt("{path} (record only)", { path: i.path }) : i.path
             ),
             bytes: selectedBytes,
             risky: selectedItems.some((i) => i.verdict === "probably_merged" || i.owner != null),
@@ -150,21 +151,18 @@ export default function Worktrees({ onRecovered }: { onRecovered: (bytes: number
 
       <div className="view-head">
         <div>
-          <h2 className="view-title">Git worktrees</h2>
-          <p className="view-sub">
-            Spare checkouts left by <code>git worktree</code>, Claude Code and Codex — remove the
-            ones already merged
-          </p>
+          <h2 className="view-title">{dt("Git worktrees")}</h2>
+          <p className="view-sub">{dt("Spare checkouts left by git worktree, Claude Code and Codex — remove the ones already merged")}</p>
         </div>
         <button className="btn" onClick={scan} disabled={scanning || progress != null}>
-          {scanning ? "Scanning…" : "Rescan"}
+          {dt(scanning ? "Scanning…" : "Rescan")}
         </button>
       </div>
 
       {error && (
         <div className="banner-error">
           <span>{error}</span>
-          <button className="btn-ghost" onClick={() => setError(null)}>Dismiss</button>
+          <button className="btn-ghost" onClick={() => setError(null)}>{dt("Dismiss")}</button>
         </div>
       )}
 
@@ -172,12 +170,10 @@ export default function Worktrees({ onRecovered }: { onRecovered: (bytes: number
         <div className="banner-info wt-progress">
           <div className="meter-head">
             <span>
-              Moving worktrees to the {BIN}
-              {progress.current && ` · ${progress.current}`}
+              {dt("Moving worktrees to the {bin}", { bin: dt(BIN) })}
+              {progress.current && dt(" · {p0}", { p0: progress.current })}
             </span>
-            <span className="meter-value">
-              {Math.min(progress.done, progress.total)} of {progress.total}
-            </span>
+            <span className="meter-value">{dt("{done} of {total}", { done: Math.min(progress.done, progress.total), total: progress.total })}</span>
           </div>
           <div className="meter-track">
             <div
@@ -188,56 +184,42 @@ export default function Worktrees({ onRecovered }: { onRecovered: (bytes: number
               }}
             />
           </div>
-          <p className="model-meta">
-            Large folders can take a while on {isWindows ? "Windows" : "this disk"}. You can keep
-            using Env-Tools in the meantime.
-          </p>
+          <p className="model-meta">{dt("Large folders can take a while on {platform}. You can keep using Env-Tools in the meantime.", { platform: dt(isWindows ? "Windows" : "this disk") })}</p>
         </div>
       )}
 
       {outcome && !progress && (
         <div className="banner-info">
           {outcome.removed.length > 0 && (
-            <>
-              Moved {outcome.removed.length} worktree{outcome.removed.length === 1 ? "" : "s"} to the{" "}
-              {BIN} ({formatBytes(outcome.freed_bytes)}). Their branches are still in git.{" "}
-            </>
+            <>{dt(outcome.removed.length === 1 ? "Moved {n} worktree to the {bin} ({size}). Their branches are still in git. " : "Moved {n} worktrees to the {bin} ({size}). Their branches are still in git. ", { n: outcome.removed.length, bin: dt(BIN), size: formatBytes(outcome.freed_bytes) })}</>
           )}
           {outcome.already_gone.length > 0 && (
-            <>
-              {outcome.already_gone.length} had already disappeared — usually because the tool
-              that made it archived its session — and git's record of it was cleared.{" "}
-            </>
+            <>{dt("{n} had already disappeared — usually because the tool that made it archived its session — and git's record of it was cleared. ", { n: outcome.already_gone.length })}</>
           )}
           {outcome.skipped.length > 0 && (
             <>
-              Skipped {outcome.skipped.length}:
+              {dt("Skipped {n}:", { n: outcome.skipped.length })}
               <ul className="wt-reasons">
                 {outcome.skipped.map((s) => (
-                  <li key={s}>{withCode(s)}</li>
+                  <li key={s}>{withCode(dt(s))}</li>
                 ))}
               </ul>
             </>
           )}
-          {outcome.removed.length === 0 &&
-            outcome.already_gone.length === 0 &&
-            outcome.skipped.length === 0 &&
-            "Stale records cleared."}
+          {outcome.removed.length === 0 && outcome.already_gone.length === 0 && outcome.skipped.length === 0 && dt("Stale records cleared.")}
         </div>
       )}
 
       {scanning && !report && (
         <div className="empty-state">
           <div className="spinner" />
-          <p>Looking for repositories and checking each worktree with git…</p>
+          <p>{dt("Looking for repositories and checking each worktree with git…")}</p>
         </div>
       )}
 
       {report && !report.git_available && (
         <div className="banner-info">
-          Env-Tools needs git to check whether a worktree's work is merged, and could not find it.
-          Install git{isWindows ? " (git-scm.com)" : " (Xcode command line tools or Homebrew)"}, then
-          rescan.
+          {dt("Env-Tools needs git to check whether a worktree's work is merged, and could not find it. Install git{install}, then rescan.", { install: dt(isWindows ? " (git-scm.com)" : " (Xcode command line tools or Homebrew)") })}
         </div>
       )}
 
@@ -245,25 +227,20 @@ export default function Worktrees({ onRecovered }: { onRecovered: (bytes: number
         <>
           <section className="metrics">
             <div className="metric">
-              <span className="metric-label">All worktrees</span>
+              <span className="metric-label">{dt("All worktrees")}</span>
               <span className="metric-value">{formatBytes(report.total_bytes)}</span>
             </div>
             <div className="metric accent">
-              <span className="metric-label">Merged and clean</span>
+              <span className="metric-label">{dt("Merged and clean")}</span>
               <span className="metric-value">{formatBytes(report.safe_bytes)}</span>
             </div>
             <div className="metric">
-              <span className="metric-label">Worktree folders</span>
+              <span className="metric-label">{dt("Worktree folders")}</span>
               <span className="metric-value">{folderCount}</span>
             </div>
           </section>
 
-          <div className="banner-info">
-            A worktree is a second checkout of a repository, often made by an AI coding agent for one
-            task. Once its branch is merged it is just a full copy taking space. Env-Tools moves the folder
-            to the {BIN} and never deletes a branch, so any of them can be recreated with{" "}
-            <code>git worktree add</code>.
-          </div>
+          <div className="banner-info">{withCode(dt("A worktree is a second checkout of a repository, often made by an AI coding agent for one task. Once its branch is merged it is just a full copy taking space. Env-Tools moves the folder to the {bin} and never deletes a branch, so any of them can be recreated with `git worktree add`.", { bin: dt(BIN) }))}</div>
 
           <div className="filter-row">
             <div className="filter-tabs">
@@ -271,19 +248,19 @@ export default function Worktrees({ onRecovered }: { onRecovered: (bytes: number
                 className={`filter-tab ${filter === "all" ? "is-active" : ""}`}
                 onClick={() => setFilter("all")}
               >
-                All ({items.length})
+                {dt("All ({n})", { n: items.length })}
               </button>
               <button
                 className={`filter-tab ${filter === "removable" ? "is-active" : ""}`}
                 onClick={() => setFilter("removable")}
               >
-                Removable ({removableCount})
+                {dt("Removable ({n})", { n: removableCount })}
               </button>
               <button
                 className={`filter-tab ${filter === "keep" ? "is-active" : ""}`}
                 onClick={() => setFilter("keep")}
               >
-                Keep ({keepCount})
+                {dt("Keep ({n})", { n: keepCount })}
               </button>
             </div>
             <div className="confirm">
@@ -294,8 +271,8 @@ export default function Worktrees({ onRecovered }: { onRecovered: (bytes: number
                   onClick={() => setConfirming(true)}
                 >
                   {selectedFolders.length > 0
-                    ? `Remove ${selectedFolders.length} selected (${formatBytes(selectedBytes)})`
-                    : `Clear ${selectedRecords} stale record${selectedRecords === 1 ? "" : "s"}`}
+                    ? dt("Remove {n} selected ({size})", { n: selectedFolders.length, size: formatBytes(selectedBytes) })
+                    : dt(selectedRecords === 1 ? "Clear {n} stale record" : "Clear {n} stale records", { n: selectedRecords })}
                 </button>
               )}
             </div>
@@ -303,7 +280,7 @@ export default function Worktrees({ onRecovered }: { onRecovered: (bytes: number
 
           {report.repos.length === 0 && (
             <div className="empty-state">
-              <p>No extra worktrees found — every repository has just its main checkout.</p>
+              <p>{dt("No extra worktrees found — every repository has just its main checkout.")}</p>
             </div>
           )}
 
@@ -313,13 +290,13 @@ export default function Worktrees({ onRecovered }: { onRecovered: (bytes: number
             return (
               <section key={repo.common_dir || repo.repo}>
                 <h2 className="section-title">
-                  {repo.common_dir ? baseName(repo.repo) : repo.repo}{" "}
+                  {repo.common_dir ? baseName(repo.repo) : repo.repo}{dt(" ")}
                   <span className="count">{repo.items.length}</span>
                 </h2>
                 {repo.common_dir && (
                   <p className="view-sub wt-repo-sub">
                     <code>{repo.repo}</code>
-                    {repo.base && <> · compared with {repo.base}</>} · {formatBytes(repo.total_bytes)}
+                    {repo.base && <>{dt(" · compared with {base}", { base: repo.base })}</>} · {formatBytes(repo.total_bytes)}
                   </p>
                 )}
                 <div className="findings">
@@ -333,40 +310,39 @@ export default function Worktrees({ onRecovered }: { onRecovered: (bytes: number
                         checked={selected.has(i.path)}
                         disabled={i.verdict === "keep" || progress != null}
                         onChange={() => toggle(i)}
-                        title={i.verdict === "keep" ? "Env-Tools will not remove this one" : undefined}
+                        title={i.verdict === "keep" ? dt("Env-Tools will not remove this one") : undefined}
                       />
                       <div className="model-main">
                         <div className="finding-title">
                           <span className="finding-name">{i.name}</span>
-                          <span className={`badge safety-${i.safety}`}>{i.summary}</span>
+                          <span className={`badge safety-${i.safety}`}>{dt(i.summary)}</span>
                           {i.owner && <span className="badge cat-dev_cache">{i.owner}</span>}
                         </div>
                         <span className="model-meta">
                           {i.verdict === "record"
-                            ? "Folder already deleted"
+                            ? dt("Folder already deleted")
                             : i.branch
-                              ? `Branch ${i.branch}`
+                              ? dt("Branch {branch}", { branch: i.branch })
                               : i.head
-                                ? `Detached HEAD at ${i.head}`
-                                : "No commit"}
-                          {i.last_commit_days != null &&
-                            ` · last commit ${ageLabel(i.last_commit_days)}`}
-                          {i.last_commit_subject && `: ${i.last_commit_subject}`}
-                          {i.modified_days != null && ` · files changed ${ageLabel(i.modified_days)}`}
+                                ? dt("Detached HEAD at {head}", { head: i.head })
+                                : dt("No commit")}
+                          {i.last_commit_days != null && dt(" · last commit {age}", { age: ageLabel(i.last_commit_days) })}
+                          {i.last_commit_subject && dt(": {p0}", { p0: i.last_commit_subject })}
+                          {i.modified_days != null && dt(" · files changed {age}", { age: ageLabel(i.modified_days) })}
                         </span>
                         <code className="finding-path">{i.path}</code>
-                        <p className="wt-explain">{withCode(i.explanation)}</p>
+                        <p className="wt-explain">{withCode(dt(i.explanation))}</p>
                         {i.reasons.length > 0 && (
                           <ul className="wt-reasons">
                             {i.reasons.map((r) => (
-                              <li key={r}>{withCode(r)}</li>
+                              <li key={r}>{withCode(dt(r))}</li>
                             ))}
                           </ul>
                         )}
                       </div>
                       <div className="finding-size">
                         <span className="size">
-                          {i.verdict === "record" ? "—" : formatBytes(i.size_bytes)}
+                          {i.verdict === "record" ? dt("—") : formatBytes(i.size_bytes)}
                         </span>
                       </div>
                       {i.verdict !== "record" && (
@@ -379,7 +355,7 @@ export default function Worktrees({ onRecovered }: { onRecovered: (bytes: number
                             );
                           }}
                         >
-                          Show
+                          {dt("Show")}
                         </button>
                       )}
                     </label>
@@ -389,12 +365,7 @@ export default function Worktrees({ onRecovered }: { onRecovered: (bytes: number
             );
           })}
 
-          <p className="footnote">
-            "Probably merged" means the same changes are on the main branch under different commit
-            IDs, as after a rebase or cherry-pick. A squash merge of several commits cannot be
-            detected this way, so those stay under Keep. Worktrees made by Claude Code or Codex are
-            never selected automatically, because the tool may still be using them.
-          </p>
+          <p className="footnote">{dt("\"Probably merged\" means the same changes are on the main branch under different commit IDs, as after a rebase or cherry-pick. A squash merge of several commits cannot be detected this way, so those stay under Keep. Worktrees made by Claude Code or Codex are never selected automatically, because the tool may still be using them.")}</p>
         </>
       )}
     </>

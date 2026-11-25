@@ -21,6 +21,7 @@ import Speed from "./views/Speed";
 import Startup from "./views/Startup";
 import GadgetSettings from "./components/GadgetSettings";
 import { formatBytes, isWindows } from "./format";
+import { dt, useLang } from "./i18n";
 
 type View =
   | "overview" | "dev" | "models" | "python" | "projects" | "worktrees" | "ai"
@@ -64,16 +65,18 @@ const NAV: { group: string; items: NavItem[] }[] = [
 const KEPT: View[] = ["worktrees", "projects", "system", "dupes", "sandboxes", "ai", "speed"];
 
 function About() {
+  useLang();
   return <>
     <div className="view-head">
-      <div><h2 className="view-title">Disk settings</h2><p className="view-sub">Storage monitor and safe cleaning controls</p></div>
+      <div><h2 className="view-title">{dt("Disk settings")}</h2><p className="view-sub">{dt("Storage monitor and safe cleaning controls")}</p></div>
     </div>
     <GadgetSettings />
-    <p className="footnote left">Application updates remain available in Env-Tools Settings.</p>
+    <p className="footnote left">{dt("Application updates remain available in Env-Tools Settings.")}</p>
   </>;
 }
 
 export default function DiskApp() {
+  useLang();
   const [view, setView] = useState<View>("overview");
   const [recovered, setRecovered] = useState(0);
   const [opened, setOpened] = useState<Set<View>>(() => new Set());
@@ -89,22 +92,18 @@ export default function DiskApp() {
 
   return <div className="jharu-root shell">
     <aside className="sidebar">
-      <div className="brand">
-        <div className="brand-logo disk-brand-mark">ET</div>
-        <div><h1>Env-Tools</h1><p className="subtitle">Storage insight</p></div>
-      </div>
       <nav className="nav">
         {NAV.map(group => <div key={group.group} className="nav-group">
-          {group.group && <span className="nav-group-title">{group.group}</span>}
+          {group.group && <span className="nav-group-title">{dt(group.group)}</span>}
           {group.items.map(item => <button key={item.id} className={`nav-item ${view === item.id ? "is-active" : ""}`} onClick={() => setView(item.id)}>
             <span className="nav-icon">{item.icon}</span>
-            <span className="nav-text"><span className="nav-label">{item.label}</span><span className="nav-sub">{item.sub}</span></span>
+            <span className="nav-text"><span className="nav-label">{dt(item.label)}</span><span className="nav-sub">{dt(item.sub)}</span></span>
           </button>)}
         </div>)}
       </nav>
       <div className="sidebar-foot">
-        {recovered > 0 && <div className="recovered-tile"><span className="metric-label">Recovered this session</span><span className="recovered-value">{formatBytes(recovered)}</span></div>}
-        <p className="footnote left">Everything goes to the Recycle Bin or Trash unless an action explicitly says otherwise.</p>
+        {recovered > 0 && <div className="recovered-tile"><span className="metric-label">{dt("Recovered this session")}</span><span className="recovered-value">{formatBytes(recovered)}</span></div>}
+        <p className="footnote left">{dt("Everything goes to the Recycle Bin or Trash unless an action explicitly says otherwise.")}</p>
       </div>
     </aside>
     <div className="main-col">

@@ -55,7 +55,8 @@ export function useAgentAccounts(provider, quotaAccounts = [], sync = true) {
   const [defaultRemoved, setDefaultRemoved] = useState(false);
   const [launcherInstalled, setLauncherInstalled] = useState(false);
   const [ready, setReady] = useState(false);
-  const [error, setError] = useState("");
+  const [loadError, setLoadError] = useState("");
+  const [switchFailure, setSwitchFailure] = useState(null);
   const [notice, setNotice] = useState("");
   const [switching, setSwitching] = useState(false);
   const activeRef = useRef(active);
@@ -77,9 +78,10 @@ export function useAgentAccounts(provider, quotaAccounts = [], sync = true) {
     setLauncherInstalled(Boolean(payload && payload.launcher_installed));
     if (payload && (typeof payload.active === "string" || payload.active === null)) {
       commitActive(payload.active);
+      setSwitchFailure((failure) => failure?.id === payload.active ? null : failure);
     }
     setReady(true);
-    setError("");
+    setLoadError("");
   }, [commitActive]);
 
   const reload = useCallback(async () => {
@@ -91,12 +93,13 @@ export function useAgentAccounts(provider, quotaAccounts = [], sync = true) {
 
   useEffect(() => {
     if (!sync) {
-      setError("");
+      setLoadError("");
+      setSwitchFailure(null);
       return undefined;
     }
     let cancelled = false;
     reload().catch((err) => {
-      if (!cancelled) setError(String(err && (err.message || err) || err));
+      if (!cancelled) setLoadError(String(err && (err.message || err) || err));
     });
     const off = window.api.onAgentAccountsUpdate
       ? window.api.onAgentAccountsUpdate((payload) => {
@@ -145,6 +148,7 @@ export function useAgentAccounts(provider, quotaAccounts = [], sync = true) {
 
   const viewAccount = useCallback((id) => {
     setView(id);
+    setSwitchFailure((failure) => failure?.id === id ? failure : null);
     try { if (id) localStorage.setItem(viewKey, id); } catch {}
   }, [viewKey]);
 
@@ -152,7 +156,6 @@ export function useAgentAccounts(provider, quotaAccounts = [], sync = true) {
 
   const selectAccount = useCallback(async (id) => {
     if (!sync) {
-      setError("");
       setNotice("");
       commitActive(id);
       const result = { ok: true, account_sync: { requested: 1, succeeded: ["local"], failed: [] } };
@@ -160,12 +163,11 @@ export function useAgentAccounts(provider, quotaAccounts = [], sync = true) {
       return result;
     }
     if (switchingRef.current) return false;
-    const previous = activeRef.current;
+    setSwitchFailure(null);
+    if (id === activeRef.current) return { ok: true };
     switchingRef.current = true;
     setSwitching(true);
-    setError("");
     setNotice("");
-    commitActive(id);
     try {
       const result = await window.api.updateAgentAccounts(provider, { action: "set-active", id });
       if (!result || !result.ok) throw new Error((result && result.error) || t("state.unknownError"));
@@ -176,14 +178,16 @@ export function useAgentAccounts(provider, quotaAccounts = [], sync = true) {
       setNotice(running.length ? t("dash.accountRestartClients") : "");
       return result;
     } catch (err) {
-      commitActive(previous);
-      setError(String(err && (err.message || err) || err));
-      return { ok: false, error: String(err && (err.message || err) || err) };
+      const message = String(err && (err.message || err) || err);
+      setSwitchFailure({ id, message });
+      // 请求超时不代表后端没有写入。以实际生效账号为准，不回滚其他窗口的新状态。
+      reload().catch(() => {});
+      return { ok: false, error: message };
     } finally {
       switchingRef.current = false;
       setSwitching(false);
     }
-  }, [applyPayload, commitActive, provider, sync]);
+  }, [applyPayload, commitActive, provider, reload, sync]);
 
   const updateAccounts = useCallback(async (values) => {
     const result = await window.api.updateAgentAccounts(provider, values);
@@ -200,7 +204,8 @@ export function useAgentAccounts(provider, quotaAccounts = [], sync = true) {
     selectAccount,
     updateAccounts,
     reload,
-    error,
+    loadError,
+    switchError: switchFailure?.id === viewId && viewId !== activeId ? switchFailure.message : "",
     notice,
     dismissNotice,
     switching,

@@ -1,4 +1,5 @@
 import { formatBytes } from "../format";
+import { dt, useLang } from "../i18n";
 
 export type CleanKind =
   | "cache"
@@ -9,6 +10,7 @@ export type CleanKind =
   | "worktree"
   | "build"
   | "sandbox"
+  | "docker"
   | "system";
 
 export interface ConfirmRequest {
@@ -31,6 +33,7 @@ const CONSEQUENCE: Record<CleanKind, string> = {
   userfile:
     "These are your own files, not cache. Nothing will download them again. Archive them instead if you are not certain you want them gone.",
   app: "This removes the application along with the support files you selected. Anything the app stored that you did not select stays on disk.",
+  docker: "This is Docker's virtual disk, not a cache. It holds your images, containers and volumes, including any databases stored in them. To free space without removing the disk, use Docker cleanup in System space.",
   system:
     "These are temporary files, crash reports and download caches that the system and your programs create again as needed. Env-Tools moves what is inside each folder and keeps the folder itself. Anything a running program has open, or that changed in the last day, stays where it is.",
   worktree:
@@ -52,6 +55,7 @@ export default function ConfirmClean({
   onCancel: () => void;
   busy?: boolean;
 }) {
+  useLang();
   const many = request.items.length > 4;
   const shown = many ? request.items.slice(0, 4) : request.items;
 
@@ -60,20 +64,14 @@ export default function ConfirmClean({
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <h3 className="modal-title">{request.title}</h3>
 
-        <p className="modal-body">{CONSEQUENCE[request.kind]}</p>
+        <p className="modal-body">{dt(CONSEQUENCE[request.kind])}</p>
 
         {request.risky && (
-          <p className="modal-warn">
-            Env-Tools rates this one as worth reviewing first — it may hold data that is not
-            reproducible. Open it and check before you continue.
-          </p>
+          <p className="modal-warn">{dt("Env-Tools rates this one as worth reviewing first — it may hold data that is not reproducible. Open it and check before you continue.")}</p>
         )}
 
         {request.admin && request.admin.length > 0 && (
-          <p className="modal-body">
-            Windows will ask for administrator permission once, to clean{" "}
-            {request.admin.join(", ")}. Env-Tools itself keeps running without it.
-          </p>
+          <p className="modal-body">{dt("Windows will ask for administrator permission once, to clean {paths}. Env-Tools itself keeps running without it.", { paths: request.admin.join(", ") })}</p>
         )}
 
         <div className="modal-items">
@@ -81,25 +79,23 @@ export default function ConfirmClean({
             <code key={i} className="modal-item">{i}</code>
           ))}
           {many && (
-            <span className="modal-more">and {request.items.length - 4} more</span>
+            <span className="modal-more">{dt("and {n} more", { n: request.items.length - 4 })}</span>
           )}
         </div>
 
         <div className="modal-total">
-          <span>Space reclaimed</span>
+          <span>{dt("Space reclaimed")}</span>
           <strong>{formatBytes(request.bytes)}</strong>
         </div>
 
-        <p className="modal-foot">
-          Everything moves to the Trash, so you can put it back until you empty it.
-        </p>
+        <p className="modal-foot">{dt("Everything moves to the Trash, so you can put it back until you empty it.")}</p>
 
-        <div className="modal-actions">
-          <button className="btn" onClick={onCancel} disabled={busy}>
-            No, keep it
+        <div className="modal-actions confirm-clean-actions">
+          <button type="button" onClick={onCancel} disabled={busy}>
+            {dt("No, keep it")}
           </button>
-          <button className="btn-danger" onClick={onConfirm} disabled={busy}>
-            {busy ? "Working…" : "Yes, move to Trash"}
+          <button type="button" className="btn-danger" onClick={onConfirm} disabled={busy}>
+            {dt(busy ? "Working…" : "Yes, move to Trash")}
           </button>
         </div>
       </div>

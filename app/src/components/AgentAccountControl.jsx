@@ -26,7 +26,7 @@ export default function AgentAccountControl({ provider, state }) {
         activeId={state.activeId}
         onChange={state.viewAccount}
         disabled={state.switching}
-        error={state.error}
+        error={state.switchError}
         errorLabel={t("dash.accountSwitchFailed")}
         hint={hint}
         emptyUsage={provider === "codex" ? "5h — · 7d —" : "—"}

@@ -3,18 +3,20 @@ import { invoke } from "../adapter";
 import { formatBytes } from "../format";
 import ConfirmClean from "../components/ConfirmClean";
 import type { CleanOutcome, ModelEntry, ModelReport } from "../types";
+import { dt, useLang } from "../i18n";
 
 type Filter = "all" | "unused";
 
 function ageLabel(days: number | null): string {
-  if (days == null) return "unknown";
-  if (days < 1) return "today";
-  if (days < 30) return `${days}d ago`;
-  if (days < 365) return `${Math.round(days / 30)} mo ago`;
-  return `${(days / 365).toFixed(1)} yr ago`;
+  if (days == null) return dt("unknown");
+  if (days < 1) return dt("today");
+  if (days < 30) return dt("{n}d ago", { n: days });
+  if (days < 365) return dt("{n} mo ago", { n: Math.round(days / 30) });
+  return dt("{n} yr ago", { n: (days / 365).toFixed(1) });
 }
 
 export default function Models({ onRecovered }: { onRecovered: (bytes: number) => void }) {
+  useLang();
   const [report, setReport] = useState<ModelReport | null>(null);
   const [scanning, setScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -87,7 +89,7 @@ export default function Models({ onRecovered }: { onRecovered: (bytes: number) =
         <ConfirmClean
           request={{
             kind: "model",
-            title: `Remove ${selectedModels.length} model${selectedModels.length === 1 ? "" : "s"}?`,
+            title: dt(selectedModels.length === 1 ? "Remove {n} model?" : "Remove {n} models?", { n: selectedModels.length }),
             items: selectedModels.map((m) => m.name),
             bytes: selectedBytes,
             risky: selectedModels.some((m) => m.used_since_download),
@@ -100,27 +102,25 @@ export default function Models({ onRecovered }: { onRecovered: (bytes: number) =
 
       <div className="view-head">
         <div>
-          <h2 className="view-title">ML models</h2>
-          <p className="view-sub">
-            Every downloaded model, one by one — keep what you use, remove what you never loaded
-          </p>
+          <h2 className="view-title">{dt("ML models")}</h2>
+          <p className="view-sub">{dt("Every downloaded model, one by one — keep what you use, remove what you never loaded")}</p>
         </div>
         <button className="btn" onClick={scan} disabled={scanning}>
-          {scanning ? "Scanning…" : "Rescan"}
+          {dt(scanning ? "Scanning…" : "Rescan")}
         </button>
       </div>
 
       {error && (
         <div className="banner-error">
           <span>{error}</span>
-          <button className="btn-ghost" onClick={() => setError(null)}>Dismiss</button>
+          <button className="btn-ghost" onClick={() => setError(null)}>{dt("Dismiss")}</button>
         </div>
       )}
 
       {scanning && !report && (
         <div className="empty-state">
           <div className="spinner" />
-          <p>Reading model caches and working out which ones you have actually loaded…</p>
+          <p>{dt("Reading model caches and working out which ones you have actually loaded…")}</p>
         </div>
       )}
 
@@ -128,31 +128,24 @@ export default function Models({ onRecovered }: { onRecovered: (bytes: number) =
         <>
           <section className="metrics">
             <div className="metric">
-              <span className="metric-label">All models</span>
+              <span className="metric-label">{dt("All models")}</span>
               <span className="metric-value">{formatBytes(report.total_bytes)}</span>
             </div>
             <div className="metric accent">
-              <span className="metric-label">Downloaded but never loaded</span>
+              <span className="metric-label">{dt("Downloaded but never loaded")}</span>
               <span className="metric-value">
-                {report.usage_tracking_reliable ? formatBytes(report.unused_bytes) : "—"}
+                {report.usage_tracking_reliable ? formatBytes(report.unused_bytes) : dt("—")}
               </span>
             </div>
             <div className="metric">
-              <span className="metric-label">Models found</span>
+              <span className="metric-label">{dt("Models found")}</span>
               <span className="metric-value">{report.models.length}</span>
             </div>
           </section>
 
           <div className="banner-info">
-            Removing a model does not break anything — it will be downloaded again automatically the
-            next time your code asks for it. The only cost is the download.
-            {!report.usage_tracking_reliable && (
-              <>
-                {" "}
-                This disk does not record file access times, so Env-Tools cannot tell which models you
-                have loaded. Only download dates are shown.
-              </>
-            )}
+            {dt("Removing a model does not break anything — it will be downloaded again automatically the next time your code asks for it. The only cost is the download.")}
+            {!report.usage_tracking_reliable && <>{dt(" ")}{dt("This disk does not record file access times, so Env-Tools cannot tell which models you have loaded. Only download dates are shown.")}</>}
           </div>
 
           <div className="filter-row">
@@ -161,24 +154,22 @@ export default function Models({ onRecovered }: { onRecovered: (bytes: number) =
                 className={`filter-tab ${filter === "all" ? "is-active" : ""}`}
                 onClick={() => setFilter("all")}
               >
-                All ({report.models.length})
+                {dt("All ({n})", { n: report.models.length })}
               </button>
               <button
                 className={`filter-tab ${filter === "unused" ? "is-active" : ""}`}
                 onClick={() => setFilter("unused")}
               >
-                Never loaded ({report.models.filter((m) => !m.used_since_download).length})
+                {dt("Never loaded ({n})", { n: report.models.filter((m) => !m.used_since_download).length })}
               </button>
             </div>
             <div className="confirm">
               {report.usage_tracking_reliable && (
-                <button className="btn-ghost" onClick={selectAllUnused}>
-                  Select all never-loaded
-                </button>
+                <button className="btn-ghost" onClick={selectAllUnused}>{dt("Select all never-loaded")}</button>
               )}
               {selected.size > 0 && (
                 <button className="btn-clean" onClick={() => setConfirming(true)}>
-                  Remove {selected.size} selected ({formatBytes(selectedBytes)})
+                  {dt("Remove {n} selected ({size})", { n: selected.size, size: formatBytes(selectedBytes) })}
                 </button>
               )}
             </div>
@@ -186,7 +177,7 @@ export default function Models({ onRecovered }: { onRecovered: (bytes: number) =
 
           <div className="findings">
             {visible.length === 0 && (
-              <div className="empty-state"><p>No models in this view.</p></div>
+              <div className="empty-state"><p>{dt("No models in this view.")}</p></div>
             )}
             {visible.map((m) => (
               <label key={m.name} className="model-row">
@@ -201,20 +192,20 @@ export default function Models({ onRecovered }: { onRecovered: (bytes: number) =
                     <span className="badge cat-ml_models">{m.provider}</span>
                     {report.usage_tracking_reliable &&
                       (m.used_since_download ? (
-                        <span className="badge safety-safe">In use · read {ageLabel(m.last_used_days)}</span>
+                        <span className="badge safety-safe">{dt("In use · read {age}", { age: ageLabel(m.last_used_days) })}</span>
                       ) : (
-                        <span className="badge safety-caution">Never loaded</span>
+                        <span className="badge safety-caution">{dt("Never loaded")}</span>
                       ))}
                   </div>
                   <span className="model-meta">
-                    Downloaded {ageLabel(m.downloaded_days)}
-                    {m.note && ` · ${m.note}`}
+                    {dt("Downloaded {age}", { age: ageLabel(m.downloaded_days) })}
+                    {m.note && dt(" · {p0}", { p0: dt(m.note) })}
                   </span>
                 </div>
                 <div className="finding-size">
                   <span className="size">{formatBytes(m.size_bytes)}</span>
                   {m.exclusive_bytes !== m.size_bytes && (
-                    <span className="files">{formatBytes(m.exclusive_bytes)} reclaimable</span>
+                    <span className="files">{dt("{size} reclaimable", { size: formatBytes(m.exclusive_bytes) })}</span>
                   )}
                 </div>
                 <button
@@ -224,7 +215,7 @@ export default function Models({ onRecovered }: { onRecovered: (bytes: number) =
                     invoke("reveal_path", { path: m.paths[0] }).catch(() => {});
                   }}
                 >
-                  Show
+                  {dt("Show")}
                 </button>
               </label>
             ))}

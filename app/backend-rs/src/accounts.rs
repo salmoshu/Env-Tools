@@ -893,6 +893,9 @@ fn codex_running_clients() -> Vec<Value> {
         }
     }
     for distro in crate::settings::running_wsl_distros() {
+        if crate::settings::is_docker_wsl_distro(&distro) {
+            continue;
+        }
         let output = std::process::Command::new("wsl.exe")
             .args([
                 "-d",

@@ -121,12 +121,7 @@ function shortDateLabel(date) {
 function RateModelLabel({ agent, model }) {
   const agentLabel = AGENT_LABELS[agent] || agent || "—";
   if (!model) return agentLabel;
-  return (
-    <>
-      {agent ? <span className="rate-agent-name">{agentLabel}/</span> : null}
-      <span>{model.split("/").pop()}</span>
-    </>
-  );
+  return `${agent ? `${agentLabel}/` : ""}${model.split("/").pop()}`;
 }
 
 function MembershipLine({ account }) {
@@ -337,25 +332,8 @@ function QuotaCard({ account, versions, onUpgrade, upgrading, providerKey, accou
     : "";
   const info = versions[account.provider] || {};
   const newer = info.current && info.latest && isNewerVersion(info.latest, info.current);
-  // GLM 双通道：coding plan（bigmodel）窗口 + Start Plan（ZCode）窗口，
-  // "Start ·" 前缀区分；两路并存时显示通道切换下拉。边界：
-  // - 仅 StartPlan 有数据（如 API key 配额不可用）→ 单通道直接显示它
-  // - StartPlan 无额度/数据 → 不出现下拉，回落 BigModel（空额度即空显示）
-  const allWindows = account.windows || [];
   const isGlm = account.provider === "GLM";
-  const bigmodelWindows = allWindows.filter((w) => !String(w.label || "").startsWith("Start"));
-  const startWindows = allWindows.filter((w) => String(w.label || "").startsWith("Start"));
-  const dualChannel = isGlm && bigmodelWindows.length > 0 && startWindows.length > 0;
-  const singleStart = isGlm && bigmodelWindows.length === 0 && startWindows.length > 0;
-  const [channel, setChannel] = useState(() => {
-    try { return localStorage.getItem("glm-quota-channel") || "bigmodel"; } catch { return "bigmodel"; }
-  });
-  const activeChannel = dualChannel
-    ? channel
-    : singleStart ? "start" : "bigmodel";
-  const shownWindows = activeChannel === "start" ? startWindows : bigmodelWindows;
-  const startPlanName = (account.extra_lines || [])
-    .find((l) => String(l).startsWith("Start plan:"))?.slice("Start plan: ".length);
+  const shownWindows = account.windows || [];
   const stats = Array.isArray(account.stats) && account.stats.length > 0 ? account.stats : null;
   const [webAuthOpen, setWebAuthOpen] = useState(false);
   // Kimi 会员等级/月额度依赖 kimi.com 网页会话：缺失或过期时直接在卡片内
@@ -390,26 +368,9 @@ function QuotaCard({ account, versions, onUpgrade, upgrading, providerKey, accou
           <span className="qver">v{info.current}</span>
         ) : null}
         <AgentAccountControl provider={providerKey} state={accountState} />
-        <span className="plan">{activeChannel === "start"
-          ? (startPlanName || "Start Plan")
-          : (account.plan || "unknown")}</span>
+        <span className="plan">{account.plan || "unknown"}</span>
         {account.available === false ? (
           <span className="stale-tag" title={t("dash.dsUnavailableHint")}>{t("dash.dsUnavailable")}</span>
-        ) : null}
-        {dualChannel ? (
-          <Select
-            className="plan-switch"
-            value={channel}
-            ariaLabel="Plan channel"
-            onChange={(value) => {
-              setChannel(value);
-              try { localStorage.setItem("glm-quota-channel", value); } catch {}
-            }}
-            options={[
-              ["bigmodel", "BigModel"],
-              ["start", "StartPlan"],
-            ]}
-          />
         ) : null}
         {upgrading && Array.isArray(upgrading.targets) && upgrading.targets.includes(account.provider) ? (
           <span className="upgrading-badge"><span className="spin-dot" />{t("upgrade.runningBadge")}</span>
@@ -451,7 +412,7 @@ function QuotaCard({ account, versions, onUpgrade, upgrading, providerKey, accou
         const pct = w.used_percent == null ? 0 : Math.max(0, Math.min(100, w.used_percent));
         const fraction = timeFractionOf(w);
         const reset = fmtReset(w.reset_after_seconds);
-        const showUsage = w.usage && (!isGlm || String(w.label || "").startsWith("Start"));
+        const showUsage = w.usage && !isGlm;
         const tail = reset
           ? <span className="reset">{reset}</span>
           : (showUsage
@@ -508,7 +469,7 @@ function QuotaCard({ account, versions, onUpgrade, upgrading, providerKey, accou
         return (
           <div className="qquota" key={index}>
             <div className="qrow">
-              <span>{String(w.label || "").replace(/^Start · /, "")}</span>
+              <span>{String(w.label || "")}</span>
               <span className="pct" title={pctTitle}>{pctText}{tail ? " · " : ""}{tail}</span>
             </div>
             <div className="bar">
@@ -521,22 +482,6 @@ function QuotaCard({ account, versions, onUpgrade, upgrading, providerKey, accou
           </div>
         );
       })}
-      {(() => {
-        // StartPlan 通道显示套餐到期，BigModel 重置机会仍可从独立 hint 查看。
-        if (isGlm && activeChannel === "start") {
-          const endsIn = Math.max(
-            0,
-            ...startWindows.map((w) => Number(w.reset_after_seconds) || 0),
-          );
-          if (!endsIn) return null;
-          return (
-            <div className="limit-resets">
-              {t("dash.startPlanEnds").replace("{d}", fmtSpan(endsIn))}
-            </div>
-          );
-        }
-        return null;
-      })()}
       <ResetChances account={account} />
     </div>
     {webAuthOpen ? (
@@ -811,10 +756,8 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
   }, []);
   // 升级状态来自全局 installState：切页后"升级中…"徽章与结果提示都还在
   const install = useInstallState();
-  const analyticsBusy = useRef(false);
-  // 手动刷新广播 analytics-invalidated 时若在途请求未完结，置位排队补拉
-  const analyticsQueued = useRef(false);
-  // 当前展示的 目标|agent|范围 组合：切换时先画该组合的磁盘缓存载荷
+  const analyticsInFlight = useRef(new Map());
+  // 当前展示的 目标|agent|范围 组合：切换时先画该组合的内存缓存载荷
   const analyticsCombo = useRef("");
   const analyticsHash = useRef("");
   const [lang] = useLang();
@@ -839,21 +782,31 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
     return () => clearInterval(timer);
   }, [target, refreshUsage]);
 
-  const requestAnalytics = useCallback(async (nextDays, nextAgent, nextTarget) => {
+  const requestAnalytics = useCallback(async (nextDays, nextAgent, nextTarget, force = false) => {
     const combo = `${nextTarget}|${nextAgent}|${nextDays}`;
     // 组合切换（含首次进入）时先画该组合的缓存载荷，冷扫描期间不白屏
     if (analyticsCombo.current !== combo) {
       analyticsCombo.current = combo;
       analyticsHash.current = "";
-      const cached = readAnalyticsCache()[combo];
-      if (cached) setAnalytics(cached);
+      setAnalytics(readAnalyticsCache()[combo] || null);
+      setAnalyticsError("");
+      setBusy(false);
     }
-    if (analyticsBusy.current) return;
-    analyticsBusy.current = true;
+    const pending = analyticsInFlight.current.get(combo);
+    if (pending) {
+      pending.queued ||= force;
+      return;
+    }
+    const request = { queued: false };
+    analyticsInFlight.current.set(combo, request);
     //  spinner 延迟 200ms：快速返回的请求不产生额外整页渲染
-    const busyTimer = setTimeout(() => setBusy(true), 200);
+    const busyTimer = setTimeout(() => {
+      if (analyticsCombo.current === combo) setBusy(true);
+    }, 200);
     try {
       const result = await window.api.getAnalytics(nextDays, nextAgent, nextTarget);
+      // 慢的 WSL 查询不能挡住选取本机，也不能用迟到的结果盖掉当前目标。
+      if (analyticsCombo.current !== combo) return;
       if (result && result.ok && result.analytics) {
         // 内容没变就不 setAnalytics：定时刷新此前每分钟都强制整页重渲染。
         // 指纹由后端算好，避免在渲染进程对大 JSON 做序列化
@@ -868,15 +821,15 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
         setAnalyticsError((result && result.error) || t("dash.analyticsFailed"));
       }
     } catch (error) {
-      setAnalyticsError(`Analytics failed: ${error.message || error}`);
+      if (analyticsCombo.current === combo) {
+        setAnalyticsError(`Analytics failed: ${error.message || error}`);
+      }
     } finally {
       clearTimeout(busyTimer);
-      analyticsBusy.current = false;
-      setBusy(false);
-      // 手动刷新（analytics-invalidated）撞在途请求时排队，完成后补拉新鲜数据
-      if (analyticsQueued.current) {
-        analyticsQueued.current = false;
-        requestAnalytics(nextDays, nextAgent, nextTarget);
+      analyticsInFlight.current.delete(combo);
+      if (analyticsCombo.current === combo) {
+        setBusy(false);
+        if (request.queued) requestAnalytics(nextDays, nextAgent, nextTarget);
       }
     }
   }, []);
@@ -907,11 +860,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
   // 该广播，手动刷新只更新配额区，图表区看起来"没反应"
   useEffect(() => window.api.onAnalyticsInvalidated(() => {
     refreshUsage(target);
-    if (analyticsBusy.current) {
-      analyticsQueued.current = true;
-      return;
-    }
-    requestAnalytics(days, agent, target);
+    requestAnalytics(days, agent, target, true);
   }), [days, agent, target, requestAnalytics, refreshUsage]);
 
   // 按月拉 365 天、按年拉 5 年；agent/target 切换后旧数据作废重拉
@@ -1471,7 +1420,7 @@ export default function Dashboard({ lastPayload, refreshing, onRefresh }) {
                 >
                   <span className="rate-name">{item.project}</span>
                   {tag ? <span className="rate-tag">{tag}</span> : null}
-                  <span className="rate-model" title={item.model || item.agent || ""}>
+                  <span className="rate-model" title={[AGENT_LABELS[item.cli || item.agent] || item.cli || item.agent, item.model].filter(Boolean).join(" / ")}>
                     <BrandIcon of={item.cli || item.agent} size={12} />
                     <RateModelLabel agent={item.cli || item.agent} model={item.model} />
                   </span>

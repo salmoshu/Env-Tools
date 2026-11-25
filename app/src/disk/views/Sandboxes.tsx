@@ -4,6 +4,7 @@ import { listen, type UnlistenFn } from "../adapter";
 import { formatBytes, isWindows } from "../format";
 import ConfirmClean from "../components/ConfirmClean";
 import type { Reason, Safety } from "../types";
+import { dt } from "../i18n";
 
 const BIN = isWindows ? "Recycle Bin" : "Trash";
 /// Sandboxes smaller than this are folded away; there are over a hundred.
@@ -238,16 +239,16 @@ export default function Sandboxes({ onRecovered }: { onRecovered: (bytes: number
             checked={selected.has(entry.path)}
             disabled={!entry.removable || busy}
             onChange={() => toggle(entry)}
-            title={entry.removable ? undefined : "Env-Tools does not offer to remove this one"}
+            title={entry.removable ? undefined : dt("Env-Tools does not offer to remove this one")}
           />
           <div className="model-main">
             <div className="finding-title">
               <span className="finding-name">{entry.label}</span>
               <span className={`badge safety-${entry.safety}`}>
-                {entry.safety === "safe" ? "Safe" : entry.safety === "caution" ? "Caution" : "Risky"}
+                {entry.safety === "safe" ? dt("Safe") : entry.safety === "caution" ? dt("Caution") : dt("Risky")}
               </span>
               <span className="model-meta">
-                {entry.what} · {BASIS[entry.basis]}
+                {entry.what} · {dt(BASIS[entry.basis])}
               </span>
             </div>
             <code className="finding-path">{entry.rel}</code>
@@ -255,21 +256,18 @@ export default function Sandboxes({ onRecovered }: { onRecovered: (bytes: number
               {entry.reasons.map((r) => (
                 <li key={r.text} className={`reason-${r.level}`}>
                   <span className="reason-mark" aria-hidden>
-                    {r.level === "ok" ? "✓" : r.level === "warn" ? "!" : "✕"}
+                    {r.level === "ok" ? dt("✓") : r.level === "warn" ? dt("!") : dt("✕")}
                   </span>
                   {r.text}
                 </li>
               ))}
             </ul>
             {entry.appears_as && (
-              <p className="model-meta sb-sees">
-                The app itself sees this folder as <code>{entry.appears_as}</code>
+              <p className="model-meta sb-sees">{dt("The app itself sees this folder as")}{dt(" ")}<code>{entry.appears_as}</code>
               </p>
             )}
             {entry.removable && entry.mode === "contents" && (
-              <p className="model-meta sb-sees">
-                Env-Tools moves what is inside to the {BIN} and keeps the folder, which the app expects to find.
-              </p>
+              <p className="model-meta sb-sees">{dt("Env-Tools moves what is inside to the")}{dt(" ")}{dt(BIN)}{dt(" ")}{dt("and keeps the folder, which the app expects to find.")}</p>
             )}
             {hasKids && (
               <button
@@ -279,7 +277,7 @@ export default function Sandboxes({ onRecovered }: { onRecovered: (bytes: number
                   toggleIn(setCollapsed, entry.path);
                 }}
               >
-                {isCollapsed ? `Show the ${entry.children.length} parts` : "Hide the parts"}
+                {isCollapsed ? dt("Show the {p0} parts", { p0: entry.children.length }) : dt("Hide the parts")}
               </button>
             )}
           </div>
@@ -292,9 +290,7 @@ export default function Sandboxes({ onRecovered }: { onRecovered: (bytes: number
               e.preventDefault();
               invoke("reveal_path", { path: entry.path }).catch((err) => setError(String(err)));
             }}
-          >
-            Show
-          </button>
+          >{dt("Show")}</button>
         </label>
         {hasKids && !isCollapsed && entry.children.map((c) => renderEntry(c, pkg, depth + 1))}
       </div>
@@ -311,14 +307,14 @@ export default function Sandboxes({ onRecovered }: { onRecovered: (bytes: number
             key={e.path}
             className={`sb-seg sb-seg-${e.safety}`}
             style={{ width: `${Math.max(0.6, (e.size_bytes / pkg.size_bytes) * 100)}%` }}
-            title={`${e.label}: ${formatBytes(e.size_bytes)}`}
+            title={dt("{p0}: {p1}", { p0: e.label, p1: formatBytes(e.size_bytes) })}
           />
         ))}
       </div>
     );
   };
 
-  const title = `Move ${chosen.length} folder${chosen.length === 1 ? "" : "s"} to the ${BIN}?`;
+  const title = dt(chosen.length === 1 ? "Move {n} folder to the {bin}?" : "Move {n} folders to the {bin}?", { n: chosen.length, bin: dt(BIN) });
 
   return (
     <>
@@ -339,34 +335,32 @@ export default function Sandboxes({ onRecovered }: { onRecovered: (bytes: number
 
       <div className="view-head">
         <div>
-          <h2 className="view-title">App sandboxes</h2>
+          <h2 className="view-title">{dt("App sandboxes")}</h2>
           <p className="view-sub">
             {isWindows
-              ? "The private copies of AppData that Store and packaged apps keep. Explorer and most cleaners never show them."
-              : "The private containers that sandboxed Mac apps keep in ~/Library/Containers and Group Containers."}
+              ? dt("The private copies of AppData that Store and packaged apps keep. Explorer and most cleaners never show them.")
+              : dt("The private containers that sandboxed Mac apps keep in ~/Library/Containers and Group Containers.")}
           </p>
         </div>
         <button className="btn" onClick={scan} disabled={busy}>
-          {scanning ? "Scanning…" : "Rescan"}
+          {scanning ? dt("Scanning…") : dt("Rescan")}
         </button>
       </div>
 
       {error && (
         <div className="banner-error">
           <span>{error}</span>
-          <button className="btn-ghost" onClick={() => setError(null)}>Dismiss</button>
+          <button className="btn-ghost" onClick={() => setError(null)}>{dt("Dismiss")}</button>
         </div>
       )}
 
       {scanning && (
         <div className="banner-info wt-progress">
           <div className="meter-head">
-            <span>
-              Measuring app sandboxes
-              {scanProgress?.current && ` · ${scanProgress.current}`}
+            <span>{dt("Measuring app sandboxes")}{dt(" ")}{scanProgress?.current && dt(" · {p0}", { p0: scanProgress.current })}
             </span>
             <span className="meter-value">
-              {scanProgress ? `${Math.min(scanProgress.done, scanProgress.total)} of ${scanProgress.total}` : ""}
+              {scanProgress ? dt("{p0} of {p1}", { p0: Math.min(scanProgress.done, scanProgress.total), p1: scanProgress.total }) : dt("")}
             </span>
           </div>
           <div className="meter-track">
@@ -379,9 +373,9 @@ export default function Sandboxes({ onRecovered }: { onRecovered: (bytes: number
             />
           </div>
           <div className="sb-progress-foot">
-            <p className="model-meta">A sandbox can hold tens of gigabytes, so this can take a minute.</p>
+            <p className="model-meta">{dt("A sandbox can hold tens of gigabytes, so this can take a minute.")}</p>
             <button className="btn-ghost sm" disabled={stopping} onClick={() => stop(scanToken.current)}>
-              {stopping ? "Stopping…" : "Stop"}
+              {stopping ? dt("Stopping…") : dt("Stop")}
             </button>
           </div>
         </div>
@@ -390,12 +384,11 @@ export default function Sandboxes({ onRecovered }: { onRecovered: (bytes: number
       {progress && (
         <div className="banner-info wt-progress">
           <div className="meter-head">
-            <span>
-              Moving sandbox folders to the {BIN}
-              {progress.current && ` · ${progress.current}`}
+            <span>{dt("Moving sandbox folders to the")}{dt(" ")}{dt(BIN)}
+              {progress.current && dt(" · {p0}", { p0: progress.current })}
             </span>
             <span className="meter-value">
-              {Math.min(progress.done, progress.total)} of {progress.total}
+              {Math.min(progress.done, progress.total)}{dt(" ")}{dt("of")}{dt(" ")}{progress.total}
             </span>
           </div>
           <div className="meter-track">
@@ -405,11 +398,10 @@ export default function Sandboxes({ onRecovered }: { onRecovered: (bytes: number
             />
           </div>
           <div className="sb-progress-foot">
-            <p className="model-meta">
-              Env-Tools finishes the folder it is on, then stops. What was already moved stays in the {BIN}.
+            <p className="model-meta">{dt("Env-Tools finishes the folder it is on, then stops. What was already moved stays in the")}{dt(" ")}{dt(BIN)}.
             </p>
             <button className="btn-ghost sm" disabled={stopping} onClick={() => stop(removeToken.current)}>
-              {stopping ? "Stopping…" : "Cancel"}
+              {stopping ? dt("Stopping…") : dt("Cancel")}
             </button>
           </div>
         </div>
@@ -418,19 +410,17 @@ export default function Sandboxes({ onRecovered }: { onRecovered: (bytes: number
       {outcome && !progress && (
         <div className="banner-info">
           {outcome.removed.length > 0 && (
-            <>
-              Moved {outcome.removed.length} folder{outcome.removed.length === 1 ? "" : "s"} to the {BIN} (
-              {formatBytes(outcome.freed_bytes)} freed).{" "}
+            <>{dt("Moved {n} folders to the {bin} ({size} freed).", {
+              n: outcome.removed.length, bin: dt(BIN), size: formatBytes(outcome.freed_bytes),
+            })}{dt(" ")}
             </>
           )}
           {outcome.cancelled && (
-            <>Stopped at your request; {outcome.not_attempted} not touched. </>
+            <>{dt("Stopped at your request;")}{dt(" ")}{outcome.not_attempted}{dt(" ")}{dt("not touched.")}</>
           )}
-          {outcome.already_gone.length > 0 && <>{outcome.already_gone.length} had already disappeared. </>}
+          {outcome.already_gone.length > 0 && <>{outcome.already_gone.length}{dt(" ")}{dt("had already disappeared.")}</>}
           {outcome.partial.length > 0 && (
-            <>
-              Emptied only in part:
-              <ul className="wt-reasons">
+            <>{dt("Emptied only in part:")}{dt(" ")}<ul className="wt-reasons">
                 {outcome.partial.map((s) => (
                   <li key={s}>{s}</li>
                 ))}
@@ -438,8 +428,7 @@ export default function Sandboxes({ onRecovered }: { onRecovered: (bytes: number
             </>
           )}
           {outcome.skipped.length > 0 && (
-            <>
-              Skipped {outcome.skipped.length}:
+            <>{dt("Skipped")}{dt(" ")}{outcome.skipped.length}:
               <ul className="wt-reasons">
                 {outcome.skipped.map((s) => (
                   <li key={s}>{s}</li>
@@ -452,88 +441,71 @@ export default function Sandboxes({ onRecovered }: { onRecovered: (bytes: number
             outcome.skipped.length === 0 &&
             outcome.already_gone.length === 0 &&
             !outcome.cancelled &&
-            "Nothing needed moving."}
+            dt("Nothing needed moving.")}
         </div>
       )}
 
       {scanning && !report && (
         <div className="empty-state">
           <div className="spinner" />
-          <p>Listing installed apps and measuring each one's private folders…</p>
+          <p>{dt("Listing installed apps and measuring each one's private folders…")}</p>
         </div>
       )}
 
       {report && !report.supported && (
-        <div className="banner-info">App sandboxes of this kind exist on Windows (Store apps) and macOS only.</div>
+        <div className="banner-info">{dt("App sandboxes of this kind exist on Windows (Store apps) and macOS only.")}</div>
       )}
 
       {report && report.supported && (
         <>
           {report.cancelled && (
-            <div className="banner-info">The scan was stopped, so this list holds only what was measured.</div>
+            <div className="banner-info">{dt("The scan was stopped, so this list holds only what was measured.")}</div>
           )}
           {!report.inventory_known && (
-            <div className="banner-info">
-              Env-Tools could not read the list of installed apps, so it does not say which sandboxes belong to apps
-              you removed.
-            </div>
+            <div className="banner-info">{dt("Env-Tools could not read the list of installed apps, so it does not say which sandboxes belong to apps you removed.")}</div>
           )}
 
           <section className="metrics">
             <div className="metric">
-              <span className="metric-label">In app sandboxes</span>
+              <span className="metric-label">{dt("In app sandboxes")}</span>
               <span className="metric-value">{formatBytes(report.total_bytes)}</span>
             </div>
             <div className="metric accent">
-              <span className="metric-label">Safe to clear</span>
+              <span className="metric-label">{dt("Safe to clear")}</span>
               <span className="metric-value">{formatBytes(report.safe_bytes)}</span>
             </div>
             <div className="metric">
-              <span className="metric-label">Left by removed apps</span>
+              <span className="metric-label">{dt("Left by removed apps")}</span>
               <span className="metric-value">{formatBytes(report.orphan_bytes)}</span>
             </div>
           </section>
 
           <div className="banner-info">
             {isWindows ? (
-              <>
-                Windows runs Store and MSIX apps in a sandbox: what an app believes is its{" "}
-                <code>AppData\Local</code> and <code>AppData\Roaming</code> is really a private copy in{" "}
-                <code>LocalCache</code> inside its package folder. An app with this virtualization sees these
-                files as its normal AppData, so a cache here is rated like the real one. Green below means
-                rebuilt by the app, amber needs a look, red is the app's own data.
-              </>
+              <>{dt("Windows runs Store and MSIX apps in a sandbox: what an app believes is its")}{dt(" ")}
+                <code>{dt("AppData\\Local")}</code>{dt(" ")}{dt("and")}{dt(" ")}<code>{dt("AppData\\Roaming")}</code>{dt(" ")}{dt("is really a private copy in")}{dt(" ")}
+                <code>{dt("LocalCache")}</code>{dt(" ")}{dt("inside its package folder. An app with this virtualization sees these files as its normal AppData, so a cache here is rated like the real one. Green below means rebuilt by the app, amber needs a look, red is the app's own data.")}</>
             ) : (
-              <>
-                A sandboxed Mac app keeps its files under <code>~/Library/Containers/&lt;bundle id&gt;/Data</code>,
-                and a developer's apps share <code>~/Library/Group Containers</code>. Caches there are rebuilt by
-                the app; Application Support and Documents are its own data.
-              </>
+              <>{dt("A sandboxed Mac app keeps its files under")}{dt(" ")}<code>{dt("~/Library/Containers/<bundle id>/Data")}</code>{dt(", and a developer's apps share")}{dt(" ")}<code>{dt("~/Library/Group Containers")}</code>{dt(". Caches there are rebuilt by the app; Application Support and Documents are its own data.")}</>
             )}
           </div>
 
           <div className="filter-row">
             <div className="filter-tabs">
-              <button className={`filter-tab ${filter === "all" ? "is-active" : ""}`} onClick={() => setFilter("all")}>
-                All ({packages.length})
+              <button className={`filter-tab ${filter === "all" ? "is-active" : ""}`} onClick={() => setFilter("all")}>{dt("All (")}{packages.length})
               </button>
-              <button className={`filter-tab ${filter === "left" ? "is-active" : ""}`} onClick={() => setFilter("left")}>
-                App removed ({leftCount})
+              <button className={`filter-tab ${filter === "left" ? "is-active" : ""}`} onClick={() => setFilter("left")}>{dt("App removed (")}{leftCount})
               </button>
-              <button className={`filter-tab ${filter === "clean" ? "is-active" : ""}`} onClick={() => setFilter("clean")}>
-                Can free space ({cleanCount})
+              <button className={`filter-tab ${filter === "clean" ? "is-active" : ""}`} onClick={() => setFilter("clean")}>{dt("Can free space (")}{cleanCount})
               </button>
               {tinyCount > 0 && (
                 <label className="sb-tiny">
-                  <input type="checkbox" checked={showTiny} onChange={(e) => setShowTiny(e.target.checked)} /> Show {tinyCount}{" "}
-                  under 1 MB
-                </label>
+                  <input type="checkbox" checked={showTiny} onChange={(e) => setShowTiny(e.target.checked)} />{dt(" ")}{dt("Show")}{dt(" ")}{tinyCount}{dt(" ")}{dt(" ")}{dt("under 1 MB")}</label>
               )}
             </div>
             <div className="confirm">
               {chosen.length > 0 && (
-                <button className="btn-clean" disabled={busy} onClick={() => setConfirming(true)}>
-                  Move {chosen.length} selected ({formatBytes(chosenBytes)})
+                <button className="btn-clean" disabled={busy} onClick={() => setConfirming(true)}>{dt("Move")}{dt(" ")}{chosen.length}{dt(" ")}{dt("selected (")}{formatBytes(chosenBytes)})
                 </button>
               )}
             </div>
@@ -541,7 +513,7 @@ export default function Sandboxes({ onRecovered }: { onRecovered: (bytes: number
 
           {visible.length === 0 && (
             <div className="empty-state">
-              <p>No app sandboxes match.</p>
+              <p>{dt("No app sandboxes match.")}</p>
             </div>
           )}
 
@@ -552,33 +524,31 @@ export default function Sandboxes({ onRecovered }: { onRecovered: (bytes: number
                 <div className="sb-head">
                   <button
                     className="expander"
-                    aria-label={isOpen ? "Collapse" : "Expand"}
+                    aria-label={isOpen ? dt("Collapse") : dt("Expand")}
                     aria-expanded={isOpen}
                     onClick={() => toggleIn(setOpen, pkg.root)}
                   >
-                    {isOpen ? "▾" : "▸"}
+                    {isOpen ? dt("▾") : dt("▸")}
                   </button>
                   <div className="sb-title">
                     <div className="finding-title">
                       <span className="finding-name">{pkg.name}</span>
                       <span className={`badge ${pkg.state === "orphaned" ? "safety-caution" : "stale"}`}>
-                        {STATE_LABEL[pkg.state]}
+                        {dt(STATE_LABEL[pkg.state])}
                       </span>
-                      {pkg.running.length > 0 && <span className="badge safety-caution">Running</span>}
-                      {pkg.system && <span className="badge stale">{isWindows ? "Windows component" : "System app"}</span>}
+                      {pkg.running.length > 0 && <span className="badge safety-caution">{dt("Running")}</span>}
+                      {pkg.system && <span className="badge stale">{isWindows ? dt("Windows component") : dt("System app")}</span>}
                     </div>
                     <span className="model-meta">
                       {baseName(pkg.root)}
-                      {pkg.version && ` · version ${pkg.version}`}
+                      {pkg.version && dt(" · version {p0}", { p0: pkg.version })}
                     </span>
                   </div>
                   <div className="finding-size">
                     <span className="size">{formatBytes(pkg.size_bytes)}</span>
-                    {pkg.safe_bytes > 0 && <span className="model-meta">{formatBytes(pkg.safe_bytes)} safe to clear</span>}
+                    {pkg.safe_bytes > 0 && <span className="model-meta">{formatBytes(pkg.safe_bytes)}{dt(" ")}{dt("safe to clear")}</span>}
                   </div>
-                  <button className="btn-ghost sm" onClick={() => invoke("reveal_path", { path: pkg.root }).catch((e) => setError(String(e)))}>
-                    Show
-                  </button>
+                  <button className="btn-ghost sm" onClick={() => invoke("reveal_path", { path: pkg.root }).catch((e) => setError(String(e)))}>{dt("Show")}</button>
                 </div>
                 {renderBar(pkg)}
                 {isOpen && (
@@ -588,7 +558,7 @@ export default function Sandboxes({ onRecovered }: { onRecovered: (bytes: number
                         {pkg.reasons.map((r) => (
                           <li key={r.text} className={`reason-${r.level}`}>
                             <span className="reason-mark" aria-hidden>
-                              {r.level === "ok" ? "✓" : r.level === "warn" ? "!" : "✕"}
+                              {r.level === "ok" ? dt("✓") : r.level === "warn" ? dt("!") : dt("✕")}
                             </span>
                             {r.text}
                           </li>
@@ -602,12 +572,7 @@ export default function Sandboxes({ onRecovered }: { onRecovered: (bytes: number
             );
           })}
 
-          <p className="footnote">
-            Env-Tools moves only the folders it rates, never a whole sandbox, and checks each one again just before
-            moving it. It skips anything whose app is running and tells you why. Folders an app expects to find
-            (temporary files, web cache) keep their place; only what is inside moves. Risky folders hold the
-            app's own data and are shown for information only.
-          </p>
+          <p className="footnote">{dt("Env-Tools moves only the folders it rates, never a whole sandbox, and checks each one again just before moving it. It skips anything whose app is running and tells you why. Folders an app expects to find (temporary files, web cache) keep their place; only what is inside moves. Risky folders hold the app's own data and are shown for information only.")}</p>
         </>
       )}
     </>
